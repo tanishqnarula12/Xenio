@@ -8,51 +8,13 @@ not steal focus) and is verified afterwards: the result says whether the window 
 from __future__ import annotations
 
 import os
-import re
 import time
-from dataclasses import asdict, dataclass
 
 from app.desktop import win32
+from app.desktop.common import _SHELL_PROCESSES, _UWP_HOSTS, WindowError, WindowInfo, _words, match_score, rank_windows
+from app.desktop.common import wait_until as _wait
 
-
-class WindowError(Exception):
-    pass
-
-
-@dataclass
-class WindowInfo:
-    hwnd: int
-    title: str
-    process: str  # executable name, e.g. "Discord.exe"
-    pid: int
-    rect: tuple[int, int, int, int]
-    minimized: bool = False
-    maximized: bool = False
-    foreground: bool = False
-
-    def public(self) -> dict:
-        """What the model sees: no handle juggling needed, titles clipped."""
-        d = asdict(self)
-        d["title"] = self.title[:120]
-        return {k: d[k] for k in ("title", "process", "minimized", "maximized", "foreground")}
-
-    @property
-    def app(self) -> str:
-        """The app's name: the executable, or the title for Store apps hosted by ApplicationFrameHost."""
-        if self.process.lower() in _UWP_HOSTS and self.title:
-            return self.title.split(" - ")[-1].strip()
-        return os.path.splitext(self.process)[0]
-
-    @property
-    def is_shell(self) -> bool:
-        return self.process.lower() in _SHELL_PROCESSES
-
-
-_UWP_HOSTS = {"applicationframehost.exe"}  # UWP apps (Calculator, ...) live in a frame window owned by this host
-# Windows shell surfaces (Quick settings, Start, Search, the keyboard host...) that can hold the foreground after an
-# app launch; measured: UI Automation queries against them can hang, and they are never what the user means.
-_SHELL_PROCESSES = {"shellhost.exe", "shellexperiencehost.exe", "searchhost.exe", "startmenuexperiencehost.exe",
-                    "textinputhost.exe", "lockapp.exe", "searchapp.exe", "widgets.exe"}
+__all__ = ["WindowError", "WindowInfo", "match_score", "_SHELL_PROCESSES", "_UWP_HOSTS", "_words"]
 
 
 def _info(hwnd, foreground) -> WindowInfo:
@@ -106,33 +68,9 @@ def active_app_window() -> WindowInfo | None:
     return fg
 
 
-def _words(text: str) -> list[str]:
-    return [t for t in re.split(r"[^\w]+", (text or "").lower()) if t]
-
-
-def match_score(query: str, window: WindowInfo) -> float:
-    """How well a spoken app/window name matches a window: exact app name > all words in title > some words."""
-    q = " ".join(_words(query))
-    if not q:
-        return 0.0
-    app, title = " ".join(_words(window.app)), " ".join(_words(window.title))
-    if q == app or q == title:
-        return 1.0
-    if title.endswith(q) or title.startswith(q) or (app and (app.startswith(q) or q.startswith(app))):
-        return 0.9
-    words = _words(query)
-    hay = set(_words(window.title)) | set(_words(window.app))
-    hits = sum(1 for word in words if word in hay or any(h.startswith(word) for h in hay if len(word) >= 3))
-    return 0.8 * hits / len(words) if words else 0.0
-
-
 def find_windows(query: str, windows: list[WindowInfo] | None = None) -> list[WindowInfo]:
     """Windows matching ``query``, best first (ties: the foreground one, then the order Windows lists them)."""
-    windows = list_windows() if windows is None else windows
-    scored = [(match_score(query, w), w) for w in windows]
-    scored = [(s, w) for s, w in scored if s >= 0.5]
-    best = max((s for s, _ in scored), default=0)
-    return [w for s, w in sorted(scored, key=lambda sw: (-sw[0], not sw[1].foreground)) if s >= best - 0.05]
+    return rank_windows(query, list_windows() if windows is None else windows)
 
 
 def _press_alt() -> None:
@@ -190,12 +128,3 @@ def close(hwnd: int, timeout: float = 3.0) -> str:
     win32.user32.PostMessageW(hwnd, win32.WM_CLOSE, 0, 0)
     gone = _wait(lambda: not win32.user32.IsWindow(hwnd) or not win32.user32.IsWindowVisible(hwnd), timeout)
     return "closed" if gone else "still open"
-
-
-def _wait(condition, timeout: float = 2.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if condition():
-            return True
-        time.sleep(0.05)
-    return bool(condition())

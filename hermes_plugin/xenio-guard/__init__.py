@@ -52,6 +52,7 @@ import time
 
 _ACTIVE = os.environ.get("XENIO_GUARD") == "1"
 log = logging.getLogger("hermes.plugins.xenio_guard")
+_DESKTOP_PLATFORM = os.name == "nt" or sys.platform == "darwin"  # V5.5 desktop control: Windows and macOS
 _state = {"policy": None, "base": None, "desktop": None, "tools": [], "paths": None, "secrets": [], "error": None}
 # What XENIO knows about the page open in Hermes' browser (built-in browser_* tools).
 _page = {"refs": {}, "last_typed": ""}
@@ -88,7 +89,7 @@ def _load():
         base.AUDIT = lambda event, fields: _audit(event, **fields)
         _state.update(policy=policy, base=base, desktop=desktop,
                       tools=[*filesystem.xenio_tools(), *web.xenio_tools(), *personal.xenio_tools(),
-                             *vision.xenio_tools(), *(desktop.xenio_tools() if os.name == "nt" else [])],
+                             *vision.xenio_tools(), *(desktop.xenio_tools() if _DESKTOP_PLATFORM else [])],
                       paths=policy.default_path_policy(), secrets=policy.secret_env_values())
         _memory_at_start.update(_memory_entries())
         return True
@@ -531,7 +532,7 @@ def _personal_note():
     fresh = [e for e in _memory_entries() if e not in _memory_at_start]
     if fresh:
         parts.append("memory saved during this run: " + " | ".join(e[:160] for e in fresh[-4:]))
-    if _state.get("desktop") is not None and os.name == "nt":  # V5.5: short-lived desktop context, app names only
+    if _state.get("desktop") is not None and _DESKTOP_PLATFORM:  # V5.5: short-lived desktop context, app names only
         ctx = _state["desktop"].service().context()
         if ctx.get("recent_apps"):  # only once XENIO has been working with apps (not every turn)
             parts.append(f"desktop: {ctx.get('active_app') or '?'} is in front"
@@ -560,7 +561,7 @@ def _pre_llm_call(conversation_history=None, **_kwargs):
     message = _kwargs.get("user_message")
     _turns[session] = {"turn": str(_kwargs.get("turn_id") or ""), "injection": None,
                        "user": message if isinstance(message, str) else _content_text({"content": message})}
-    if _state.get("desktop") is not None and os.name == "nt":
+    if _state.get("desktop") is not None and _DESKTOP_PLATFORM:
         try:
             _state["desktop"].service().new_turn()  # a stop said during an earlier request no longer applies
         except Exception as exc:  # noqa: BLE001

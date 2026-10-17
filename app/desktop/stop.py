@@ -15,6 +15,7 @@ same request is refused ("stopped by the user"). The next request starts clean.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -64,8 +65,15 @@ class EscWatcher:
 
             self._state = win32.user32.GetAsyncKeyState
             self._state(VK_ESCAPE)  # clears the "pressed since last call" bit
-            self._thread = threading.Thread(target=self._run, name="xenio-esc-watch", daemon=True)
-            self._thread.start()
+        elif sys.platform == "darwin":
+            from app.desktop import macos
+
+            # the physical key's state (HID level): XENIO's own events pass the same point, hence suspend() below
+            self._state = lambda _vk: 0x8000 if macos.key_down(macos.KVK_ESCAPE) else 0
+        else:
+            return self
+        self._thread = threading.Thread(target=self._run, name="xenio-esc-watch", daemon=True)
+        self._thread.start()
         return self
 
     def __exit__(self, *exc):

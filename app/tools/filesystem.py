@@ -3,8 +3,8 @@
 Reused from Hermes (not re-implemented): reading files (``read_file``), searching
 (``search_files``), creating/overwriting files (``write_file``), editing (``patch``).
 Added by XENIO because Hermes only offers them through raw shell commands: listing a folder,
-inspecting a path, creating a folder, moving/renaming, and deleting (to the Recycle Bin by
-default). These run inside Hermes via the xenio-guard plugin, validate every path with the
+inspecting a path, creating a folder, moving/renaming, and deleting (to the Recycle Bin on
+Windows, the Trash on macOS, by default). These run inside Hermes via the xenio-guard plugin, validate every path with the
 XENIO policy, and return structured results. Standard-library only.
 """
 
@@ -13,11 +13,13 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.safety.policy import RiskLevel
+from app.safety.policy import TRASH_NAME, RiskLevel
 from app.tools.base import Tool, ToolContext, ToolResult
 
 LIST_LIMIT = 200
@@ -119,8 +121,20 @@ def move_path(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
                          source=str(source), destination=str(final))
 
 
+MACOS_TRASH = "/usr/bin/trash"  # macOS 15+: Finder-compatible (Put Back works), needs no automation permission
+
+
+def _trash_supported() -> bool:
+    return os.name == "nt" or (sys.platform == "darwin" and os.path.exists(MACOS_TRASH))
+
+
 def _recycle(path: Path) -> None:
-    """Send a file/folder to the Windows Recycle Bin (recoverable)."""
+    """Send a file/folder to the Recycle Bin (Windows) or the Trash (macOS); both are recoverable."""
+    if sys.platform == "darwin":
+        done = subprocess.run([MACOS_TRASH, "-s", "--", str(path)], capture_output=True, text=True, timeout=60)
+        if done.returncode != 0:
+            raise OSError(f"Trash operation failed: {(done.stderr or done.stdout).strip() or done.returncode}")
+        return
     import ctypes
     from ctypes import wintypes
 
@@ -144,8 +158,8 @@ def delete_path(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     is_dir = path.is_dir() and not path.is_symlink()
     items = sum(1 for _ in path.rglob("*")) if is_dir else 1
     permanent = bool(args.get("permanent", False))
-    if not permanent and os.name != "nt":
-        return ToolResult.fail(tool, "The Recycle Bin is only supported on Windows; ask again with permanent=true")
+    if not permanent and not _trash_supported():
+        return ToolResult.fail(tool, "There is no Recycle Bin/Trash this XENIO can use here; ask again with permanent=true")
     if permanent:
         if is_dir:
             shutil.rmtree(path)
@@ -155,7 +169,7 @@ def delete_path(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         _recycle(path)
     if path.exists():
         return ToolResult.fail(tool, f"{ctx.paths.describe(path)} still exists after the delete")
-    where = "permanently deleted" if permanent else "moved to the Recycle Bin"
+    where = "permanently deleted" if permanent else f"moved to the {TRASH_NAME}"
     return ToolResult.ok(tool, f"{ctx.paths.describe(path)} was {where}", path=str(path), recycled=not permanent,
                          items=items)
 
@@ -176,8 +190,8 @@ TOOLS: list[Tool] = [
          {"type": "object", "properties": {"source": _PATH, "destination": _PATH,
                                            "overwrite": {"type": "boolean", "description": "Replace an existing destination (default false)."}},
           "required": ["source", "destination"]}, RiskLevel.CONFIRM_REQUIRED, "xenio", "xenio_move_path", move_path),
-    Tool("filesystem.delete_path", "Delete a file or folder. Moves it to the Recycle Bin (recoverable) unless permanent=true. The user is asked to confirm.",
-         {"type": "object", "properties": {"path": _PATH, "permanent": {"type": "boolean", "description": "Delete permanently instead of using the Recycle Bin (default false)."}},
+    Tool("filesystem.delete_path", f"Delete a file or folder. Moves it to the {TRASH_NAME} (recoverable) unless permanent=true. The user is asked to confirm.",
+         {"type": "object", "properties": {"path": _PATH, "permanent": {"type": "boolean", "description": f"Delete permanently instead of using the {TRASH_NAME} (default false)."}},
           "required": ["path"]}, RiskLevel.CONFIRM_REQUIRED, "xenio", "xenio_delete_path", delete_path),
     # Reused Hermes built-ins (executed by Hermes, policed by XENIO).
     Tool("filesystem.read_file", "Read a text file (Hermes read_file).", {"type": "object", "properties": {"path": _PATH}},

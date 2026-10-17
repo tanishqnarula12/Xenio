@@ -1,13 +1,14 @@
 """Mouse and keyboard (V5.5): XENIO's hands.
 
-``DesktopController`` moves, clicks, scrolls, drags, types and presses keys with Windows' ``SendInput`` (the same
-path a real mouse/keyboard takes), in physical screen pixels. It does not decide what is allowed (the policy does,
+``DesktopController`` moves, clicks, scrolls, drags, types and presses keys the way a real mouse/keyboard does:
+Windows' ``SendInput`` in physical screen pixels, or on macOS CGEvents posted at the hardware event tap, in display
+points. It does not decide what is allowed (the policy does,
 before the plugin lets a call run) but it enforces the mechanics:
 
 * coordinates must be whole numbers on the desktop (no off-screen or malformed targets);
 * text is typed as Unicode characters, so Hindi, German or emoji type exactly as given, whatever the keyboard
   layout; at most 2 000 characters per call;
-* key names are checked against a fixed list (``enter``, ``ctrl+shift+p``, ``f5``, ``win+r`` ...);
+* key names are checked against a fixed list (``enter``, ``ctrl+shift+p``, ``f5``, ``win+r``, ``cmd+s`` ...);
 * every step checks the emergency stop (``stop_check``), so "Xenio stop" or the Esc key ends typing mid-word;
 * nothing is logged here: the audit log gets the action type, never the typed text.
 
@@ -17,6 +18,7 @@ The ``backend`` is swappable: unit tests record the input events instead of send
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,13 +38,22 @@ _VK = {
     ";": 0xBA, "=": 0xBB, ",": 0xBC, "-": 0xBD, ".": 0xBE, "/": 0xBF, "`": 0xC0, "[": 0xDB, "\\": 0xDC, "]": 0xDD,
     "'": 0xDE,
 }
+_VK.update({"cmd": 0x5B, "command": 0x5B, "meta": 0x5B, "option": 0x12, "opt": 0x12, "forwarddelete": 0x2E,
+            "fwddelete": 0x2E})
 _VK.update({f"f{i}": 0x6F + i for i in range(1, 25)})
 _VK.update({chr(c): c for c in range(ord("0"), ord("9") + 1)})
 _VK.update({chr(c).lower(): c for c in range(ord("A"), ord("Z") + 1)})
-MODIFIERS = {"ctrl", "control", "alt", "menu", "shift", "win", "windows", "lwin", "super"}
+# The key next to the space bar: Windows key on a PC, Command on a Mac (same key code, as Apple keyboards on Windows)
+GUI_KEY = "cmd" if sys.platform == "darwin" else "win"
+MODIFIERS = {"ctrl", "control", "alt", "menu", "shift", "win", "windows", "lwin", "super", "cmd", "command", "meta",
+             "option", "opt"}
 _EXTENDED = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x5B, 0x5D}  # need the extended-key flag
-_ALIASES = {"control": "ctrl", "menu": "alt", "windows": "win", "lwin": "win", "super": "win", "return": "enter",
-            "escape": "esc", "del": "delete", "pgup": "pageup", "pgdn": "pagedown"}
+_ALIASES = {"control": "ctrl", "menu": "alt", "option": "alt", "opt": "alt", "return": "enter", "escape": "esc",
+            "del": "delete", "pgup": "pageup", "pgdn": "pagedown",
+            **{k: GUI_KEY for k in ("win", "windows", "lwin", "super", "cmd", "command", "meta")}}
+# The Mac key labelled "delete" is backspace; forward delete is its own name there (fn+delete)
+_ALIASES.update({"delete": "backspace", "del": "backspace", "fwddelete": "forwarddelete"} if GUI_KEY == "cmd"
+                else {"forwarddelete": "delete", "fwddelete": "delete"})
 
 
 class InputError(Exception):
@@ -65,15 +76,15 @@ def parse_keys(keys: str) -> list[str]:
         if part not in _VK:
             raise InputError(f"unknown key {part!r}")
         out.append(_ALIASES.get(part, part))
-    if any(k not in ("ctrl", "alt", "shift", "win") for k in out[:-1]):
-        raise InputError("in a combination, every key but the last must be ctrl, alt, shift or win")
+    if any(k not in ("ctrl", "alt", "shift", GUI_KEY) for k in out[:-1]):
+        raise InputError(f"in a combination, every key but the last must be ctrl, alt, shift or {GUI_KEY}")
     return out
 
 
 def normalize_combo(keys: str) -> str:
     """Canonical text of a key combination ("Shift+Ctrl+P" -> "ctrl+shift+p"), for policy decisions."""
     parts = parse_keys(keys)
-    order = {"ctrl": 0, "alt": 1, "shift": 2, "win": 3}
+    order = {"ctrl": 0, "alt": 1, "shift": 2, GUI_KEY: 3}
     mods = sorted((p for p in parts[:-1]), key=lambda p: order.get(p, 9))
     return "+".join(mods + [parts[-1]])
 
@@ -142,6 +153,100 @@ class Win32Backend:
         return self._w.user32.GetDoubleClickTime() / 1000.0
 
 
+# Windows virtual-key code -> macOS virtual key code (Carbon kVK_*; the same on every Mac keyboard layout position)
+_MAC_KEYS = {
+    0x08: 0x33, 0x09: 0x30, 0x0D: 0x24, 0x10: 0x38, 0x11: 0x3B, 0x12: 0x3A, 0x14: 0x39, 0x1B: 0x35, 0x20: 0x31,
+    0x21: 0x74, 0x22: 0x79, 0x23: 0x77, 0x24: 0x73, 0x25: 0x7B, 0x26: 0x7E, 0x27: 0x7C, 0x28: 0x7D, 0x2D: 0x72,
+    0x2E: 0x75, 0x5B: 0x37,
+    0xBA: 0x29, 0xBB: 0x18, 0xBC: 0x2B, 0xBD: 0x1B, 0xBE: 0x2F, 0xBF: 0x2C, 0xC0: 0x32, 0xDB: 0x21, 0xDC: 0x2A,
+    0xDD: 0x1E, 0xDE: 0x27,
+    **dict(zip(range(ord("0"), ord("9") + 1), (0x1D, 0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19))),
+    **dict(zip(range(ord("A"), ord("Z") + 1), (0x00, 0x0B, 0x08, 0x02, 0x0E, 0x03, 0x05, 0x04, 0x22, 0x26, 0x28, 0x25,
+                                               0x2E, 0x2D, 0x1F, 0x23, 0x0C, 0x0F, 0x01, 0x11, 0x20, 0x09, 0x0D, 0x07,
+                                               0x10, 0x06))),
+    **dict(zip(range(0x70, 0x84), (0x7A, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, 0x67, 0x6F, 0x69, 0x6B,
+                                   0x71, 0x6A, 0x40, 0x4F, 0x50, 0x5A))),
+}
+_MAC_FLAGS = {0x10: 0x20000, 0x11: 0x40000, 0x12: 0x80000, 0x5B: 0x100000}  # shift, control, option, command
+_MAC_MEDIA = {0xB3: 16, 0xB0: 17, 0xB1: 18, 0xAD: 7, 0xAE: 1, 0xAF: 0}  # play/pause, next, previous, mute, vol -/+
+
+
+class MacBackend:
+    """macOS: CGEvents posted where hardware events enter (needs the Accessibility permission). The controller speaks
+    Windows' virtual-key codes and mouse flags; they are translated here. Held modifiers are put on every key event
+    (apps read the flags, not the order of key events), and repeated clicks carry their click count, so a double
+    click is a double click to the app."""
+
+    def __init__(self):
+        from app.desktop import macos
+
+        self._m = macos
+        if not (macos.trusted() or macos.can_post_events()):
+            raise InputError(macos.ACCESSIBILITY_STEP)
+        self._flags = 0
+        self._held: set[int] = set()  # mouse buttons held: 0 left, 1 right, 2 middle
+        self._pos = macos.mouse_location()
+        self._last_up: tuple[float, int, tuple, int] = (0.0, -1, (0, 0), 0)  # time, button, where, clicks
+        self._dct = macos.double_click_interval()
+
+    def bounds(self) -> Bounds:
+        return Bounds(*self._m.desktop_bounds())
+
+    def move(self, x: int, y: int) -> None:
+        m = self._m
+        kind, button = ((m.EV_LEFT_DRAGGED, 0) if 0 in self._held else (m.EV_RIGHT_DRAGGED, 1) if 1 in self._held
+                        else (m.EV_OTHER_DRAGGED, 2) if 2 in self._held else (m.EV_MOVED, 0))
+        m.post(m.mouse_event(kind, x, y, button, flags=self._flags))
+        self._pos = (x, y)
+
+    def mouse(self, flags: int, data: int = 0) -> None:
+        m = self._m
+        if flags in (0x0800, 0x1000):  # wheel: Windows sends 120 per notch, about 3 lines
+            lines = max(1, abs(data) // 40) * (1 if data > 0 else -1)
+            m.post(m.scroll_event(lines, 0) if flags == 0x0800 else m.scroll_event(0, lines))
+            return
+        mapping = {0x0002: (0, True), 0x0004: (0, False), 0x0008: (1, True), 0x0010: (1, False),
+                   0x0020: (2, True), 0x0040: (2, False)}
+        if flags not in mapping:
+            raise InputError(f"unsupported mouse input {flags:#x}")
+        button, down = mapping[flags]
+        kinds = {0: (m.EV_LEFT_DOWN, m.EV_LEFT_UP), 1: (m.EV_RIGHT_DOWN, m.EV_RIGHT_UP), 2: (m.EV_OTHER_DOWN, m.EV_OTHER_UP)}
+        at, then, last_button, last_at, last_clicks = self._pos, *self._last_up
+        if down:
+            same = last_button == button and last_at == at and time.monotonic() - then <= self._dct
+            self._clicks = last_clicks + 1 if same else 1
+            self._held.add(button)
+        else:
+            self._held.discard(button)
+        clicks = getattr(self, "_clicks", 1)
+        m.post(m.mouse_event(kinds[button][0 if down else 1], at[0], at[1], button, clicks, self._flags))
+        if not down:
+            self._last_up = (time.monotonic(), button, at, clicks)
+
+    def key(self, vk: int, up: bool) -> None:
+        if vk in _MAC_MEDIA:
+            if not up:  # one press = down and up of the system media key
+                self._m.press_media_key(_MAC_MEDIA[vk])
+            return
+        code = _MAC_KEYS.get(vk)
+        if code is None:
+            raise InputError("that key does not exist on a Mac keyboard")
+        if vk in _MAC_FLAGS:
+            self._flags = (self._flags & ~_MAC_FLAGS[vk]) if up else (self._flags | _MAC_FLAGS[vk])
+        self._m.post(self._m.key_event(code, not up, self._flags))
+
+    def unicode_tap(self, code_units: list[int]) -> None:
+        self._m.post(self._m.unicode_event(code_units, True))
+        self._m.post(self._m.unicode_event(code_units, False))
+
+    def double_click_time(self) -> float:
+        return self._dct
+
+
+def default_backend():
+    return MacBackend() if sys.platform == "darwin" else Win32Backend()
+
+
 _BUTTONS = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010), "middle": (0x0020, 0x0040)}
 
 
@@ -152,7 +257,7 @@ class DesktopController:
 
     def __init__(self, backend=None, stop_check: Callable[[], bool] | None = None, sleep=time.sleep,
                  key_delay: float = 0.03):  # measured: at 8 ms per character apps drop keystrokes, at 30 ms none
-        self.backend = backend or Win32Backend()
+        self.backend = backend or default_backend()
         self.stop_check = stop_check or (lambda: False)
         self._sleep = sleep
         self.key_delay = key_delay

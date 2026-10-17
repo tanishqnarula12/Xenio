@@ -21,6 +21,9 @@ def level(d):
 
 
 DESKTOP = p.known_folders()["Desktop"]
+WINDOWS = os.name == "nt"
+only_windows = pytest.mark.skipif(not WINDOWS, reason="Windows paths")
+only_posix = pytest.mark.skipif(WINDOWS, reason="macOS/Linux paths")
 
 
 # ---- paths ----------------------------------------------------------------------
@@ -38,7 +41,10 @@ def test_public_key_and_env_example_are_not_secrets(pp):
     assert not pp.check("C:/proj/.env.example", "read").blocked
 
 
-@pytest.mark.parametrize("raw", ["C:/", "/c", "/", "~", str(DESKTOP), "~/Documents", "C:/Windows", "C:/Program Files/App"])
+@pytest.mark.parametrize("raw", ["/", "~", str(DESKTOP), "~/Documents"] + (
+    ["C:/", "/c", "C:/Windows", "C:/Program Files/App"] if WINDOWS else
+    ["/c", "/Users", "/System", "/Applications/Safari.app", "/usr/bin", "/Volumes/Backup", "/private/etc",
+     "~/Library", "~/Library/Mobile Documents/com~apple~CloudDocs"]))
 def test_top_level_and_system_folders_can_never_be_deleted(pp, raw):
     assert pp.check(raw, "delete").blocked
 
@@ -53,6 +59,7 @@ def test_user_area_rules(pp):
     assert level(pp.check(str(target / "run.bat"), "create")) == "CONFIRM_REQUIRED"  # executables are confirmed
 
 
+@only_windows
 def test_system_and_app_data_writes(pp):
     assert level(pp.check("C:/Windows/evil.txt", "create")) == "HIGH_RISK"
     assert level(pp.check("C:/Program Files/X/y.txt", "modify")) == "HIGH_RISK"
@@ -61,9 +68,43 @@ def test_system_and_app_data_writes(pp):
     assert level(pp.check("C:/Windows/System32/drivers/etc/hosts", "read")) == "READ"  # reading is fine
 
 
+@only_posix
+def test_macos_system_library_and_autostart_writes(pp):
+    assert level(pp.check("/System/Library/x.txt", "create")) == "HIGH_RISK"
+    assert level(pp.check("/usr/local/bin/tool", "modify")) == "HIGH_RISK"
+    assert level(pp.check("/Users/Shared/x.txt", "create")) == "HIGH_RISK"  # other users' area
+    assert level(pp.check("~/Library/Preferences/x.plist", "create")) == "CONFIRM_REQUIRED"  # app data
+    assert level(pp.check("~/Library/LaunchAgents/com.evil.plist", "create")) == "HIGH_RISK"  # runs at login
+    assert level(pp.check("~/Library/Mobile Documents/com~apple~CloudDocs/notes.txt", "create")) == "SAFE_WRITE"
+    assert level(pp.check("/etc/hosts", "read")) == "READ"  # reading is fine
+    assert level(pp.check(str(DESKTOP / "XenioTest" / "run.command"), "create")) == "CONFIRM_REQUIRED"
+    assert level(pp.check(str(DESKTOP / "XenioTest"), "delete", permanent=False)) == "CONFIRM_REQUIRED"
+    assert "Trash" in pp.check(str(DESKTOP / "XenioTest"), "delete", permanent=False).summary
+
+
+@only_posix
+@pytest.mark.parametrize("raw", ["~/Library/Keychains/login.keychain-db", "~/Library/Cookies/Cookies.binarycookies",
+                                 "~/Library/Application Support/Google/Chrome/Default/Login Data",
+                                 "~/Library/Application Support/Google/Chrome/Default/Preferences",
+                                 "~/Library/Application Support/Firefox/Profiles/abc.default/logins.json",
+                                 "~/.hermes/auth.json", "~/.hermes/.env"])
+def test_macos_secret_stores_are_blocked(raw, tmp_path):
+    mac = p.PathPolicy(workspace=tmp_path, hermes_home=Path.home() / ".hermes")
+    for op in ("read", "create", "delete"):
+        assert mac.check(raw, op).blocked, (raw, op)
+
+
+def test_temp_is_a_user_folder_under_both_spellings(pp):
+    import tempfile
+    temp = Path(tempfile.gettempdir())
+    for t in {temp, temp.resolve()}:
+        assert level(pp.check(str(t / "x.txt"), "create")) == "SAFE_WRITE"
+        assert pp.check(str(t), "delete").blocked  # the temp folder itself
+
+
 def test_path_traversal_is_resolved_before_judging(pp, tmp_path):
     ws = pp.workspace
-    sneaky = "../" * (len(ws.parts) + 2) + "Windows/System32"
+    sneaky = "../" * (len(ws.parts) + 2) + ("Windows/System32" if WINDOWS else "System/Library")
     assert pp.resolve(sneaky, ws) == Path("C:/Windows/System32") if os.name == "nt" else True
     assert pp.check(sneaky, "delete", ws).blocked
     assert pp.check("notes/../../.ssh/id_rsa", "read", Path.home() / "x").blocked
@@ -107,12 +148,13 @@ def test_describe_uses_friendly_names(pp):
     ("net user bob newpass", "HIGH_RISK"), ("reg add HKCU\\Software\\X /v Y", "HIGH_RISK"),
     ('psql -h prod-db -c "DROP TABLE users"', "HIGH_RISK"), ("kubectl delete deployment api", "HIGH_RISK"),
     ("find . -name '*.log' -delete", "HIGH_RISK"), ("npm publish", "HIGH_RISK"),
-    ("echo hi > C:/Windows/x.txt", "HIGH_RISK"),
+    ("echo hi > C:/Windows/x.txt" if WINDOWS else "echo hi > /etc/x.txt", "HIGH_RISK"),
     # BLOCKED: secrets, env dumps, system/root deletion
     ("cat ~/.ssh/id_rsa", "BLOCKED"), ("cat .env", "BLOCKED"), ("echo $OPENROUTER_API_KEY", "BLOCKED"),
     ("env", "BLOCKED"), ("printenv", "BLOCKED"), ("export -p", "BLOCKED"), ("rm -rf /", "BLOCKED"),
     ("rm -rf /c", "BLOCKED"), ("rm -rf ~", "BLOCKED"), ("rm -rf ~/*", "BLOCKED"),
-    ('rm -rf "C:/Windows/System32"', "BLOCKED"), ('powershell -Command "Remove-Item -Recurse C:\\Windows\\Temp"', "BLOCKED"),
+    ('rm -rf "C:/Windows/System32"' if WINDOWS else 'rm -rf "/System/Library"', "BLOCKED"),
+    ('powershell -Command "Remove-Item -Recurse C:\\Windows\\Temp"' if WINDOWS else "rm -rf /usr/local/bin", "BLOCKED"),
     ("powershell -Command \"Get-ChildItem env:\"", "BLOCKED"), ("", "BLOCKED"),
 ])
 def test_command_classification(pp, command, expected):
@@ -148,7 +190,8 @@ def test_tool_call_classification(pp):
     assert level(p.classify_tool_call("read_file", {"path": "~/.aws/credentials"}, pp, ws)) == "BLOCKED"
     assert level(p.classify_tool_call("write_file", {"path": str(ws / "a.txt"), "content": "x"}, pp, ws)) == "SAFE_WRITE"
     assert level(p.classify_tool_call("xenio_delete_path", {"path": str(DESKTOP)}, pp, ws)) == "BLOCKED"
-    assert level(p.classify_tool_call("xenio_create_directory", {"path": "C:/Program Files/Evil"}, pp, ws)) == "HIGH_RISK"
+    assert level(p.classify_tool_call("xenio_create_directory",
+                                      {"path": "C:/Program Files/Evil" if WINDOWS else "/Applications/Evil"}, pp, ws)) == "HIGH_RISK"
     assert level(p.classify_tool_call("execute_code", {"code": "print(2 + 2)"}, pp, ws)) == "READ"
     assert level(p.classify_tool_call("execute_code", {"code": "import shutil; shutil.rmtree('x')"}, pp, ws)) == "CONFIRM_REQUIRED"
     assert level(p.classify_tool_call("execute_code", {"code": "print(open('.env').read())"}, pp, ws)) == "BLOCKED"

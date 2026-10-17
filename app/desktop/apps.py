@@ -1,11 +1,14 @@
 """Application discovery, resolution and launch (V5.5).
 
-Nothing is hardcoded per application. The catalog is what Windows itself offers to start:
+Nothing is hardcoded per application. The catalog is what the system itself offers to start. On Windows:
 
 * **Start menu apps** (``Get-StartApps``): every app in the Start menu, desktop and Store/packaged alike (Discord,
   OBS, Claude, ChatGPT, WhatsApp, VS Code, Calculator ...), with the AppUserModelID Windows launches it by;
 * **App Paths** (registry): programs registered by executable name (``chrome.exe``, ``msedge.exe`` ...);
 * **PATH**: a program name typed exactly (``notepad``, ``mspaint``) when it is on the PATH.
+
+On macOS: every ``.app`` bundle in /Applications, /System/Applications, ~/Applications and CoreServices (Finder),
+launched by bundle id through LaunchServices (``open -b``), exactly like a click in Launchpad or the Dock.
 
 ``resolve(name)`` scores the catalog against the spoken name (exact name, then words, then close spellings, plus a
 few everyday categories such as "browser" or "code editor"). Several equally good matches are reported as
@@ -18,12 +21,14 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 CACHE_SECONDS = 600
 CACHE_FILE = "apps_cache.json"
@@ -38,19 +43,27 @@ _KNOWN_FOLDERS = {
 
 # Everyday categories -> words that identify such apps. Used only when no app is literally named like that.
 CATEGORIES = {
-    "browser": ["chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium"],
-    "web browser": ["chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium"],
-    "code editor": ["visual studio code", "vs code", "cursor", "sublime", "notepad++", "pycharm", "intellij", "zed"],
-    "editor": ["visual studio code", "cursor", "sublime", "notepad++", "notepad"],
-    "ide": ["visual studio code", "pycharm", "intellij", "visual studio", "android studio"],
-    "streaming app": ["obs"], "recording app": ["obs"], "screen recorder": ["obs", "snipping tool"],
-    "music app": ["spotify", "apple music", "media player"], "music": ["spotify", "apple music", "media player"],
-    "chat app": ["whatsapp", "discord", "telegram", "teams", "slack", "signal"],
-    "terminal": ["terminal", "powershell", "command prompt"], "command line": ["terminal", "powershell", "command prompt"],
-    "file manager": ["file explorer"], "files": ["file explorer"], "my files": ["file explorer"],
-    "calculator": ["calculator"], "notes": ["notepad", "sticky notes", "onenote"], "mail": ["outlook", "mail"],
-    "email": ["outlook", "mail", "thunderbird"], "camera": ["camera"], "settings": ["settings"],
+    "browser": ["chrome", "safari", "edge", "firefox", "brave", "arc", "opera", "vivaldi", "chromium"],
+    "web browser": ["chrome", "safari", "edge", "firefox", "brave", "arc", "opera", "vivaldi", "chromium"],
+    "code editor": ["visual studio code", "vs code", "cursor", "sublime", "notepad++", "pycharm", "intellij", "zed", "xcode"],
+    "editor": ["visual studio code", "cursor", "sublime", "notepad++", "notepad", "textedit"],
+    "ide": ["visual studio code", "pycharm", "intellij", "visual studio", "android studio", "xcode"],
+    "streaming app": ["obs"], "recording app": ["obs"], "screen recorder": ["obs", "snipping tool", "screenshot"],
+    "music app": ["spotify", "apple music", "music", "media player"], "music": ["spotify", "apple music", "music", "media player"],
+    "chat app": ["whatsapp", "discord", "telegram", "teams", "slack", "signal", "messages"],
+    "terminal": ["terminal", "iterm", "warp", "ghostty", "powershell", "command prompt"],
+    "command line": ["terminal", "iterm", "powershell", "command prompt"],
+    "file manager": ["file explorer", "finder"], "files": ["file explorer", "finder"], "my files": ["file explorer", "finder"],
+    "calculator": ["calculator"], "notes": ["notepad", "notes", "sticky notes", "stickies", "onenote"],
+    "mail": ["outlook", "mail"], "email": ["outlook", "mail", "thunderbird"], "camera": ["camera", "photo booth"],
+    "settings": ["settings", "system settings"],
 }
+# A Windows name said on a Mac (and vice versa): used only when no app is literally called that
+PLATFORM_EQUIVALENTS = {"file explorer": "finder", "explorer": "finder", "notepad": "textedit", "command prompt": "terminal",
+                        "powershell": "terminal", "control panel": "system settings", "settings": "system settings",
+                        "task manager": "activity monitor", "snipping tool": "screenshot", "paint": "preview",
+                        "photos app": "photos", "microsoft store": "app store", "finder": "file explorer",
+                        "textedit": "notepad", "activity monitor": "task manager", "system settings": "settings"}
 _ALIASES = {"vs code": "visual studio code", "vscode": "visual studio code", "code": "visual studio code",
             "explorer": "file explorer", "cmd": "command prompt", "calc": "calculator", "obs": "obs studio",
             "teams": "microsoft teams", "edge": "microsoft edge", "chrome": "google chrome", "word": "word",
@@ -58,7 +71,8 @@ _ALIASES = {"vs code": "visual studio code", "vscode": "visual studio code", "co
 _FILLER = {"the", "my", "app", "application", "program", "desktop", "for", "windows", "please", "a", "an", "mera", "meri",
            "mein", "meinen", "meine", "die", "das", "der", "den", "app?"}
 _RISKY_NAME = re.compile(r"\b(uninstall|uninstaller|setup|installer|install|update|updater|repair|remove)\b", re.I)
-_UNTRUSTED_DIRS = re.compile(r"\\(downloads|temp|tmp|appdata\\local\\temp|inetcache|content\.outlook)\\", re.I)
+_UNTRUSTED_DIRS = re.compile(r"\\(downloads|temp|tmp|appdata\\local\\temp|inetcache|content\.outlook)\\"
+                             r"|^/(?:private/)?(?:tmp|var/folders)/|/downloads/|^/volumes/", re.I)  # macOS: disk images too
 
 
 class AppError(Exception):
@@ -70,13 +84,15 @@ class AppEntry:
     name: str
     app_id: str = ""  # AppUserModelID / Start-menu id (launch via shell:AppsFolder)
     path: str = ""  # executable path when known
-    source: str = "start_menu"  # start_menu | app_paths | path
+    source: str = "start_menu"  # start_menu | app_paths | path | applications (macOS)
     kind: str = "desktop"  # desktop | packaged
 
     @property
     def exe_stem(self) -> str:
         target = self.path or (self.app_id if self.app_id.lower().endswith(".exe") else "")
-        return Path(target).stem.lower() if target else ""
+        if not target:
+            return ""
+        return (PureWindowsPath(target) if "\\" in target else Path(target.rstrip("/"))).stem.lower()
 
     def public(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v}
@@ -108,7 +124,8 @@ class Resolution:
 
     def describe(self) -> dict:
         e = self.best
-        launch = "shell:AppsFolder" if e and e.app_id else "executable" if e else ""
+        launch = ("launchservices" if e and e.source == "applications" else "shell:AppsFolder" if e and e.app_id
+                  else "executable" if e else "")
         return {"name": e.name if e else "", "launch_method": launch, "target": (e.app_id or e.path) if e else "",
                 "source": e.source if e else "", "confidence": round(self.confidence, 2)}
 
@@ -165,10 +182,54 @@ def _app_paths() -> list[AppEntry]:
     return out
 
 
+_MAC_APP_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities",
+                 "~/Applications", "~/Applications/Chrome Apps.localized", "/System/Library/CoreServices/Applications")
+_MAC_SINGLE_APPS = ("/System/Library/CoreServices/Finder.app",)
+
+
+def _mac_apps(dirs=_MAC_APP_DIRS, singles=_MAC_SINGLE_APPS) -> list[AppEntry]:
+    """Every app bundle the Finder's Applications view shows (one level of vendor folders deep), by bundle id."""
+    bundles: list[str] = list(singles)
+    for folder in dirs:
+        folder = os.path.expanduser(folder)
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            if name.endswith(".app"):
+                bundles.append(path)
+            elif os.path.isdir(path) and not name.startswith(".") and folder in ("/Applications", os.path.expanduser("~/Applications")):
+                try:
+                    bundles += [os.path.join(path, n) for n in sorted(os.listdir(path)) if n.endswith(".app")]
+                except OSError:
+                    pass
+    out, seen = [], set()
+    for path in bundles:
+        try:
+            with open(os.path.join(path, "Contents", "Info.plist"), "rb") as fh:
+                info = plistlib.load(fh)
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            continue
+        ident = str(info.get("CFBundleIdentifier") or "")
+        if info.get("LSUIElement") in (True, "1", 1) or info.get("LSBackgroundOnly") in (True, "1", 1):
+            continue  # menu-bar agents and background helpers are not apps you "open"
+        if not ident or ident.lower() in seen:
+            continue
+        seen.add(ident.lower())
+        out.append(AppEntry(Path(path).stem, ident, path, "applications"))
+    return out
+
+
+def _default_loader() -> list[AppEntry]:
+    return _mac_apps() if sys.platform == "darwin" else _start_apps() + _app_paths()
+
+
 class AppCatalog:
     def __init__(self, cache_dir: Path | None = None, loader=None, clock=time.time):
         self._cache_dir = cache_dir
-        self._loader = loader or (lambda: _start_apps() + _app_paths())
+        self._loader = loader or _default_loader
         self._clock = clock
         self._entries: list[AppEntry] = []
         self._loaded_at = 0.0
@@ -235,8 +296,28 @@ def dedupe(entries: list[AppEntry]) -> list[AppEntry]:
     return out
 
 
+_MAC_BROWSERS = {"com.google.chrome": "chrome", "com.apple.safari": "safari", "org.mozilla.firefox": "firefox",
+                  "com.microsoft.edgemac": "edge", "com.brave.browser": "brave", "company.thebrowser.browser": "arc",
+                  "com.operasoftware.opera": "opera", "com.vivaldi.vivaldi": "vivaldi", "org.chromium.chromium": "chromium"}
+
+
+def _mac_default_browser() -> str:
+    path = os.path.expanduser("~/Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist")
+    try:
+        with open(path, "rb") as fh:
+            handlers = plistlib.load(fh).get("LSHandlers") or []
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return "safari"  # never changed: Safari is the default
+    for h in handlers:
+        if str(h.get("LSHandlerURLScheme") or "").lower() == "https":
+            return _MAC_BROWSERS.get(str(h.get("LSHandlerRoleAll") or "").lower(), "")
+    return "safari"
+
+
 def default_browser() -> str:
-    """The user's default browser as an app word ("chrome", "edge", ...), from Windows' https association."""
+    """The user's default browser as an app word ("chrome", "edge", "safari"...), from the system's https handler."""
+    if sys.platform == "darwin":
+        return _mac_default_browser()
     try:
         import winreg
 
@@ -254,6 +335,8 @@ def default_browser() -> str:
 
 def _on_path(query: str) -> str:
     word = query.strip().lower()
+    if sys.platform == "darwin":
+        return ""  # command-line tools are not apps on a Mac; everything you can open is an .app bundle
     if not re.fullmatch(r"[a-z0-9_.+-]{2,40}", word):
         return ""
     return shutil.which(word if word.endswith(".exe") else word + ".exe") or ""
@@ -298,6 +381,9 @@ _CATEGORY_INDEX = {normalize_name(k): v for k, v in CATEGORIES.items()}
 def resolve(query: str, entries: list[AppEntry], browser: str | None = None) -> Resolution:
     q = normalize_name(query)
     scored = [(s, e) for e in entries if (s := _score(q, e, query)) > 0]
+    if not scored and q in PLATFORM_EQUIVALENTS:  # "open Notepad" on a Mac: TextEdit, "File Explorer": Finder
+        q = PLATFORM_EQUIVALENTS[q]
+        scored = [(s * 0.95, e) for e in entries if (s := _score(q, e)) > 0]
     hints = _CATEGORY_INDEX.get(q)
     if not scored and hints:  # "open the streaming app" -> apps of that kind
         preferred = ""
@@ -356,14 +442,18 @@ def _keys(entry: AppEntry) -> list[str]:
     return list(dict.fromkeys(k for k in keys if k))
 
 
-_BROWSER_PROCESSES = {"chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "chromium", "arc"}
+_BROWSER_PROCESSES = {"chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "chromium", "arc", "google chrome",
+                      "safari", "microsoft edge", "brave browser"}
 
 
 def window_matches(entry: AppEntry, window) -> bool:
-    """Is this window the app's? The process name decides; a title only counts when it ENDS with the app's name
-    (apps title their windows "document - App") and never for browser windows, whose titles are page titles
-    ("Discord tips - Google Chrome" is not Discord)."""
-    process = Path(window.process).stem.lower()
+    """Is this window the app's? The bundle id (macOS) or process name decides; a title only counts when it ENDS with
+    the app's name (apps title their windows "document - App") and never for browser windows, whose titles are page
+    titles ("Discord tips - Google Chrome" is not Discord)."""
+    bundle = getattr(window, "bundle_id", "")
+    if entry.source == "applications" and bundle:
+        return bundle.lower() == entry.app_id.lower()
+    process = Path(window.process).stem.lower() if window.process.lower().endswith(".exe") else window.process.lower()
     keys = _keys(entry)
     if any(key == process or key.replace(" ", "") == process for key in keys):
         return True
@@ -373,8 +463,21 @@ def window_matches(entry: AppEntry, window) -> bool:
     return any(len(key) >= 4 and (title == key or title.endswith(" " + key)) for key in keys)
 
 
+def _open_on_mac(target: str) -> None:
+    flag = "-a" if target.endswith(".app") or target.startswith("/") else "-b"
+    done = subprocess.run(["/usr/bin/open", flag, target], capture_output=True, text=True, timeout=20)
+    if done.returncode != 0:
+        raise OSError((done.stderr or done.stdout).strip() or f"open exited with {done.returncode}")
+
+
 def launch(entry: AppEntry, starter=None) -> None:
-    """Start the app like the Start menu does. Raises AppError when Windows refuses."""
+    """Start the app like the Start menu (Windows) or the Dock (macOS) does. Raises AppError when the system refuses."""
+    if sys.platform == "darwin" and starter is None:
+        try:
+            _open_on_mac(entry.app_id if entry.source == "applications" and entry.app_id else entry.path)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AppError(f"macOS could not start {entry.name} ({exc})") from None
+        return
     starter = starter or os.startfile  # type: ignore[attr-defined]
     target = f"shell:AppsFolder\\{entry.app_id}" if entry.app_id else entry.path
     if not target:
@@ -385,8 +488,12 @@ def launch(entry: AppEntry, starter=None) -> None:
         raise AppError(f"Windows could not start {entry.name} ({exc.strerror or exc})") from None
 
 
-def wait_for_window(entry: AppEntry, before: set[int], list_windows, timeout: float = 25.0, settle: float = 1.2,
-                    clock=time.monotonic, sleep=time.sleep):
+# Windows apps often show a splash/updater window first (measured: Discord); Mac apps open their real window at once
+SETTLE_SECONDS = 1.2 if os.name == "nt" else 0.2
+
+
+def wait_for_window(entry: AppEntry, before: set[int], list_windows, timeout: float = 25.0,
+                    settle: float = SETTLE_SECONDS, clock=time.monotonic, sleep=time.sleep):
     """Poll until a window of ``entry`` appears (a new one, or an existing one coming to the front).
     Returns (window | None, how): "new_window" | "already_open" | "timeout"."""
     deadline = clock() + timeout
@@ -402,5 +509,5 @@ def wait_for_window(entry: AppEntry, before: set[int], list_windows, timeout: fl
             main = max(settled, key=lambda w: ((w.rect[2] - w.rect[0]) * (w.rect[3] - w.rect[1]), w.foreground),
                        default=found)
             return main, how
-        sleep(0.3)
+        sleep(0.3 if os.name == "nt" else 0.1)
     return found, "timeout"

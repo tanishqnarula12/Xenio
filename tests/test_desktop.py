@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.desktop import apps as A
-from app.desktop.input import Bounds, DesktopController, InputError, Stopped, normalize_combo, parse_keys
+from app.desktop.input import GUI_KEY, Bounds, DesktopController, InputError, Stopped, normalize_combo, parse_keys
 from app.desktop.service import DesktopError, DesktopService
 from app.desktop.stop import request_stop, stop_requested_since
 from app.safety import policy as p
@@ -102,7 +102,8 @@ def test_keys_and_hotkeys():
     downs = [e[1] for e in b.events if e[2] == "down"]
     ups = [e[1] for e in b.events if e[2] == "up"]
     assert downs == [0x11, 0x10, ord("P")] and ups == [ord("P"), 0x10, 0x11]  # released in reverse
-    assert normalize_combo("Shift+Ctrl+S") == "ctrl+shift+s" and normalize_combo("Win+R") == "win+r"
+    assert normalize_combo("Shift+Ctrl+S") == "ctrl+shift+s" and normalize_combo("Win+R") == f"{GUI_KEY}+r"
+    assert normalize_combo("Command+Shift+P") == f"shift+{GUI_KEY}+p" and normalize_combo("option+tab") == "alt+tab"
     assert parse_keys("Enter") == ["enter"] and parse_keys("alt+tab") == ["alt", "tab"] and parse_keys("F5") == ["f5"]
     for bad in ("", "ctrl+", "ctrl+ctrl+a+b+c", "hyper+x", "a+ctrl", "pagedownn"):
         with pytest.raises(InputError):
@@ -298,7 +299,7 @@ class FakeWindows:
         return fg if fg and not fg.is_shell else next((w for w in self.wins if not w.is_shell), fg)
 
     def find_windows(self, q):
-        from app.desktop.windows import match_score
+        from app.desktop.common import match_score
 
         scored = sorted(((match_score(q, w), w) for w in self.wins), key=lambda sw: -sw[0])
         return [w for s, w in scored if s >= 0.5]
@@ -451,7 +452,7 @@ def test_nothing_happens_while_the_pc_is_locked(tmp_path, monkeypatch):
     monkeypatch.setattr(A, "launch", lambda entry: pytest.fail("launched while locked"))
     for call in (lambda: svc.gui({"action": "type", "text": "GitHub"}), lambda: svc.open_app("Discord"),
                  lambda: svc.window("focus", "Notepad")):
-        with pytest.raises(DesktopError, match="PC is locked"):
+        with pytest.raises(DesktopError, match="is locked"):
             call()
     assert backend.events == [] and svc.probe({"action": "type", "text": "x"}) == {"locked": True}
     d = p.classify_gui_action({"action": "type", "text": "GitHub"}, {"locked": True})
@@ -602,8 +603,10 @@ def test_secrets_are_never_typed():
 def test_terminals_and_system_keys_ask_first():
     assert gui({"action": "type", "text": "del /s *"}, app="windowsterminal").level is RiskLevel.CONFIRM_REQUIRED
     assert gui({"action": "key", "keys": "enter"}, app="powershell").level is RiskLevel.CONFIRM_REQUIRED
-    assert gui({"action": "key", "keys": "win+r"}).level is RiskLevel.CONFIRM_REQUIRED
-    assert gui({"action": "key", "keys": "shift+delete"}, app="explorer", title="Downloads").level is RiskLevel.CONFIRM_REQUIRED
+    run_dialog = "win+r" if GUI_KEY == "win" else "cmd+space"  # Run dialog / Spotlight: both start any program
+    assert gui({"action": "key", "keys": run_dialog}).level is RiskLevel.CONFIRM_REQUIRED
+    files, delete = ("explorer", "shift+delete") if GUI_KEY == "win" else ("finder", "cmd+delete")
+    assert gui({"action": "key", "keys": delete}, app=files, title="Downloads").level is RiskLevel.CONFIRM_REQUIRED
     assert gui({"action": "drag", "x": 1, "y": 1, "to_x": 5, "to_y": 5}).level is RiskLevel.CONFIRM_REQUIRED
 
 

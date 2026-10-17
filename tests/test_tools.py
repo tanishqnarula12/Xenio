@@ -1,6 +1,7 @@
 """XENIO filesystem tools + registry: structured results, validation, permission flow."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -78,9 +79,38 @@ def test_delete_defaults_to_recycle_bin(ctx, monkeypatch):
         path.unlink()
 
     monkeypatch.setattr(filesystem, "_recycle", fake_recycle)
-    monkeypatch.setattr(filesystem.os, "name", "nt")
+    monkeypatch.setattr(filesystem, "_trash_supported", lambda: True)
     r = tool("xenio_delete_path").run({"path": "trash.txt"}, ctx)
     assert r.success and r.data["recycled"] is True and calls == [ws / "trash.txt"]
+
+
+def test_macos_trash_uses_the_system_trash_command(ctx, monkeypatch):
+    ws = ctx.paths.workspace
+    (ws / "old.txt").write_text("x")
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(cmd)
+        Path(cmd[-1]).unlink()
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(filesystem.sys, "platform", "darwin")
+    monkeypatch.setattr(filesystem, "_trash_supported", lambda: True)
+    monkeypatch.setattr(filesystem.subprocess, "run", fake_run)
+    r = tool("xenio_delete_path").run({"path": "old.txt"}, ctx)
+    assert r.success and r.data["recycled"] is True
+    assert seen == [[filesystem.MACOS_TRASH, "-s", "--", str(ws / "old.txt")]]
+
+
+def test_a_failed_trash_is_reported_and_the_file_kept(ctx, monkeypatch):
+    ws = ctx.paths.workspace
+    (ws / "keep.txt").write_text("x")
+    monkeypatch.setattr(filesystem.sys, "platform", "darwin")
+    monkeypatch.setattr(filesystem.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "permission denied"))
+    with pytest.raises(OSError):
+        filesystem._recycle(ws / "keep.txt")
+    assert (ws / "keep.txt").exists()
 
 
 def test_policy_is_enforced_inside_the_tools(ctx, tmp_path):

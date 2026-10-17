@@ -138,20 +138,33 @@ def known_folders() -> dict[str, Path]:
 
 
 _SECRET_NAMES = re.compile(
-    r"^(\.env(\.(?!example$|sample$|template$|dist$)[\w.-]+)?|id_(rsa|dsa|ecdsa|ed25519)(_sk)?|.*\.(pem|key|p12|pfx|kdbx|keychain|ppk|jks|keystore)"
+    r"^(\.env(\.(?!example$|sample$|template$|dist$)[\w.-]+)?|id_(rsa|dsa|ecdsa|ed25519)(_sk)?|.*\.(pem|key|p12|pfx|kdbx|keychain|keychain-db|ppk|jks|keystore|binarycookies)"
     r"|\.git-credentials|\.netrc|_netrc|\.pgpass|\.npmrc|\.pypirc|credentials(\.json)?|client_secret.*\.json"
     r"|token\.json|google_token\.json|google_client_secret\.json|auth\.json|login data|login data for account|cookies|web data|local state|logins\.json|key[34]\.db"
     r"|cookies\.sqlite|signons\.sqlite|sam|security)$",
     re.IGNORECASE,
 )
-_SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", "credentials", "protect", "vault"}
-_BROWSER_PROFILE_MARKERS = ("\\user data\\", "/user data/", "\\firefox\\profiles\\", "/firefox/profiles/")
+_SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", "credentials", "protect", "vault", "keychains"}
+# Windows "User Data", Firefox profiles everywhere, Chrome/Edge/Brave/Arc profiles and Safari/system cookies on macOS
+_BROWSER_PROFILE_MARKERS = ("\\user data\\", "/user data/", "\\firefox\\profiles\\", "/firefox/profiles/",
+                            "/application support/google/chrome/", "/application support/microsoft edge/",
+                            "/application support/bravesoftware/", "/application support/arc/user data/",
+                            "/library/cookies/", "/library/containers/com.apple.safari/data/library/cookies/")
 _EXECUTABLE_SUFFIXES = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".lnk", ".reg",
-                        ".dll", ".msi", ".scr", ".com", ".hta", ".cpl"}
+                        ".dll", ".msi", ".scr", ".com", ".hta", ".cpl",
+                        # macOS: double-click runs it (.command, .app, .workflow, scripts) or it installs/loads code
+                        ".command", ".app", ".pkg", ".mpkg", ".scpt", ".applescript", ".workflow", ".terminal",
+                        ".dylib", ".kext", ".plugin"}
 _WINDOWS_SYSTEM = ("windows", "program files", "program files (x86)", "programdata", "$recycle.bin",
                    "system volume information", "recovery", "boot", "perflogs")
 _POSIX_SYSTEM = ("/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/sbin", "/sys", "/usr",
-                 "/var", "/system", "/library", "/applications", "/private")
+                 "/var", "/system", "/library", "/applications", "/private", "/opt", "/volumes", "/cores", "/nix",
+                 "/sw", "/net", "/snap", "/srv", "/mnt", "/media")
+# Programs that start by themselves at login/boot: writing here installs one (macOS launchd)
+_AUTOSTART_DIRS = ("library/launchagents", "library/launchdaemons", "library/startupitems")
+TRASH_NAME = "Recycle Bin" if _WINDOWS else "Trash"
+# iCloud Drive lives in ~/Library but holds the user's own documents
+_ICLOUD_DRIVE = ("Library", "Mobile Documents", "com~apple~CloudDocs")
 
 
 @dataclass
@@ -176,16 +189,26 @@ class PathPolicy:
             self.workspace = self._abs(self.workspace)
             roots.append(self.workspace)
         roots.extend(self._abs(p) for p in self.extra_roots)
+        self.icloud = self.home.joinpath(*_ICLOUD_DRIVE)
+        roots.append(self.icloud)
+        # macOS: /var, /tmp and /etc are symlinks into /private, so the same folder has two spellings. Every
+        # user root is known under both, or a workspace under /private/var/folders would count as "system".
+        roots.extend(self._real(r) for r in list(roots))
         self.user_roots = list(dict.fromkeys(roots))
-        self.temp = self._abs(Path(tempfile.gettempdir()))
+        temp = self._abs(Path(tempfile.gettempdir()))
+        self.temp = temp
+        self.temp_roots = tuple(dict.fromkeys(
+            [temp, self._real(temp)] + ([] if _WINDOWS else [Path("/tmp"), self._real(Path("/tmp"))])))
         # Deleting or moving these themselves is never allowed: home, Desktop/Documents/... (both the
-        # real, possibly OneDrive-redirected folders and the default ~/Name ones), OneDrive roots.
+        # real, possibly OneDrive-redirected folders and the default ~/Name ones), OneDrive and iCloud Drive roots.
         onedrive = [os.environ.get(k) for k in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")]
         self.protected_roots = {self.home, *self.named_roots.values(),
                                 *(self.home / name for name in _KNOWN_FOLDER_GUIDS),
-                                *(self._abs(Path(p)) for p in onedrive if p), self.home / "OneDrive"}
+                                *(self._abs(Path(p)) for p in onedrive if p), self.home / "OneDrive",
+                                self.icloud, self.home / "Library", *self.temp_roots}
         if self.workspace is not None:
             self.protected_roots.add(self.workspace)
+        self.protected_roots |= {self._real(r) for r in self.protected_roots}
 
     # ---- resolution ------------------------------------------------------------
 
@@ -195,6 +218,13 @@ class PathPolicy:
             return Path(os.path.abspath(os.path.expanduser(str(path))))
         except (OSError, ValueError):
             return Path(str(path))
+
+    @staticmethod
+    def _real(path: Path) -> Path:
+        try:
+            return Path(os.path.realpath(path))
+        except (OSError, ValueError):
+            return path
 
     def resolve(self, raw: str, cwd: str | os.PathLike | None = None) -> Path:
         """Turn a user/agent supplied path into an absolute, normalised path (``..`` collapsed)."""
@@ -241,7 +271,7 @@ class PathPolicy:
             rel = os.path.normcase(str(path))[len(os.path.normcase(str(self._abs(self.hermes_home)))):].lstrip("\\/")
             if rel.split(os.sep)[0].lower() in {"auth.json", "vault", ".env", "pairing"}:
                 return "secret"
-        if self._within(path, self.temp) or path == self.temp:
+        if any(path == t or self._within(path, t) for t in self.temp_roots):
             return "user"
         if _WINDOWS:
             if len(parts) <= 1:
@@ -254,10 +284,15 @@ class PathPolicy:
             if str(path) == "/" or any(low == s or low.startswith(s + "/") for s in _POSIX_SYSTEM):
                 if not self._within(path, self.home):
                     return "system"
+            if len(parts) >= 2 and parts[1] in ("users", "home") and path != self.home \
+                    and not self._within(path, self.home) and not self._within(self.home, path):
+                return "system"  # other users' home folders, /Users/Shared
         if self._within(path, self.home):
             rel = path.relative_to(self.home).parts if path != self.home else ()
             if rel and (rel[0].lower() == "appdata" or (rel[0].startswith(".") and rel[0] not in (".", ".."))):
                 return "app_data"
+            if rel and rel[0].lower() == "library" and not (path == self.icloud or self._within(path, self.icloud)):
+                return "app_data"  # macOS ~/Library: settings, app state, LaunchAgents (iCloud Drive excepted)
         if any(path == root or self._within(path, root) for root in self.user_roots):
             return "user"
         return "outside"
@@ -287,7 +322,8 @@ class PathPolicy:
         if cat == "secret":
             return blocked(action, f"{op} {where}",
                            "that is a protected secrets location (keys, .env files, credential stores)")
-        if op in ("move", "delete") and (path in self.protected_roots or len(PurePath(path).parts) <= 1):
+        top_level = len(PurePath(path).parts) <= (1 if _WINDOWS else 2)  # C:\ ; / and /anything
+        if op in ("move", "delete") and (path in self.protected_roots or top_level):
             return blocked(action, f"{op} {where}", "that is a top-level folder XENIO must never remove or move")
         if op in ("read", "list"):
             return read(action, f"{'list' if op == 'list' else 'read'} {where}")
@@ -299,7 +335,7 @@ class PathPolicy:
             if permanent:
                 detail = f"permanently delete {noun} {where}{contents}".replace("  ", " ")
             else:
-                detail = f"move {noun} {where}{contents} to the Recycle Bin".replace("  ", " ")
+                detail = f"move {noun} {where}{contents} to the {TRASH_NAME}".replace("  ", " ")
             if cat == "system":
                 return blocked(action, detail, "deleting operating-system or program folders is not allowed")
             level = RiskLevel.CONFIRM_REQUIRED if cat == "user" else RiskLevel.HIGH_RISK
@@ -315,6 +351,9 @@ class PathPolicy:
         detail = f"{verb} {where}"
         if cat == "system":
             return Decision(RiskLevel.HIGH_RISK, action, f"{detail} (a system folder)")
+        norm = str(path).replace("\\", "/").lower()
+        if any(f"/{d}/" in norm or norm.endswith(f"/{d}") for d in _AUTOSTART_DIRS):
+            return Decision(RiskLevel.HIGH_RISK, action, f"{detail} (a program that starts by itself at login)")
         if cat in ("app_data", "outside"):
             return Decision(RiskLevel.CONFIRM_REQUIRED, action, detail)
         if ".git" in (p.lower() for p in PurePath(path).parts[:-1]):
@@ -1820,29 +1859,40 @@ def classify_image_source(tool: str, source: object, paths: PathPolicy, cwd) -> 
 DESKTOP_READ_TOOLS = {"xenio_list_apps", "xenio_find_ui"}
 DESKTOP_TOOLS = DESKTOP_READ_TOOLS | {"xenio_open_app", "xenio_window", "xenio_gui"}
 MESSAGING_APPS = {"discord", "whatsapp", "whatsapp.root", "telegram", "slack", "ms-teams", "teams", "signal", "skype",
-                  "zoom", "outlook", "olk", "thunderbird", "messenger", "instagram", "mailspring", "element", "wechat"}
-_BROWSER_APPS = {"chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "chromium", "arc"}
+                  "zoom", "outlook", "olk", "thunderbird", "messenger", "instagram", "mailspring", "element", "wechat",
+                  # macOS app names
+                  "messages", "mail", "microsoft outlook", "microsoft teams", "msteams", "zoom.us", "facetime",
+                  "spark", "spark desktop", "airmail 5", "mimestream", "beeper", "telegram desktop"}
+_BROWSER_APPS = {"chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "chromium", "arc",
+                 "google chrome", "safari", "microsoft edge", "brave browser", "orion", "zen", "dia"}
 _MESSAGING_TITLE = re.compile(r"whatsapp|discord|slack|messenger|gmail|outlook|telegram|instagram|linkedin|teams|"
                               r"\bmail\b|inbox|signal|x\.com|twitter", re.IGNORECASE)
 TERMINAL_APPS = {"windowsterminal", "powershell", "pwsh", "cmd", "conhost", "wt", "bash", "mintty", "openconsole",
-                 "wsl", "ubuntu", "git-bash"}
+                 "wsl", "ubuntu", "git-bash",
+                 "terminal", "iterm2", "iterm", "warp", "ghostty", "alacritty", "kitty", "wezterm", "wezterm-gui",
+                 "hyper", "tabby", "rio"}
 _CREDENTIAL_APPS = {"1password", "bitwarden", "keepass", "keepassxc", "lastpass", "dashlane", "enpass", "keeper",
-                    "nordpass", "roboform", "protonpass", "authy", "credentialuibroker"}
+                    "nordpass", "roboform", "protonpass", "authy", "credentialuibroker",
+                    "passwords", "keychain access", "1password 7", "1password 8", "strongbox", "proton pass",
+                    "keeper password manager", "securityagent", "coreautha"}
 _CREDENTIAL_TITLE = re.compile(r"password manager|credential manager|manage passwords|saved passwords|passwords? - |"
                                r"windows security.*sign in|vault", re.IGNORECASE)
 _SECURITY_APPS = {"sechealthui", "securityhealthsystray", "regedit", "gpedit", "secpol", "mmc", "useraccountcontrolsettings",
                   "wf", "systempropertiesprotection", "msconfig"}
 _SECURITY_TITLE = re.compile(r"windows security|virus & threat|firewall|user account control|registry editor|"
-                             r"group policy|bitlocker|defender|smartscreen", re.IGNORECASE)
+                             r"group policy|bitlocker|defender|smartscreen|"
+                             r"privacy & security|filevault|login items|users & groups|touch id & password|"
+                             r"device management|full disk access", re.IGNORECASE)
 _DESKTOP_SEND = re.compile(r"\b(send|post|publish|tweet|reply|comment|share|upload|submit|invite|forward|broadcast"
                            r"|start (?:a )?(?:video )?call|call|go live|start streaming)\b", re.IGNORECASE)
-_DESKTOP_DESTRUCTIVE = re.compile(r"\b(delete|remove|erase|discard|clear all|empty recycle bin|permanently|move to trash"
+_DESKTOP_DESTRUCTIVE = re.compile(r"\b(delete|remove|erase|discard|clear all|empty recycle bin|empty trash|empty bin"
+                                  r"|permanently|move to trash|move to bin"
                                   r"|sign out|log out|logout|leave (?:group|server|channel)|block)\b", re.IGNORECASE)
 _DESKTOP_SYSTEM = re.compile(r"\b(install|uninstall|format|wipe|reset (?:this )?pc|factory reset|update now|restart now"
                              r"|shut ?down|run as administrator)\b", re.IGNORECASE)
 _FIELD_SEARCH = re.compile(r"search|find|quick switcher|switcher|filter|jump to|go to|address|url|omnibox|suche|खोज",
                            re.IGNORECASE)
-_SEND_KEYS = {"enter", "ctrl+enter", "alt+enter", "ctrl+shift+enter"}
+_SEND_KEYS = {"enter", "ctrl+enter", "alt+enter", "ctrl+shift+enter", "cmd+enter", "cmd+shift+d"}  # Mail: cmd+shift+d
 _ACTIVATED_BY_ENTER = {"listitem", "menuitem", "treeitem", "dataitem", "tabitem", "link", "button", "radiobutton",
                        "checkbox", "splitbutton"}
 
@@ -1864,7 +1914,7 @@ def _app_kind(info: dict) -> set[str]:
         kinds.add("credentials")
     if app in _SECURITY_APPS or _SECURITY_TITLE.search(title):
         kinds.add("security")
-    if app == "explorer":
+    if app in ("explorer", "finder"):
         kinds.add("files")
     return kinds
 
@@ -1910,7 +1960,8 @@ def classify_gui_action(args: dict, info: dict | None = None) -> Decision:
     el = info.get("element") or {}
     focused = info.get("focused") or {}
     label = " ".join(str(x) for x in (el.get("name"), *(el.get("parents") or [])[:2], a.get("target")) if x)
-    if info.get("locked") or str(info.get("process") or "").lower() == "lockapp.exe" or str(focused.get("name") or "").lower() == "lock screen":
+    if info.get("locked") or str(info.get("process") or "").lower() in ("lockapp.exe", "loginwindow") \
+            or str(focused.get("name") or "").lower() == "lock screen":
         # measured: with the PC locked, the focused element was the lock screen - typing there is entering a password
         return blocked("desktop.locked", f"{action} while the PC is locked",
                        "the PC is locked: XENIO never types or clicks on the lock screen. Ask the user to unlock it")
@@ -1961,8 +2012,14 @@ def classify_gui_action(args: dict, info: dict | None = None) -> Decision:
             combo = normalize_combo(str(a.get("keys") or ""))
         except Exception as exc:  # noqa: BLE001 - malformed keys never run
             return blocked("desktop.key", "press a key", f"invalid key: {exc}")
-        if combo in ("ctrl+alt+delete", "ctrl+alt+del"):
+        if combo in ("ctrl+alt+delete", "ctrl+alt+del", "ctrl+alt+backspace"):  # (Mac "delete" is backspace)
             return blocked("desktop.key", "press Ctrl+Alt+Delete", "secure system keys are not sent")
+        if combo == "alt+cmd+esc":  # macOS Force Quit: ends apps without letting them save
+            return blocked("desktop.key", "open Force Quit", "XENIO never force-quits apps (unsaved work would be lost)")
+        if combo == "alt+shift+cmd+q":  # macOS: log out at once, without asking any app to save
+            return blocked("desktop.key", "log out immediately", "this logs out without letting apps save")
+        if combo == "shift+cmd+q":
+            return Decision(RiskLevel.HIGH_RISK, "desktop.logout", "log out of the Mac (every app is closed)")
         if combo == "enter" and str(focused.get("type") or "").lower() in _ACTIVATED_BY_ENTER:
             # Enter on a highlighted entry activates it, exactly like clicking it (measured: in Discord's quick switcher
             # the focus is the highlighted result "Rahul", not a message box) - so it is judged as that click
@@ -1977,8 +2034,14 @@ def classify_gui_action(args: dict, info: dict | None = None) -> Decision:
             return Decision(RiskLevel.CONFIRM_REQUIRED, "desktop.terminal_enter", f"press {combo} in a terminal{where} (runs the typed command)")
         if combo == "win+r":
             return Decision(RiskLevel.CONFIRM_REQUIRED, "desktop.run_dialog", "open the Run dialog (it can start any program)")
+        if combo == "cmd+space":
+            return Decision(RiskLevel.CONFIRM_REQUIRED, "desktop.run_dialog", "open Spotlight (it can start any program)")
         if combo in ("delete", "shift+delete") and "files" in kinds:
             return Decision(RiskLevel.CONFIRM_REQUIRED, "desktop.delete_files", f"press {combo} in File Explorer (deletes the selected files)")
+        if combo in ("cmd+backspace", "alt+cmd+backspace") and "files" in kinds:
+            return Decision(RiskLevel.CONFIRM_REQUIRED, "desktop.delete_files", f"press {combo} in Finder (deletes the selected files)")
+        if combo in ("shift+cmd+backspace", "alt+shift+cmd+backspace") and "files" in kinds:
+            return Decision(RiskLevel.HIGH_RISK, "desktop.empty_trash", "empty the Trash in Finder (files are gone for good)")
         if "security" in kinds:
             return Decision(RiskLevel.HIGH_RISK, "desktop.security_settings", f"press {combo} in security settings")
         return Decision(RiskLevel.SAFE_WRITE, "desktop.key", f"press {combo}{where}")

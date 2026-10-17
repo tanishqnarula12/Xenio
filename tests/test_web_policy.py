@@ -1,5 +1,7 @@
 """V3 permission rules: links, web pages, the browser, downloads, memory, Git and GitHub."""
 
+import os
+
 import pytest
 
 from app.safety import policy as p
@@ -171,7 +173,8 @@ def test_download_rules(paths, tmp_path):
     assert level(tool("xenio_download_file", {"url": "https://example.com/setup.exe"}, paths)) == "CONFIRM_REQUIRED"
     assert level(tool("xenio_download_file", {"url": "https://example.com/install.ps1"}, paths)) == "CONFIRM_REQUIRED"
     assert level(tool("xenio_download_file", {"url": "https://example.com/a.txt",
-                                              "destination": "C:/Windows/System32/a.txt"}, paths)) == "HIGH_RISK"
+                                              "destination": "C:/Windows/System32/a.txt" if os.name == "nt"
+                                              else "/System/Library/a.txt"}, paths)) == "HIGH_RISK"
     assert level(tool("xenio_download_file", {"url": "https://example.com/k",
                                               "destination": "~/.ssh/authorized_keys"}, paths)) == "BLOCKED"
     assert level(tool("xenio_download_file", {"url": "https://example.com/x",

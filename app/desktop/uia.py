@@ -21,6 +21,9 @@ import sys
 import time
 from ctypes import wintypes as w
 
+from app.desktop.common import UIAError
+from app.desktop.common import score_name as _score
+
 # ---- COM plumbing -------------------------------------------------------------------------------------------
 
 _HRESULT = ctypes.c_long
@@ -240,20 +243,6 @@ def cmd_focused(com: _Com, with_value: bool) -> dict:
         _release(el)
 
 
-def _score(query: str, name: str) -> float:
-    q, n = query.lower().strip(), name.lower().strip()
-    if not q or not n:
-        return 0.0
-    if q == n:
-        return 1.0
-    if n.startswith(q) or q in n.split(" ") or n in q:
-        return 0.85
-    if q in n:
-        return 0.75
-    words = [t for t in q.split() if len(t) > 1]
-    return 0.6 * sum(1 for t in words if t in n) / len(words) if words else 0.0
-
-
 def cmd_find(com: _Com, hwnd: int, query: str, limit: int, max_nodes: int, budget: float) -> dict:
     """Breadth-first over the control view of one window; named elements scored against ``query``."""
     root = com.element_from_handle(hwnd)
@@ -304,10 +293,6 @@ def main(argv: list[str]) -> int:
 
 
 # ---- client (used inside Hermes) ---------------------------------------------------------------------------------
-
-class UIAError(Exception):
-    pass
-
 
 def _python() -> str:
     """XENIO's own interpreter when available (a plain CPython), else this one."""

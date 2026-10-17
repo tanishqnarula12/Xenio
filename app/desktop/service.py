@@ -3,8 +3,8 @@
 It runs inside Hermes (xenio-guard plugin). The policy has already decided that an action may run (and the user has
 said yes where needed) before any method here is called. This module makes the action precise and honest:
 
-* **targets**: a named element ("the message box", "Send") is found through UI Automation in the active window, so a
-  click lands on the element itself, not on a guessed pixel;
+* **targets**: a named element ("the message box", "Send") is found through UI Automation (Windows) or the
+  Accessibility API (macOS) in the active window, so a click lands on the element itself, not on a guessed pixel;
 * **verification**: opening an app waits for its window; typing reads the field back; clicks and keys report
   whether the screen changed and which window is in front. Unverified is never reported as done;
 * **emergency stop**: every step checks "the user said stop" (voice) and the physical Esc key;
@@ -16,6 +16,7 @@ from __future__ import annotations
 import collections
 import difflib
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -36,6 +37,18 @@ class DesktopError(Exception):
     pass
 
 
+def _platform_backends():
+    """(windows module, control reader class) for this system: Win32 + UI Automation, or macOS Accessibility."""
+    if sys.platform == "darwin":
+        from app.desktop import mac_windows
+        from app.desktop.ax import AXClient
+
+        return mac_windows, AXClient
+    from app.desktop import windows
+
+    return windows, UIAClient
+
+
 @dataclass
 class _Recent:
     name: str
@@ -49,11 +62,12 @@ def _norm_text(text: str) -> str:
 class DesktopService:
     def __init__(self, catalog: apps_mod.AppCatalog | None = None, uia: UIAClient | None = None, controller=None,
                  windows=None, data_dir: Path | None = None, clock=time.time, screen_digest=None, sleep=time.sleep):
-        from app.desktop import windows as windows_mod
-
         self.catalog = catalog or apps_mod.AppCatalog(data_dir)
-        self.uia = uia or UIAClient()
-        self.windows = windows or windows_mod
+        if uia is None or windows is None:
+            platform_windows, platform_uia = _platform_backends()
+            uia, windows = uia or platform_uia(), windows or platform_windows
+        self.uia = uia
+        self.windows = windows
         self._controller = controller
         self._data_dir = data_dir
         self._clock = clock
@@ -75,8 +89,8 @@ class DesktopService:
     def _check_unlocked(self) -> None:
         locked = getattr(self.windows, "session_locked", None)
         if locked is not None and locked():
-            raise DesktopError("The PC is locked, so nothing was opened, clicked or typed (input would go to the lock "
-                               "screen). Tell the user to unlock it and ask again.")
+            raise DesktopError(f"The {'Mac' if sys.platform == 'darwin' else 'PC'} is locked, so nothing was opened, "
+                               "clicked or typed (input would go to the lock screen). Tell the user to unlock it and ask again.")
 
     def remember(self, app: str) -> None:
         with self._lock:
@@ -143,8 +157,8 @@ class DesktopService:
                 how = "shown_from_tray" if window is not None else how
         elapsed = round(time.monotonic() - started, 1)
         if window is None and open_now:
-            raise DesktopError(f"{entry.name} is open, but Windows did not let it come to the front. Ask the user to "
-                               "click it in the taskbar; nothing was typed or clicked.")
+            raise DesktopError(f"{entry.name} is open, but the system did not let it come to the front. Ask the user to "
+                               f"click it in the {'Dock' if sys.platform == 'darwin' else 'taskbar'}; nothing was typed or clicked.")
         if window is None:
             raise DesktopError(f"{entry.name} was started, but no window of it appeared within {elapsed} s, so it is "
                                "NOT verified as open. It may still be loading or may have opened in the tray.")
@@ -178,7 +192,7 @@ class DesktopService:
         if action == "focus":
             ok = self.windows.focus(target.hwnd)
             if not ok:
-                raise DesktopError(f"{target.title!r} could not be brought to the front (Windows refused the focus "
+                raise DesktopError(f"{target.title!r} could not be brought to the front (the system refused the focus "
                                    "change); NOT verified.")
             self.remember(target.app)
             return {"focused": target.public() | {"foreground": True}, "verified": True}

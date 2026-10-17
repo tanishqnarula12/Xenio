@@ -85,7 +85,7 @@ def test_decisions(monkeypatch, tmp_path):
     level, summary, key = p.parse_escalation(push["message"])
     assert level.name == "CONFIRM_REQUIRED" and "push" in summary and key == "terminal:git push origin main"
     delete = hook(tool_name="xenio_delete_path", args={"path": str(DESKTOP / "XenioTest")})
-    assert delete["action"] == "approve" and "Recycle Bin" in delete["message"]
+    assert delete["action"] == "approve" and p.TRASH_NAME in delete["message"]
     assert p.parse_escalation_scopes(delete["message"])
     blocked = hook(tool_name="read_file", args={"path": "~/.ssh/id_rsa"})
     assert blocked["action"] == "block" and "XENIO policy" in blocked["message"]
