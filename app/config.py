@@ -162,6 +162,18 @@ class FastPathSettings:
 
 
 @dataclass(frozen=True)
+class EngineeringSettings:
+    """V6: XENIO's engineering team (app/engineering/)."""
+
+    enabled: bool = True
+    max_parallel: int = 3  # agents at once (Hermes runs at most 4 agent turns per process)
+    test_timeout: float = 600.0  # seconds for one test command run by XENIO
+    task_timeout: float = 1800.0  # seconds for one agent turn
+    auto_start: bool = False  # team plans start without waiting for the user's go-ahead
+    sandbox_tests: bool = True  # macOS: XENIO's own test runs under sandbox-exec
+
+
+@dataclass(frozen=True)
 class Settings:
     name: str
     data_dir: Path
@@ -172,6 +184,7 @@ class Settings:
     tts: TTSSettings
     voice: VoiceSettings
     fast: FastPathSettings = FastPathSettings()
+    engineering: EngineeringSettings = EngineeringSettings()
 
     @property
     def models_dir(self) -> Path:
@@ -376,6 +389,14 @@ def load_settings(env_file: Path | None = None, environ: Mapping[str, str] | Non
         spotify_client_id=r.str("SPOTIFY_CLIENT_ID"),
         spotify_client_secret=Secret(r.str("SPOTIFY_CLIENT_SECRET")),
     )
+    engineering = EngineeringSettings(
+        enabled=r.bool("XENIO_ENGINEERING", True),
+        max_parallel=min(r.int("XENIO_ENGINEERING_MAX_PARALLEL", 3, minimum=1), 4),
+        test_timeout=r.float("XENIO_ENGINEERING_TEST_TIMEOUT", 600.0, minimum=30.0, maximum=7200.0),
+        task_timeout=r.float("XENIO_ENGINEERING_TASK_TIMEOUT", 1800.0, minimum=60.0, maximum=14400.0),
+        auto_start=r.bool("XENIO_ENGINEERING_AUTO_START", False),
+        sandbox_tests=r.bool("XENIO_ENGINEERING_SANDBOX", True),
+    )
     return Settings(
         name=name,
         data_dir=data_dir,
@@ -386,4 +407,5 @@ def load_settings(env_file: Path | None = None, environ: Mapping[str, str] | Non
         tts=tts,
         voice=voice,
         fast=fast,
+        engineering=engineering,
     )

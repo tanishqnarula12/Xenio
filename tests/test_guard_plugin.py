@@ -58,7 +58,9 @@ def test_registers_tools_hooks_and_prompt(monkeypatch, tmp_path):
                               # V5 observe-only vision
                               "xenio_look_at_screen",
                               # V5.5 desktop control
-                              "xenio_open_app", "xenio_list_apps", "xenio_window", "xenio_find_ui", "xenio_gui"}
+                              "xenio_open_app", "xenio_list_apps", "xenio_window", "xenio_find_ui", "xenio_gui",
+                              # V6 engineering team
+                              "xenio_engineering"}
     assert not any("send" in name for name in ctx.tools)  # V4: no tool can send email
     assert set(ctx.tools["xenio_look_at_screen"][1]["parameters"]["properties"]) == {"question", "target"}  # V5: observes
     assert all(toolset == "xenio" for toolset, _s, _h in ctx.tools.values())

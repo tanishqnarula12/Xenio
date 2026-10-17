@@ -2355,7 +2355,35 @@ def _path_arg(args: dict, key: str, op: str, paths: PathPolicy, cwd) -> Decision
     return paths.check(raw, op, cwd)
 
 
+ENGINEERING_ACTIONS = {"start", "status", "list", "plan", "report", "approve", "cancel", "apply", "push", "pull_request"}
+
+
+def classify_engineering_tool(a: dict) -> Decision:
+    """The xenio_engineering tool (V6). Planning and implementing happen in isolated worktrees (no extra yes); only
+    what leaves them - writing into the user's files, pushing, opening a pull request - asks the user."""
+    action = str(a.get("action") or "status").lower()
+    run = f" (run {a.get('run_id')})" if a.get("run_id") else ""
+    if action not in ENGINEERING_ACTIONS:
+        return blocked("engineering.action", f"{action} an engineering run", "unknown engineering action")
+    if action in ("status", "list", "plan", "report"):
+        return read(f"engineering.{action}", f"show the engineering team's {action}{run}")
+    if action == "start":
+        request = " ".join(str(a.get("request") or "").split())[:100]
+        if not request:
+            return blocked("engineering.start", "start engineering work", "say what the team should do")
+        return Decision(RiskLevel.SAFE_WRITE, "engineering.start",
+                        f"start engineering work on {a.get('project') or a.get('path') or 'the current project'}: {request}")
+    if action in ("approve", "cancel"):
+        return Decision(RiskLevel.SAFE_WRITE, f"engineering.{action}", f"{action} the engineering run{run}")
+    words = {"apply": "write the engineering run's changes into your working tree (not committed)",
+             "push": f"push the engineering run's branch to {a.get('remote') or 'origin'} (no force, not your main branch)",
+             "pull_request": "open a pull request on GitHub from the engineering run's branch"}
+    return Decision(RiskLevel.CONFIRM_REQUIRED, f"engineering.{action}", words[action] + run)
+
+
 def _classify_xenio_tool(tool: str, a: dict, paths: PathPolicy, cwd) -> Decision:
+    if tool == "xenio_engineering":
+        return classify_engineering_tool(a)
     if tool in DESKTOP_TOOLS:  # without the plugin's live probe: text-only rules (secret typing stays blocked)
         return classify_desktop_tool(tool, a, None)
     if tool == "xenio_look_at_screen":

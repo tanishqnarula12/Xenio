@@ -57,6 +57,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--live", action="store_true", help="with --health: also make real Hermes/STT/TTS calls")
     parser.add_argument("--no-wake", action="store_true", help="with --voice: press Enter to talk instead of a wake word")
     parser.add_argument("--new-session", action="store_true", help="start a fresh Hermes conversation")
+    parser.add_argument("--engineer", metavar="REQUEST", help="V6: have the engineering team work on a repository")
+    parser.add_argument("--repo", help="with --engineer: the repository folder")
+    parser.add_argument("--project", help="with --engineer: a project XENIO knows (its local folder is used)")
+    parser.add_argument("--mode", choices=["change", "plan", "explain", "review", "test"],
+                        help="with --engineer: what kind of work (default: from the request)")
+    parser.add_argument("--yes", action="store_true", help="with --engineer: start a team plan without asking")
     parser.add_argument("-v", "--verbose", action="store_true", help="show INFO logs on the console")
     parser.add_argument("--version", action="version", version=f"XENIO {__version__}")
     return parser.parse_args(argv)
@@ -85,6 +91,29 @@ def build_fast_path(settings: Settings, paths):
                                        settings.fast.spotify_client_secret))
     fast.warm()
     return fast
+
+
+def build_engineering(settings: Settings, gate: PermissionGate, paths, notifications=None):
+    """V6: XENIO's engineering team (None when switched off with XENIO_ENGINEERING=false)."""
+    if not settings.engineering.enabled:
+        return None
+    from app.engineering.service import EngineeringService
+
+    return EngineeringService(settings, gate, paths, notifications)
+
+
+async def _with_engineering(settings: Settings, gate: PermissionGate, orchestrator, notifications, body):
+    """Run a mode with the engineering service available to the chat's Hermes (its tool reaches it by socket)."""
+    engineering = build_engineering(settings, gate, orchestrator.paths, notifications)
+    if engineering is None:
+        return await body()
+    if hasattr(orchestrator.hermes, "extra_env"):
+        orchestrator.hermes.extra_env = engineering.endpoint_env()
+    await engineering.serve()
+    try:
+        return await body()
+    finally:
+        await engineering.close()
 
 
 def build_proactive(settings: Settings, hermes=None):
@@ -120,7 +149,8 @@ async def _run_text(settings: Settings, args: argparse.Namespace) -> int:
     if args.new_session:
         _forget_session(settings)
     notifications, proactive = build_proactive(settings, orchestrator.hermes)
-    return await run_text_mode(settings, orchestrator, io, MemoryManager(orchestrator.hermes), notifications, proactive)
+    return await _with_engineering(settings, gate, orchestrator, notifications, lambda: run_text_mode(
+        settings, orchestrator, io, MemoryManager(orchestrator.hermes), notifications, proactive))
 
 
 async def _run_voice(settings: Settings, args: argparse.Namespace) -> int:
@@ -131,8 +161,54 @@ async def _run_voice(settings: Settings, args: argparse.Namespace) -> int:
     gate = PermissionGate(None, timeout=settings.hermes.permission_timeout)  # confirmer wired in voice mode
     orchestrator = build_orchestrator(settings, gate)
     notifications, proactive = build_proactive(settings, orchestrator.hermes)
-    return await run_voice_mode(settings, orchestrator, gate, push_to_talk=args.no_wake, notifications=notifications,
-                                proactive=proactive)
+    return await _with_engineering(settings, gate, orchestrator, notifications, lambda: run_voice_mode(
+        settings, orchestrator, gate, push_to_talk=args.no_wake, notifications=notifications, proactive=proactive))
+
+
+class _PrintNotifications:
+    """--engineer: milestones are printed as they happen."""
+
+    def add(self, title, message, **_kw):
+        print(f"[{title}] {message}", flush=True)
+
+
+async def _run_engineer(settings: Settings, args: argparse.Namespace) -> int:
+    """V6 from the terminal: plan, (confirm a team plan), run, report."""
+    from app.engineering.service import EngineeringError
+    from app.interface.console import ConsoleConfirmer, ConsoleIO
+    from app.safety.permissions import PermissionRequest
+    from app.safety.policy import RiskLevel
+
+    io = ConsoleIO()
+    gate = PermissionGate(ConsoleConfirmer(io), timeout=settings.hermes.permission_timeout)
+    service = build_engineering(settings, gate, build_path_policy(settings), _PrintNotifications())
+    if service is None:
+        print("The engineering team is switched off (XENIO_ENGINEERING=false).")
+        return 1
+    try:
+        folder, project = service.resolve_repository(args.project or "", args.repo or "")
+        run = await service.orch.plan_project(args.engineer, folder, args.mode or "", project)
+        service.runs[run.id] = run
+        graph = service.orch.graphs.get(run.id)
+        if graph is not None:
+            for task in graph.tasks.values():
+                print(f"  - {task.id}: {task.title} [{task.role}] after {', '.join(task.depends_on) or 'nothing'}; "
+                      f"may change: {', '.join(task.allowed_paths) or 'any file'}")
+            if run.mode == "change" and len(graph.tasks) > 1 and not args.yes:
+                ok = await gate.check(PermissionRequest("engineering.start", f"start the team run ({len(graph.tasks)} "
+                                                        "tasks) in isolated copies", RiskLevel.CONFIRM_REQUIRED))
+                if not ok.approved:
+                    print("Not started.")
+                    return 1
+        run = await service.orch.execute_plan(run)
+        print()
+        print(service.report(run.id, limit=20000)["report"])
+        return 0 if run.status == "done" else 1
+    except EngineeringError as exc:
+        print(f"Not started: {exc}")
+        return 1
+    finally:
+        await service.close()
 
 
 async def _run_connect_google(settings: Settings, args: argparse.Namespace) -> int:
@@ -275,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         "disconnect-google": _run_disconnect_google,
         "briefing": _run_briefing,
         "tick": _run_tick,
+        "engineer": _run_engineer,
         "voice": _run_voice,
         "text": _run_text,
     }
@@ -282,7 +359,8 @@ def main(argv: list[str] | None = None) -> int:
         (m for m, on in (("health", args.health), ("install-guard", args.install_guard),
                          ("mic-test", args.mic_test), ("barge-in-test", args.barge_in_test),
                          ("connect-google", args.connect_google), ("disconnect-google", args.disconnect_google),
-                         ("briefing", args.briefing), ("tick", args.tick), ("voice", args.voice)) if on),
+                         ("briefing", args.briefing), ("tick", args.tick), ("engineer", args.engineer),
+                         ("voice", args.voice)) if on),
         "text",
     )
     event(log, "XENIO started", version=__version__, mode=mode, log_file=log_file)

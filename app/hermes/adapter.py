@@ -102,6 +102,7 @@ class HermesAcpClient(HermesClient):
         self._permission_handler: PermissionHandler | None = None
         self._hermes_home = hermes_home if hermes_home is not None else default_hermes_home()
         self.agent_info: dict[str, Any] = {}
+        self.extra_env: dict[str, str] = {}  # e.g. the engineering service's endpoint (this chat's Hermes only)
 
     # ---- lifecycle ---------------------------------------------------------
 
@@ -126,28 +127,8 @@ class HermesAcpClient(HermesClient):
                 await self._open_session(fresh=False)
 
     def guard_env(self) -> dict[str, str]:
-        """Environment of every Hermes process XENIO starts (its ACP agent and scheduled-check ticks).
-
-        XENIO_GUARD=1 switches on the xenio-guard Hermes plugin for that process only; the other
-        variables tell it where XENIO's policy/tools live and which folders are the user's."""
-        return {
-            **os.environ,
-            "XENIO_GUARD": "1",
-            "XENIO_ROOT": str(PROJECT_ROOT),
-            "XENIO_WORKSPACE": str(self._settings.workspace),
-            "XENIO_ALLOWED_DIRS": ";".join(str(p) for p in self._settings.allowed_dirs),
-            # Read by Hermes' config as tools.tool_search.enabled: ${XENIO_TOOL_SEARCH} (set by
-            # --install-guard): keeps XENIO's tools directly visible instead of behind tool_search.
-            "XENIO_TOOL_SEARCH": "off",
-            "XENIO_DOWNLOAD_MAX_MB": str(self._settings.download_max_mb),
-            **({"XENIO_DATA_DIR": str(self._data_dir)} if self._data_dir else {}),
-            **({"XENIO_GITHUB_USER": self._settings.github_user} if self._settings.github_user else {}),
-            **({"XENIO_HIMALAYA_ACCOUNT": self._settings.himalaya_account} if self._settings.himalaya_account else {}),
-            # Hermes' own browser is invisible unless this is set (Hermes reads AGENT_BROWSER_HEADED when
-            # browser.headed is not in its config). Off by default: xenio_open_url shows pages to the user.
-            **({"AGENT_BROWSER_HEADED": "1"} if self._settings.show_browser else {}),
-            **(self._settings.vision.env() if self._settings.vision else {}),
-        }
+        """Environment of every Hermes process XENIO starts (its ACP agent and scheduled-check ticks)."""
+        return {**guard_environment(self._settings, self._data_dir), **self.extra_env}
 
     async def _connect(self) -> None:
         await self._drop_connection()
@@ -430,6 +411,31 @@ class HermesAcpClient(HermesClient):
             )
         except OSError:
             log.warning("Could not save Hermes session id", exc_info=True)
+
+
+def guard_environment(settings: HermesSettings, data_dir: Path | None) -> dict[str, str]:
+    """Environment of every Hermes process XENIO starts (chat, engineering, scheduled-check ticks).
+
+    XENIO_GUARD=1 switches on the xenio-guard Hermes plugin for that process only; the other
+    variables tell it where XENIO's policy/tools live and which folders are the user's."""
+    return {
+        **os.environ,
+        "XENIO_GUARD": "1",
+        "XENIO_ROOT": str(PROJECT_ROOT),
+        "XENIO_WORKSPACE": str(settings.workspace),
+        "XENIO_ALLOWED_DIRS": ";".join(str(p) for p in settings.allowed_dirs),
+        # Read by Hermes' config as tools.tool_search.enabled: ${XENIO_TOOL_SEARCH} (set by
+        # --install-guard): keeps XENIO's tools directly visible instead of behind tool_search.
+        "XENIO_TOOL_SEARCH": "off",
+        "XENIO_DOWNLOAD_MAX_MB": str(settings.download_max_mb),
+        **({"XENIO_DATA_DIR": str(data_dir)} if data_dir else {}),
+        **({"XENIO_GITHUB_USER": settings.github_user} if settings.github_user else {}),
+        **({"XENIO_HIMALAYA_ACCOUNT": settings.himalaya_account} if settings.himalaya_account else {}),
+        # Hermes' own browser is invisible unless this is set (Hermes reads AGENT_BROWSER_HEADED when
+        # browser.headed is not in its config). Off by default: xenio_open_url shows pages to the user.
+        **({"AGENT_BROWSER_HEADED": "1"} if settings.show_browser else {}),
+        **(settings.vision.env() if settings.vision else {}),
+    }
 
 
 def _text_of(content: Any) -> str:

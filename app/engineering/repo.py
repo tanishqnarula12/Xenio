@@ -29,6 +29,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -37,6 +39,9 @@ BRANCH_PREFIX = "xenio"
 _COPY_IGNORE = ("node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", "dist", "build", ".next", "target",
                 ".mypy_cache", ".ruff_cache", ".tox", ".gradle", ".idea", ".DS_Store", "*.pyc")
 MAX_COPY_BYTES = 500 * 1024 * 1024
+# One lock per repository for git operations on shared state (worktree list, the integration worktree's index):
+# parallel tasks finishing at the same moment must not merge at the same time (git's index.lock would refuse one).
+_REPO_LOCKS: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
 
 
 class RepoError(Exception):
@@ -242,7 +247,8 @@ class Workspace:
         branch = f"{BRANCH_PREFIX}/{self.run_id}/{task_id}"
         path = Path(self.run_dir) / "tasks" / task_id
         path.parent.mkdir(parents=True, exist_ok=True)
-        git(Path(self.repo), "worktree", "add", "-q", "-b", branch, str(path), self.integration_branch)
+        with _REPO_LOCKS[self.repo]:
+            git(Path(self.repo), "worktree", "add", "-q", "-b", branch, str(path), self.integration_branch)
         self.task_dirs[task_id], self.task_branches[task_id] = str(path), branch
         return path
 
@@ -278,12 +284,15 @@ class Workspace:
         if not branch:
             return True, []
         integration = Path(self.integration_dir)
-        done = git(integration, "merge", "--no-ff", "--no-edit", "-m", f"XENIO: integrate {task_id}", branch,
-                   check=False, timeout=120)
-        if done.returncode == 0:
-            return True, []
-        conflicted = [f for f in git(integration, "diff", "--name-only", "--diff-filter=U").split("\n") if f]
-        git(integration, "merge", "--abort", check=False)
+        with _REPO_LOCKS[self.repo]:
+            done = git(integration, "merge", "--no-ff", "--no-edit", "-m", f"XENIO: integrate {task_id}", branch,
+                       check=False, timeout=120)
+            if done.returncode == 0:
+                return True, []
+            conflicted = [f for f in git(integration, "diff", "--name-only", "--diff-filter=U").split("\n") if f]
+            git(integration, "merge", "--abort", check=False)
+        if not conflicted:  # not a conflict: say what git really said
+            raise RepoError(f"merging {task_id} failed: {(done.stderr or done.stdout).strip()[-300:]}")
         return False, conflicted
 
     def head(self, ref: str | None = None) -> str:
@@ -292,7 +301,8 @@ class Workspace:
     def remove_task_worktree(self, task_id: str) -> None:
         path = self.task_dirs.get(task_id)
         if path and Path(path).exists():
-            git(Path(self.repo), "worktree", "remove", "--force", path, check=False)
+            with _REPO_LOCKS[self.repo]:
+                git(Path(self.repo), "worktree", "remove", "--force", path, check=False)
 
     def cleanup(self, keep_branches: bool = True) -> None:
         """Remove this run's worktrees (only the ones it created). Branches stay unless asked."""

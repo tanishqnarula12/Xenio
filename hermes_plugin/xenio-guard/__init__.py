@@ -84,12 +84,13 @@ def _load():
         if not origin.startswith(root):
             raise ImportError(f"a different package named 'app' shadows XENIO ({origin})")
         from app.safety import policy
-        from app.tools import base, desktop, filesystem, personal, vision, web
+        from app.tools import base, desktop, engineering, filesystem, personal, vision, web
 
         base.AUDIT = lambda event, fields: _audit(event, **fields)
         _state.update(policy=policy, base=base, desktop=desktop,
                       tools=[*filesystem.xenio_tools(), *web.xenio_tools(), *personal.xenio_tools(),
-                             *vision.xenio_tools(), *(desktop.xenio_tools() if _DESKTOP_PLATFORM else [])],
+                             *vision.xenio_tools(), *(desktop.xenio_tools() if _DESKTOP_PLATFORM else []),
+                             *engineering.xenio_tools()],
                       paths=policy.default_path_policy(), secrets=policy.secret_env_values())
         _memory_at_start.update(_memory_entries())
         return True
