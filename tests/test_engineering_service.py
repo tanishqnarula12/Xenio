@@ -278,3 +278,20 @@ def test_engineering_refuses_an_unguarded_hermes_gateway(tmp_path):
     assert guard_live(data, home)[0] is True
     (home / "gateway.lock").write_text(json.dumps({"pid": 999999}))
     assert guard_live(data, home)[0] is None  # a dead gateway
+
+
+def test_nothing_to_push_or_apply_without_changes(settings, tmp_path, repo):
+    """Live test 10: a run without changes must not offer (or perform) a push."""
+    async def go():
+        svc = service(settings, tmp_path, answer=True, script=lambda kind, prompt, cwd: "nothing to do")
+        try:
+            run = await svc.orch.plan_project("Run the test suite", str(repo), "test")
+            svc.runs[run.id] = await svc.orch.execute_plan(run)
+            for action in (svc.apply, svc.push):
+                with pytest.raises(EngineeringError, match="made no changes"):
+                    await action(run.id)
+            return svc
+        finally:
+            await svc.close()
+
+    assert asyncio.run(go()).confirmer.asked == []  # the user is never even asked

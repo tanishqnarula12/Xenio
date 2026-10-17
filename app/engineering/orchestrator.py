@@ -49,8 +49,10 @@ def _now() -> str:
 
 def detect_mode(request: str) -> str:
     """Fallback when the caller did not say what kind of work this is."""
-    t = request.lower()
-    if re.search(r"\b(run|execute)\b.*\btests?\b|\btest suite\b", t) and not re.search(r"\b(write|add|implement)\b", t):
+    # quoted text is content ("fix the typo 'Run the tests'"), not the kind of work
+    t = re.sub(r"(['\"`‘’“”]).*?\1", " ", request.lower())
+    changes = re.search(r"\b(write|add|implement|fix|change|update|rename|refactor|remove|replace|correct|create|build)\b", t)
+    if re.search(r"\b(run|execute)\b.*\btests?\b|\btest suite\b", t) and not changes:
         return "test"
     if re.search(r"\b(explain|architecture|how does|what does|walk me through|overview of|understand)\b", t) and \
             not re.search(r"\b(add|implement|fix|build|change|create|write)\b", t):

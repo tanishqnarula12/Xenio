@@ -245,6 +245,13 @@ class EngineeringService:
         out = await self.orch.cancel(run)
         return {"run": run.id, "status": "cancelling", **out}
 
+    async def _require_changes(self, run: Run):
+        ws = self.orch.workspaces.get(run.id)
+        if ws is None or run.mode not in ("change", "plan") or \
+                not await asyncio.to_thread(ws.changed_files, ws.integration_branch):
+            raise EngineeringError(f"run {run.id} made no changes, so there is nothing to apply, push or publish")
+        return ws
+
     async def _confirm(self, action: str, description: str, risk: RiskLevel, confirmed: bool) -> None:
         if confirmed:
             return  # the xenio_engineering tool call was already confirmed by the user through the guard
@@ -256,9 +263,7 @@ class EngineeringService:
 
     async def apply(self, run_id: str = "", confirmed: bool = False) -> dict:
         run = self.get(run_id)
-        ws = self.orch.workspaces.get(run.id)
-        if ws is None or run.mode != "change":
-            raise EngineeringError("this run has no changes to apply")
+        ws = await self._require_changes(run)
         ok, why = await asyncio.to_thread(ws.apply_check)
         if not ok:
             raise EngineeringError(f"the changes cannot be applied cleanly: {why or 'nothing to apply'}")
@@ -272,8 +277,8 @@ class EngineeringService:
 
     async def push(self, run_id: str = "", remote: str = "origin", confirmed: bool = False) -> dict:
         run = self.get(run_id)
-        ws = self.orch.workspaces.get(run.id)
-        if ws is None or ws.copied:
+        ws = await self._require_changes(run)
+        if ws.copied:
             raise EngineeringError("this run's result is not in a git repository with a remote")
         if remote not in (run.repo_state.get("remotes") or []):
             raise EngineeringError(f"the repository has no remote called {remote!r}")

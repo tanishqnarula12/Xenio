@@ -382,6 +382,8 @@ def test_explain_review_and_test_modes_change_nothing(tmp_path, repo):
     ("Plan how to add a settings page to this project", "plan"),
     ("Add password reset to my CRM", "change"),
     ("Write tests for this module", "change"),
+    ("Fix the typo 'Run the tests' -> 'Run the test suite' in README.md", "change"),  # live test 10
+    ("Update the 'explain' section of the docs", "change"),
 ])
 def test_mode_detection(request_text, mode):
     assert detect_mode(request_text) == mode
