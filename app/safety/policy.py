@@ -2164,7 +2164,9 @@ def classify_engineering(tool: str, args: dict | None, scope: dict, base: Decisi
     if base.blocked:
         return base
     if tool not in set(scope.get("tools") or []):
-        return blocked(f"engineering.{tool}", f"use {tool}", f"{tool} is not available to the {role} role in this task")
+        usable = ", ".join(sorted(scope.get("tools") or [])) or "none"
+        return blocked(f"engineering.{tool}", f"use {tool}",
+                       f"{tool} is not available to the {role} role in this task; use only: {usable}")
     registry = str(scope.get("registry") or "")
     if registry and registry in json_text(a):
         return blocked("engineering.registry", "change XENIO's engineering records", "that file is XENIO's own record")

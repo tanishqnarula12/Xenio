@@ -198,14 +198,58 @@ class EngineeringOrchestrator:
         prompt = prompts.planner_prompt(run.request, self._context(run, cwd), self.roles.available())
         text = await self._agent_turn(run, Task("plan", "Plan the work", "planner"), role, cwd, prompt)
         plan = prompts.extract_json(text)
-        if plan is None or not isinstance(plan.get("tasks"), list):
+        problems = self.plan_problems(plan, cwd)
+        if problems:  # one bounded correction turn, naming exactly what is wrong
             text = await self._agent_turn(run, Task("plan", "Plan the work", "planner"), role, cwd,
-                                          "Your answer did not end with the plan JSON. Reply with ONLY the JSON:\n"
-                                          + prompts.PLAN_SCHEMA)
+                                          "Your plan was not accepted: " + "; ".join(problems[:6]) + ". Fix it and "
+                                          "reply with ONLY the plan JSON:\n" + prompts.PLAN_SCHEMA)
             plan = prompts.extract_json(text)
-        if plan is None or not isinstance(plan.get("tasks"), list):
-            raise PlanError("the planner did not produce a usable plan")
+            problems = self.plan_problems(plan, cwd)
+        if problems:
+            if plan is None and not text.strip():
+                raise PlanError("the planner did not produce a usable plan")
+            self._milestone(run, "plan_fallback", "The planner's plan was not usable (" + "; ".join(problems[:3]) +
+                            "); using a simple plan: one engineer, then a tester.", speak=False)
+            return self._fallback_plan(run.request, cwd)
         return plan
+
+    def plan_problems(self, plan: dict | None, root: Path) -> list[str]:
+        """Why a planner's plan cannot be used ([] = usable): missing, meta tasks, read-only roles, unreal paths."""
+        if not isinstance(plan, dict) or not isinstance(plan.get("tasks"), list):
+            return ["the answer did not end with the plan JSON"]
+        if not plan["tasks"]:
+            return []  # create_tasks reports an empty plan with its own message
+        problems = []
+        meta = re.compile(r"^\s*(inspect|analy[sz]e|investigate|understand|explore|confirm|clarify|ask|review|plan|"
+                          r"define|discuss|decide)\b", re.I)
+        for t in plan["tasks"]:
+            if not isinstance(t, dict):
+                return ["every task must be an object"]
+            tid, title = str(t.get("id") or "?"), str(t.get("title") or "")
+            role = self.roles.roles.get(str(t.get("role") or ""))
+            if role is not None and not role.writes:
+                problems.append(f"task {tid} uses the read-only role {role.name}; tasks must change files")
+            if meta.match(title):
+                problems.append(f"task {tid} ({title!r}) does not change files; you already inspected the repository")
+            for path in t.get("allowed_paths") or []:
+                rel = str(path).strip().strip("/")
+                if rel in ("", "."):
+                    continue
+                target = root / rel
+                if not target.exists() and (not target.parent.exists() or " " in rel):  # "repo root" is a description
+                    problems.append(f"task {tid}: allowed path {path!r} is not a file or folder in the repository")
+        return problems
+
+    def _fallback_plan(self, request: str, root: Path) -> dict:
+        tasks = [{"id": "implement", "title": _clip(request, 70), "role": self._guess_role(request),
+                  "description": request, "acceptance": ["the request is fulfilled", "existing tests still pass"]}]
+        if verify.detect(root) and "tester" in {r.name for r in self.roles.available()}:
+            tests = [d for d in ("tests", "test", "__tests__", "spec") if (root / d).is_dir()] or []
+            tasks.append({"id": "tests", "title": "Tests for the change", "role": "tester", "depends_on": ["implement"],
+                          "allowed_paths": tests, "description": f"Write or extend tests for: {request}",
+                          "acceptance": ["new behaviour is covered by tests", "all tests pass"]})
+        return {"summary": "Simple plan (the planner's plan was not usable): one engineer, then a tester.",
+                "risks": ["the planner could not produce a usable plan; the work was not split"], "tasks": tasks}
 
     def create_tasks(self, plan: dict) -> TaskGraph:
         """A validated task graph from a plan (raises PlanError with every problem found)."""
@@ -315,10 +359,11 @@ class EngineeringOrchestrator:
                 task.status, task.failure = "succeeded", ""
                 self._milestone(run, "task_done", f"{role.title} finished: {task.title}.")
                 return
-            if task.result.get("agent_status") == "blocked" or task.failure.startswith(
-                    ("changed files outside", "merge conflict", "tests were deleted")):
+            if task.failure.startswith(("changed files outside", "merge conflict", "tests were deleted")):
                 break  # a protocol violation or a real conflict: retrying the same agent will not help
-            note = f"(Your previous attempt was not accepted: {task.failure}. Fix that.)"
+            note = (f"(Your previous attempt was not accepted: {task.failure}. "
+                    + (f"You said: {task.result.get('summary', '')[:200]}. " if task.result.get("agent_status") == "blocked" else "")
+                    + f"{prompts.tools_line(role)})")
         task.status = "cancelled" if run.cancel_requested else "failed"
         if task.status == "failed":
             self._milestone(run, "task_failed", f"{role.title} could not finish {task.title}: {task.failure}")
@@ -604,7 +649,8 @@ class EngineeringOrchestrator:
                 lines.append(f"| {t.title} | {t.role} | {t.status}{' - ' + t.failure if t.failure else ''} | "
                              f"{len(t.result.get('changed_files') or [])} file(s) | {secs:.0f} s | {model} |")
         if run.diff_stat:
-            lines += ["", "## What changed (XENIO's changes only)", "", "```", run.diff_stat, "```"]
+            title = "Your uncommitted changes (reviewed)" if run.mode == "review" else "What changed (XENIO's changes only)"
+            lines += ["", f"## {title}", "", "```", run.diff_stat, "```"]
         if run.baseline_tests or run.final_tests:
             lines += ["", "## Tests (run by XENIO)", ""]
             for label, items in (("before", run.baseline_tests), ("after", run.final_tests)):

@@ -168,12 +168,6 @@ def test_a_team_plan_runs_independent_tasks_in_parallel_and_respects_dependencie
 
 
 def test_invalid_and_empty_plans_are_refused(tmp_path, repo):
-    def no_json(kind, prompt, cwd):
-        return "I think we should do it carefully." if kind == "plan" else ""
-
-    with pytest.raises(PlanError, match="usable plan"):
-        asyncio.run(orchestrator(tmp_path, no_json).plan_project("Build a dashboard with charts and an API", repo))
-
     def circular(kind, prompt, cwd):
         return json.dumps({"tasks": [{"id": "a", "title": "A", "role": "backend", "depends_on": ["b"]},
                                      {"id": "b", "title": "B", "role": "backend", "depends_on": ["a"]}]})
@@ -186,6 +180,44 @@ def test_invalid_and_empty_plans_are_refused(tmp_path, repo):
 
     with pytest.raises(PlanError, match="no tasks"):
         asyncio.run(orchestrator(tmp_path, empty).plan_project("Build a dashboard with charts and an API", repo))
+
+    def silent(kind, prompt, cwd):
+        return ""  # nothing at all, twice
+
+    with pytest.raises(PlanError, match="usable plan"):
+        asyncio.run(orchestrator(tmp_path, silent).plan_project("Build a dashboard with charts and an API", repo))
+
+
+META_PLAN = {"summary": "inspect first", "tasks": [
+    {"id": "inspect-repo", "title": "Inspect repo and commit details", "role": "backend", "allowed_paths": [".", "repo root"]},
+    {"id": "define-plan", "title": "Confirm scope with user", "role": "docs", "depends_on": ["inspect-repo"]}]}
+
+
+def test_a_meta_plan_gets_one_correction_then_a_simple_fallback_plan(tmp_path, repo):
+    """Live test 4: a free model planned 'inspect the repo' and 'confirm scope with user' instead of the work."""
+    asked = []
+
+    def script(kind, prompt, cwd):
+        asked.append(prompt[:60])
+        return "```json\n" + json.dumps(META_PLAN) + "\n```"
+
+    orch = orchestrator(tmp_path, script)
+    problems = orch.plan_problems(META_PLAN, repo)
+    assert any("does not change files" in p for p in problems) and any("'repo root'" in p for p in problems)
+    run = asyncio.run(orch.plan_project("Add a priority field to tasks in the API and the UI, with tests", repo))
+    graph = orch.graphs[run.id]
+    assert list(graph.tasks) == ["implement", "tests"] and graph.tasks["tests"].depends_on == ["implement"]
+    assert len(asked) == 2 and "not accepted" in asked[1]  # exactly one correction turn
+    assert any(e["kind"] == "plan_fallback" for e in run.events) and "not usable" in run.plan_summary
+
+
+def test_prompts_name_the_roles_real_tools():
+    from app.engineering import prompts
+    from app.engineering.roles import RoleRegistry as Roles
+
+    docs = prompts.tools_line(Roles().get("docs"))
+    assert "write_file" in docs and "no terminal" in docs and "browser" in docs  # what is blocked is said too
+    assert "read-only commands" in prompts.tools_line(Roles().get("reviewer"))
 
 
 # ---- XENIO's own checks -------------------------------------------------------------------------------------------

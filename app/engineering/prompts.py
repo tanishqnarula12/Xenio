@@ -25,6 +25,20 @@ PLAN_SCHEMA = ('{"summary": "the approach in 2-4 sentences", "risks": ["..."], "
                'and facts", "acceptance": ["checkable criterion"], "expected_outputs": ["..."]}]}')
 
 
+_TERMINAL = {"none": "no terminal", "read": "terminal for read-only commands (ls, cat, grep, git diff/log/show, tests)",
+             "test": "terminal for read-only commands and running tests",
+             "write": "terminal inside your working directory (no git writes, installs, network or deployments)"}
+
+
+def tools_line(role: Role) -> str:
+    """The tools this role's session may really use (anything else is blocked), with how to edit files."""
+    tools = sorted(role.tools - {"terminal"})
+    edit = (" Edit files with patch (mode replace: path, old_string, new_string) or write_file (path, content)."
+            if {"patch", "write_file"} & role.tools else "")
+    return (f"YOUR TOOLS (anything else is blocked, including browser, execute_code and delegate_task): "
+            f"{', '.join(tools)}; {_TERMINAL[role.terminal_mode]}.{edit}")
+
+
 def repo_context(state: dict, tests: list[str], tree: str) -> str:
     stack = ", ".join(state.get("stack") or []) or "unknown"
     return (f"Stack: {stack}. Test commands XENIO will run: {', '.join(tests) or 'none found'}.\n"
@@ -46,6 +60,10 @@ ROLES you can assign implementation tasks to:
 {listed}
 
 Rules for the plan:
+- You have ALREADY inspected the repository: every task CHANGES files to implement the request. No inspection,
+  analysis, clarification, confirmation or review tasks (XENIO reviews after the tasks).
+- allowed_paths are real repository-relative files or folders (e.g. "src/taskapp/store.py", "web/", "tests/"),
+  never descriptions like "repo root".
 - Use as FEW tasks as the work needs (at most {max_tasks}). A small change is ONE task. Split only where parts are
   genuinely independent (e.g. an API and a UI).
 - Every task names "allowed_paths": the repository-relative files or folders it may change (new files included).
@@ -82,6 +100,8 @@ do not run git commands that change anything.
 YOU MAY CHANGE ONLY: {paths}
 (enforced: anything else is blocked. If more is needed, say so under "needs".)
 
+{tools_line(role)}
+
 REPOSITORY:
 {context}
 
@@ -112,6 +132,7 @@ THE USER'S REQUEST:
 {request}
 
 The change is applied in your working directory ({cwd}); read any file you need. Do not modify anything.
+{tools_line(role)}
 REPOSITORY:
 {context}
 
