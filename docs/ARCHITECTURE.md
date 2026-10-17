@@ -53,7 +53,11 @@ user request is answered by Hermes Agent over ACP; XENIO never calls an LLM itse
 | `app/tools/personal.py` | V4: the personal tools registered in Hermes (`xenio_calendar_events` … `xenio_integrations`) |
 | `app/vision/` | V5: `capture` (Windows GDI screen capture, PNG in memory), `providers` (`VisionProvider`: Hermes' model access, strict; optional OpenAI-compatible), `service` (`ScreenLook`: capture → describe → mask → discard) |
 | `app/tools/vision.py` | V5: `xenio_look_at_screen` (observe-only) |
-| `hermes_plugin/xenio-guard/` | Hermes plugin enforcing XENIO's policy inside Hermes |
+| `app/desktop/` | V5.5 desktop control; `common.py` shared; Windows `windows`/`win32`/`uia`; macOS `macos` (CoreGraphics, Accessibility, ImageIO via ctypes + a persistent accessibility helper process), `mac_windows`, `ax` |
+| `app/fastpath.py`, `app/media.py` | simple commands carried out by XENIO itself without the model (apps, windows, music, media keys, volume, time); same policy, only READ/SAFE_WRITE steps |
+| `app/engineering/` | V6 engineering team: `service` (runs, status, cancel, apply/push/PR, socket for the chat's Hermes), `orchestrator` (plan → tasks → execute → review → report), `agents` (Hermes ACP sessions per task), `graph` (task graph), `roles` (enforced capabilities, cost policy), `repo` (snapshot, worktrees, merges), `verify` (tests run by XENIO, sandboxed), `security` (deterministic scan), `prompts` |
+| `app/tools/engineering.py` | V6: `xenio_engineering`, the tool Hermes uses to work with the engineering team |
+| `hermes_plugin/xenio-guard/` | Hermes plugin enforcing XENIO's policy inside Hermes (and, V6, each engineering session's role and file scope) |
 
 Dependencies point one way: interfaces → orchestrator → `HermesClient` interface. Nothing outside
 `app/hermes/` knows ACP exists.
@@ -301,6 +305,20 @@ Hermes wants to act ──► (edit)    ACP edit approval ───────�
   `os.environ`, so Hermes and the commands it runs cannot see them.
 * `Secret` hides values in `repr`/`str`; the log formatter masks known secrets plus bearer tokens,
   `nbh_…`, `sk-…` and `key=`/`password=` patterns on the final rendered line, tracebacks included.
+
+## Engineering team (V6)
+
+```
+xenio_engineering (chat's Hermes) ─socket+token─► EngineeringService ─► EngineeringOrchestrator
+   inspect + snapshot (user's checkout untouched) → baseline tests → plan (one engineer for small changes)
+   → tasks as Hermes ACP sessions (cwd = own worktree, model per role, ≤4 parallel, scopes disjoint)
+   → per task: XENIO commits, checks scope, test tampering, focused tests, merges (serialized)
+   → final tests vs baseline, deterministic security scan, security + code reviewers → evidence-based outcome
+   → report + patch; apply / push / PR only with the user's confirmation
+xenio-guard: every tool call of an engineering session → normal policy + role tools, worktree, file scope
+```
+
+Details: [ENGINEERING_TEAM.md](ENGINEERING_TEAM.md), [V6_BASELINE.md](V6_BASELINE.md).
 
 ## Extension points
 

@@ -122,3 +122,16 @@ Details: [VISION_SECURITY.md](VISION_SECURITY.md).
 * Screen descriptions are text produced by a model: a secret written in an unusual format could slip past the
   masking, and the description becomes part of the Hermes conversation like any tool result.
 * Allowlists are fixed in code; anything not recognised asks instead of running.
+
+
+## Engineering sessions (V6)
+
+Engineering agents are Hermes sessions XENIO registers with a role, a worktree and a file scope. For their tool
+calls the guard applies, on top of everything above: only the role's tools (never `delegate_task`, memory, cron,
+browser or desktop control, personal tools); writes only inside the task's worktree and allowed paths (never `.git`
+internals); read-only roles run only READ-level commands; no git writes, package installs, network tools,
+deployment tools or database clients for any role. The gateway's edit approvals for these sessions are answered by
+the same engineering rules, never by the normal "your folders" rule. Applying a run's result to your files, pushing
+its branch and opening a pull request are CONFIRM_REQUIRED actions of the `xenio_engineering` tool. Hermes 0.22 runs
+ACP sessions inside its gateway: XENIO checks that the gateway carries its guard and refuses engineering work (and
+`--health` fails) when it does not. Full details: [ENGINEERING_SECURITY.md](ENGINEERING_SECURITY.md).

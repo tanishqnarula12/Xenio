@@ -118,6 +118,7 @@ class AgentSessions:
         self._turns: dict[str, _Turn] = {}
         self._start_lock = asyncio.Lock()
         self.models: dict[str, str] = {}  # session -> model it was set to ("" = Hermes' main model)
+        self._accept_edits: bool | None = None  # None = not tried yet
         self.agent_info: dict[str, Any] = {}
 
     @property
@@ -164,11 +165,15 @@ class AgentSessions:
         session_id = result.get("sessionId") if isinstance(result, dict) else None
         if not session_id:
             raise HermesError("Hermes did not return a session id")
-        try:
-            await self._conn.request("session/set_mode", {"sessionId": session_id, "modeId": ACCEPT_EDITS},
-                                     timeout=30)
-        except HermesError as exc:  # older Hermes: every in-scope edit then asks through the gate instead
-            log.warning("Could not set accept_edits mode", extra={"fields": {"error": str(exc)}})
+        if self._accept_edits is not False:
+            try:
+                await self._conn.request("session/set_mode", {"sessionId": session_id, "modeId": ACCEPT_EDITS},
+                                         timeout=30)
+                self._accept_edits = True
+            except HermesError as exc:  # Hermes 0.22's gateway has no accept-edits mode: XENIO answers each edit
+                self._accept_edits = False
+                log.info("Hermes does not offer accept_edits; edits are answered by XENIO's engineering rules",
+                         extra={"fields": {"error": str(exc)[:120]}})
         if model:
             model_id = f"{provider}:{model}" if provider and ":" not in model.split("/")[0] else model
             try:

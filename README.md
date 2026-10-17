@@ -162,6 +162,21 @@ them that tries to give orders is flagged, and XENIO then asks before doing anyt
 * Details: [docs/VISION_CAPABILITIES.md](docs/VISION_CAPABILITIES.md) · [docs/VISION_ARCHITECTURE.md](docs/VISION_ARCHITECTURE.md)
   · [docs/VISION_SECURITY.md](docs/VISION_SECURITY.md).
 
+## Engineering team (V6)
+
+* "Inspect my project and explain its architecture." · "Plan how to add a settings page." · "Add password reset to
+  my CRM." · "Write tests for this module." · "Review my changes for security problems." · "Run the test suite and
+  explain the failures." · "What are you working on?" · "Cancel the engineering task."
+* XENIO plans, hands tasks to specialist agents (planner, frontend, backend, database, tester, security reviewer,
+  code reviewer, docs) that run as Hermes sessions in isolated git worktrees, tests the result itself, reviews it and
+  reports with evidence. Small changes use one engineer, not a team. A team plan waits for your "go ahead".
+* Your checkout and uncommitted work are never touched by a run; applying the result to your files, pushing and
+  opening a pull request each ask for your confirmation. Agents cannot push, install packages, use the network,
+  deploy or touch real databases, and each one may change only its task's files (enforced by the guard).
+* Terminal: `.venv/bin/python -m app.main --engineer "Add password reset" --repo ~/code/crm`.
+* Details: [docs/ENGINEERING_TEAM.md](docs/ENGINEERING_TEAM.md) · [roles](docs/AGENT_ROLES.md) ·
+  [workflows](docs/ENGINEERING_WORKFLOWS.md) · [security](docs/ENGINEERING_SECURITY.md) · [audit](docs/V6_BASELINE.md).
+
 ## Safety
 
 Every tool call Hermes makes is checked first by XENIO's permission engine
@@ -238,6 +253,11 @@ app/        main.py · config.py · orchestrator.py · health.py · logging_setu
   safety/   policy.py (permission engine) · permissions.py (confirmations)
   tools/    base.py · registry.py · filesystem.py · terminal.py · web.py · github.py · personal.py · vision.py
   vision/   capture.py (screen capture) · providers.py (vision models) · service.py (look, mask, discard)
+  desktop/  common.py · service.py · apps.py · input.py · stop.py · Windows: windows.py win32.py uia.py ·
+            macOS: macos.py (ctypes + accessibility helper) mac_windows.py ax.py
+  engineering/  V6: service.py · orchestrator.py · agents.py · graph.py · roles.py · repo.py · verify.py ·
+            security.py · prompts.py
+  fastpath.py · media.py   simple commands without the model (apps, music, volume, time)
   integrations/  base.py · google.py · calendar.py · email.py · github.py
   personal/ store.py (personal.db) · tasks.py · projects.py
   memory/   manager.py          interface/ console.py

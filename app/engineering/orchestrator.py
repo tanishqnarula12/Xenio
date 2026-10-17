@@ -85,6 +85,7 @@ class Run:
     security_findings: list[dict] = field(default_factory=list)
     security_notes: list[str] = field(default_factory=list)
     reviews: dict = field(default_factory=dict)
+    turns: list[dict] = field(default_factory=list)  # every agent turn (planner, tasks, reviewers): model, time, usage
     answer: str = ""  # explain mode
     outcome: str = ""
     verified: bool = False
@@ -138,7 +139,7 @@ class EngineeringOrchestrator:
         R.save_json(folder / "run.json", run.to_dict())
 
     def _context(self, run: Run, cwd: Path) -> str:
-        tests = [" ".join(c.argv[1:]) if c.name == "pytest" else " ".join(c.argv) for c in verify.detect(cwd, Path(run.source))]
+        tests = [" ".join(c.argv) for c in verify.detect(cwd, Path(run.source))]  # exact commands, interpreter included
         return prompts.repo_context(run.repo_state, tests, prompts.tree(cwd))
 
     # ---- 1. planning ------------------------------------------------------------------------------------------
@@ -161,7 +162,7 @@ class EngineeringOrchestrator:
             return run
         if run.mode == "change" and self._is_small(request):
             graph = self.create_tasks({"summary": "A small change: one engineer, then XENIO verifies it.", "tasks": [
-                {"id": "change", "title": request[:80], "role": self._guess_role(request), "description": request,
+                {"id": "change", "title": _clip(request, 70), "role": self._guess_role(request), "description": request,
                  "acceptance": ["the request is fulfilled", "existing tests still pass"]}]})
             run.plan_summary = "Small change: one engineer, verified by XENIO (no team needed)."
         else:
@@ -337,11 +338,12 @@ class EngineeringOrchestrator:
             self.registry.remove(session)
             self.live.get(run.id, {}).pop(task.id, None)
         usage = dict(turn.usage or {})
-        task.result.setdefault("turns", []).append({"session": session, "model": turn.model or "Hermes main model",
-                                                     "seconds": turn.seconds, "stop": turn.stop_reason, "usage": usage or None,
-                                                     "cost": "unknown" if "cost" not in usage else usage["cost"],
-                                                     "tools": len(turn.tools),
-                                                     "failed_tools": [t.title[:80] for t in turn.tools if t.status == "failed"][:5]})
+        record = {"task": task.id, "role": role.name, "session": session, "model": turn.model or "Hermes main model",
+                  "seconds": turn.seconds, "stop": turn.stop_reason, "usage": usage or None,
+                  "cost": "unknown" if "cost" not in usage else usage["cost"], "tools": len(turn.tools),
+                  "failed_tools": [t.title[:80] for t in turn.tools if t.status == "failed"][:5]}
+        task.result.setdefault("turns", []).append(record)
+        run.turns.append(record)
         if turn.cancelled:
             raise HermesError("cancelled")
         return turn.text
@@ -625,7 +627,8 @@ class EngineeringOrchestrator:
         if run.scope_violations or run.test_tampering:
             lines += ["", "## Problems XENIO caught", ""] + [f"- out of scope: {v}" for v in run.scope_violations] + \
                 [f"- tests: {v}" for v in run.test_tampering]
-        if ws is not None and graph is not None:
+        has_changes = bool(run.diff_stat) or any(t.result.get("merged") for t in (graph.tasks.values() if graph else []))
+        if ws is not None and graph is not None and has_changes:
             run.approvals_needed = [f"apply the changes to your working tree ({run.source})",
                                     f"push the branch {ws.integration_branch}" if not ws.copied else "",
                                     "create a pull request" if not ws.copied else ""]
@@ -640,11 +643,16 @@ class EngineeringOrchestrator:
                 (Path(ws.run_dir) / "changes.patch").write_text(ws.patch(), encoding="utf-8")
             except (OSError, R.RepoError):
                 pass
-        turns = [tr for t in (graph.tasks.values() if graph else []) for tr in t.result.get("turns") or []]
-        if turns:
-            tokens = sum((tr.get("usage") or {}).get("totalTokens", 0) or 0 for tr in turns)
-            lines += ["", "## Cost", "", f"{len(turns)} agent turn(s), {tokens or 'unknown'} tokens reported by Hermes; "
-                      "money cost: unknown (free models were used unless a role was pinned to another model)."]
+        if run.turns:
+            tokens = sum((tr.get("usage") or {}).get("totalTokens", 0) or 0 for tr in run.turns)
+            by_role: dict[str, int] = {}
+            for tr in run.turns:
+                by_role[tr["role"]] = by_role.get(tr["role"], 0) + 1
+            models = ", ".join(sorted({tr["model"] for tr in run.turns}))
+            lines += ["", "## Cost", "", f"{len(run.turns)} agent turn(s) ({', '.join(f'{r} {n}' for r, n in by_role.items())}), "
+                      f"{sum(tr['seconds'] for tr in run.turns):.0f} s of model time, {tokens or 'unknown'} tokens "
+                      f"reported by Hermes; models: {models}. Money cost: unknown (no provider reported one; the "
+                      "configured models are free unless a role was pinned to another model)."]
         text = "\n".join(lines) + "\n"
         path = self.runs_root / run.id / "report.md"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -696,6 +704,11 @@ def find_test_tampering(diff: str, changed: list[tuple[str, str]]) -> list[str]:
 
 def _short(exc: BaseException) -> str:
     return " ".join(str(exc).split())[:240] or type(exc).__name__
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
 
 
 def _first_line(text: str) -> str:
