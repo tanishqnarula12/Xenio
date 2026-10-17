@@ -378,6 +378,32 @@ def _check_desktop() -> Check:
                  + ". System Settings > Privacy & Security: switch them on for the app XENIO runs in, then restart XENIO")
 
 
+def _check_engineering(settings: Settings) -> Check:
+    """V6: the engineering team's prerequisites (the guard's liveness is part of the Safety check)."""
+    import shutil
+
+    e = settings.engineering
+    if not e.enabled:
+        return Check("Engineer", "OK", "off (XENIO_ENGINEERING=false)")
+    try:
+        from app.engineering.roles import RoleRegistry
+
+        roles = RoleRegistry.load(settings.data_dir / "engineering_roles.toml")
+    except Exception as exc:  # noqa: BLE001 - a broken roles file is reported, not hidden
+        return Check("Engineer", "FAIL", f"engineering_roles.toml: {exc}")
+    usable = [r.name for r in roles.available()]
+    refused = [r.name for r in roles.roles.values() if r.enabled and r.name not in usable]
+    if not shutil.which("git"):
+        return Check("Engineer", "FAIL", "git is not installed")
+    sandbox = "sandboxed tests" if (sys.platform == "darwin" and e.sandbox_tests and shutil.which("sandbox-exec")) \
+        else "tests NOT sandboxed"
+    detail = (f"{len(usable)} roles ({', '.join(usable)}), up to {e.max_parallel} agents at once, {sandbox}, team plans "
+              + ("start at once" if e.auto_start else "wait for your go-ahead"))
+    if refused:
+        return Check("Engineer", "WARN", detail + f"; refused by the cost policy: {', '.join(refused)}")
+    return Check("Engineer", "OK", detail)
+
+
 def _check_fast(settings: Settings) -> Check:
     f = settings.fast
     if not f.enabled:
@@ -409,6 +435,7 @@ async def run_health(settings: Settings, live: bool = False) -> int:
     checks.append(await asyncio.to_thread(_check_vision, settings))
     checks.append(await asyncio.to_thread(_check_desktop))
     checks.append(_check_fast(settings))
+    checks.append(_check_engineering(settings))
 
     print()
     for c in checks:
