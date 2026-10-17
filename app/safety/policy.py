@@ -14,6 +14,7 @@ anything touching secrets is blocked outright; paths are resolved (``..``, ``~``
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import shlex
@@ -25,7 +26,7 @@ from enum import IntEnum
 from pathlib import Path, PurePath
 from urllib.parse import unquote, urlsplit
 
-POLICY_VERSION = "7"
+POLICY_VERSION = "8"
 
 
 class RiskLevel(IntEnum):
@@ -2083,6 +2084,146 @@ def classify_media_action(action: str, detail: str = "") -> Decision:
              "previous": "go back to the previous track", "volume": f"set the volume ({detail})",
              "play_track": f"play {detail}"}
     return Decision(RiskLevel.SAFE_WRITE, f"media.{act}", words[act])
+
+
+# ---- engineering sessions (V6): a role's tools, its task's files, its terminal --------------------------------------
+
+# Read-only git: everything else (commit, checkout, reset, push, stash, branch changes...) is XENIO's own job
+ENGINEERING_GIT_READ = {"status", "diff", "log", "show", "blame", "ls-files", "grep", "rev-parse", "describe",
+                        "shortlog", "cat-file", "ls-tree", "whatchanged"}
+_ENG_INSTALL = {"pip": {"install", "uninstall", "download"}, "pip3": {"install", "uninstall", "download"},
+                "uv": {"add", "remove", "sync", "pip", "tool"}, "poetry": {"add", "remove", "install", "update"},
+                "pipenv": {"install", "uninstall", "update"}, "pipx": None, "npm": {"install", "i", "ci", "add", "remove",
+                "uninstall", "update", "upgrade", "publish", "link", "exec", "x"}, "pnpm": {"install", "i", "add", "remove",
+                "update", "publish", "dlx"}, "yarn": {"add", "remove", "install", "upgrade", "publish", "dlx"},
+                "bun": {"add", "install", "remove", "x"}, "npx": None, "bunx": None, "brew": None, "port": None,
+                "apt": None, "apt-get": None, "cargo": {"install", "add", "publish"}, "go": {"get", "install"},
+                "gem": {"install"}, "composer": {"require", "install", "update"}, "conda": None, "mamba": None}
+_ENG_NETWORK = {"curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "ftp", "telnet", "gh", "glab", "hub"}
+_ENG_DEPLOY = {"kubectl", "helm", "terraform", "pulumi", "vercel", "netlify", "fly", "flyctl", "heroku", "firebase",
+               "aws", "gcloud", "az", "docker", "docker-compose", "podman", "serverless", "sls", "eb", "ansible",
+               "ansible-playbook", "cdk", "railway", "render"}
+_ENG_DATABASE = {"psql", "mysql", "mariadb", "mongo", "mongosh", "redis-cli", "cqlsh", "sqlcmd"}
+_ENG_READ_TOOLS = {"read_file", "search_files", "xenio_list_directory", "xenio_inspect_path"}
+_ENG_WRITE_TOOLS = {"write_file", "patch", "xenio_create_directory"}
+_DOC_FILE = re.compile(r"(\.(md|mdx|rst|txt|adoc)$|(^|/)(docs?|documentation)/)", re.IGNORECASE)
+
+
+def _eng_targets(tool: str, a: dict) -> list[str]:
+    if tool == "patch" and a.get("mode") == "patch":
+        return [p.strip() for p in re.findall(r"\*\*\* (?:Update|Add|Delete) File: (.+)", str(a.get("patch") or ""))]
+    if tool == "search_files":
+        return [str(a.get("path") or ".")]
+    value = a.get("path")
+    return [str(value)] if isinstance(value, str) and value.strip() else []
+
+
+def _eng_relative(target: str, root: Path) -> str | None:
+    """Repository-relative path of ``target`` (relative paths are taken from the task root), None if outside."""
+    raw = os.path.expanduser(target.strip().strip('"').strip("'"))
+    full = Path(os.path.abspath(raw if os.path.isabs(raw) else os.path.join(root, raw)))
+    try:
+        real = Path(os.path.realpath(full))  # a symlink inside the worktree must not lead outside it
+        rel = real.relative_to(Path(os.path.realpath(root)))
+    except ValueError:
+        return None
+    return rel.as_posix()
+
+
+def _eng_in_scope(rel: str, allowed: list[str]) -> bool:
+    norms = [re.split(r"[*?\[]", str(a).replace("\\", "/"), maxsplit=1)[0].strip("/").removeprefix("./") for a in allowed]
+    norms = [n.strip("/") for n in norms]
+    return not norms or "" in norms or any(rel == n or rel.startswith(n + "/") for n in norms)
+
+
+def _eng_programs(command: str) -> list[tuple[str, list[str]]]:
+    """(program, arguments) of every segment of a shell command (wrappers like env/sudo/nohup skipped)."""
+    try:
+        segments = _split_segments(_tokenize(command))
+    except ValueError:
+        return [("?", [])]
+    out = []
+    for seg, _op in segments:
+        words = [w for w in _redirect_targets(seg)[0]]
+        while words and (re.match(r"^\w+=", words[0]) or words[0] in ("env", "sudo", "nohup", "time", "command",
+                                                                         "exec", "then", "do", "else", "!", "{", "(")):
+            words = words[1:]
+        if words:
+            out.append((os.path.basename(words[0]).lower(), words[1:]))
+    return out
+
+
+def classify_engineering(tool: str, args: dict | None, scope: dict, base: Decision) -> Decision:
+    """An engineering session's tool call (V6), on top of the normal decision ``base``. ``scope`` comes from XENIO's
+    session registry: role, tools, terminal mode (none | read | test | write), root (the task's worktree),
+    allowed_paths, docs_only. Nothing here can make a blocked action allowed."""
+    a = args if isinstance(args, dict) else {}
+    role = str(scope.get("role") or "engineering")
+    root = Path(str(scope.get("root") or "/nonexistent"))
+    allowed = [str(x) for x in scope.get("allowed_paths") or []]
+    if base.blocked:
+        return base
+    if tool not in set(scope.get("tools") or []):
+        return blocked(f"engineering.{tool}", f"use {tool}", f"{tool} is not available to the {role} role in this task")
+    registry = str(scope.get("registry") or "")
+    if registry and registry in json_text(a):
+        return blocked("engineering.registry", "change XENIO's engineering records", "that file is XENIO's own record")
+    if tool in _ENG_READ_TOOLS or tool in _ENG_WRITE_TOOLS:
+        targets = _eng_targets(tool, a) or ["."]
+        for target in targets:
+            rel = _eng_relative(target, root)
+            if rel is None:
+                return blocked("engineering.outside", f"{tool} {target}",
+                               f"{target} is outside this task's copy of the repository ({root})")
+            if tool in _ENG_WRITE_TOOLS:
+                if rel.split("/")[0] == ".git" or "/.git/" in f"/{rel}/":
+                    return blocked("engineering.git_internals", f"change {rel}", "git's own files are XENIO's to manage")
+                if not _eng_in_scope(rel, allowed):
+                    return blocked("engineering.scope", f"change {rel}",
+                                   f"{rel} is outside the files this task may change ({', '.join(allowed) or 'none'}); "
+                                   "report what else needs changing instead")
+                if scope.get("docs_only") and not _DOC_FILE.search(rel):
+                    return blocked("engineering.docs_only", f"change {rel}", f"the {role} role changes documentation only")
+        if tool in _ENG_WRITE_TOOLS:
+            # inside the task's own worktree and scope: an ordinary edit, even for scripts (it is reviewed and tested)
+            return Decision(RiskLevel.SAFE_WRITE, f"engineering.{tool}", f"{role}: change {', '.join(targets)[:120]}")
+        return base
+    if tool == "terminal":
+        mode = str(scope.get("terminal") or "none")
+        command = str(a.get("command") or "")
+        workdir = a.get("workdir")
+        if workdir and _eng_relative(str(workdir), root) is None:
+            return blocked("engineering.outside", f"run in {workdir}", "commands run inside this task's repository copy")
+        if mode == "none":
+            return blocked("engineering.terminal", f"run: {command[:80]}", f"the {role} role has no terminal")
+        for program, words in _eng_programs(command):
+            sub = next((w.lower() for w in words if not w.startswith("-")), "")
+            if program == "git" and sub not in ENGINEERING_GIT_READ:
+                return blocked("engineering.git", f"git {sub}",
+                               "XENIO records, commits and integrates the changes itself; agents only read git")
+            if program in _ENG_INSTALL and (_ENG_INSTALL[program] is None or sub in _ENG_INSTALL[program]):
+                return blocked("engineering.install", f"{program} {sub}".strip(),
+                               "installing or publishing packages is a separate step the user approves; name the "
+                               "dependency in your result instead")
+            if program in _ENG_NETWORK:
+                return blocked("engineering.network", program, "engineering tasks do not use the network or remotes")
+            if program in _ENG_DEPLOY:
+                return blocked("engineering.deploy", program, "deployments and infrastructure changes are never part "
+                                                              "of an engineering task")
+            if program in _ENG_DATABASE:
+                return blocked("engineering.database", program, "engineering tasks never connect to a real database")
+        if mode in ("read", "test") and base.level > RiskLevel.READ:
+            return blocked("engineering.read_only", f"run: {command[:80]}",
+                           f"the {role} role only runs read-only commands and tests")
+        return base
+    return base
+
+
+def json_text(value) -> str:
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 # Foundation for LATER screen interaction (V5 is observe-only: no XENIO tool clicks or types on the screen).

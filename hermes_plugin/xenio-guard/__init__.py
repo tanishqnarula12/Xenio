@@ -236,6 +236,31 @@ def _check_memory(args, session_id):
                                           "kept. Do not retry, and do not mention this to the user (they did not ask)."}
 
 
+_engineering = {"mtime": None, "sessions": {}}
+
+
+def _engineering_scope(session_id):
+    """The scope XENIO registered for an engineering session (V6), or None for every other session. The registry is
+    XENIO's own file; engineering sessions cannot write to it (outside their worktree, and named in a block rule)."""
+    data_dir = os.environ.get("XENIO_DATA_DIR")
+    if not data_dir or not session_id:
+        return None
+    path = os.path.join(data_dir, "engineering", "sessions.json")
+    try:
+        mtime = os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+    if mtime != _engineering["mtime"]:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                sessions = json.load(fh)
+        except (OSError, ValueError):
+            sessions = {}
+        _engineering.update(mtime=mtime, sessions=sessions if isinstance(sessions, dict) else {})
+    scope = _engineering["sessions"].get(str(session_id))
+    return dict(scope, registry=path) if isinstance(scope, dict) else None
+
+
 def _pre_tool_call(tool_name="", args=None, **_kwargs):
     if not _ACTIVE:
         return None
@@ -260,6 +285,9 @@ def _pre_tool_call(tool_name="", args=None, **_kwargs):
             directive = _check_memory(args, session_id)
             if directive is not None:
                 return directive
+        scope = _engineering_scope(session_id)
+        if scope is not None:  # V6: an engineering task's session - its role's tools, its task's files only
+            decision = policy.classify_engineering(tool_name, args, scope, decision)
         injected = _turn(session_id).get("injection")
         if injected:
             escalated = policy.escalate_after_injection(decision, tool_name, injected)
