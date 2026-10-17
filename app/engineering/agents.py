@@ -144,7 +144,16 @@ class AgentSessions:
                 await conn.close(timeout=5)
                 raise HermesUnavailable(f"{exc}" + (f" | {detail}" if detail else "")) from exc
             self.agent_info = dict((init or {}).get("agentInfo") or {}) if isinstance(init, dict) else {}
+            guarded, why = self._guard_check()
+            if guarded is False:  # sessions would run in a Hermes process without XENIO's policy: never
+                await conn.close(timeout=5)
+                raise HermesUnavailable(f"refusing to run engineering agents: {why}")
             self._conn = conn
+
+    def _guard_check(self) -> tuple[bool | None, str]:
+        from app.hermes.guard import guard_live
+
+        return guard_live(self._data_dir)
 
     async def open(self, cwd: Path, model: str = "", provider: str = "") -> str:
         """A new session working in ``cwd``. ``model`` "" = Hermes' main model."""

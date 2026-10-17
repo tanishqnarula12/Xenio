@@ -240,3 +240,41 @@ def test_engineering_tool_levels():
         assert lv({"action": action}) == "CONFIRM_REQUIRED"  # leaving the isolated workspace always asks
     assert lv({"action": "deploy"}) == "BLOCKED"
     assert RoleRegistry().get("security").terminal_mode == "read"
+
+
+def test_engineering_edits_are_decided_by_the_engineering_rules_only(settings, tmp_path):
+    from app.engineering.roles import RoleRegistry as Roles
+    from app.hermes.client import HermesPermissionRequest
+
+    svc = service(settings, tmp_path, answer=False)
+    root = tmp_path / "wt"
+    (root / "web").mkdir(parents=True)
+    role = Roles().get("frontend")
+    svc.registry.add("eng-1", {"run": "r", "task": "ui", "role": "frontend", "tools": sorted(role.tools),
+                               "terminal": role.terminal_mode, "root": str(root), "allowed_paths": ["web"]})
+
+    def edit(path):
+        return HermesPermissionRequest(title=f"Approve edit: {path}", kind="edit",
+                                       content=[{"type": "diff", "path": str(path), "oldText": None, "newText": "x"}])
+
+    assert asyncio.run(svc._ask("eng-1", edit(root / "web" / "app.js"))) is True  # a script, but in scope: no question
+    assert svc.confirmer.asked == []
+    assert asyncio.run(svc._ask("eng-1", edit(root / "src" / "x.py"))) is False  # out of scope: never
+    assert asyncio.run(svc._ask("eng-1", edit(tmp_path / "elsewhere.txt"))) is False
+
+
+def test_engineering_refuses_an_unguarded_hermes_gateway(tmp_path):
+    import os
+
+    from app.hermes.guard import guard_live
+
+    home, data = tmp_path / "hermes", tmp_path / "data"
+    home.mkdir(), data.mkdir()
+    assert guard_live(data, home)[0] is None  # no gateway yet: the one XENIO starts will carry the guard
+    (home / "gateway.lock").write_text(json.dumps({"pid": os.getpid()}))
+    live, why = guard_live(data, home)
+    assert live is False and "hermes gateway stop" in why  # running, but not started by XENIO
+    (data / "guard.json").write_text(json.dumps({"pid": os.getpid()}))
+    assert guard_live(data, home)[0] is True
+    (home / "gateway.lock").write_text(json.dumps({"pid": 999999}))
+    assert guard_live(data, home)[0] is None  # a dead gateway

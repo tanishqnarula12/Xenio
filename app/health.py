@@ -137,8 +137,11 @@ async def _check_audio(settings: Settings) -> Check:
 
 
 def _check_guard(settings: Settings) -> Check:
-    from app.hermes.guard import PLUGIN_NAME, guard_status
+    from app.hermes.guard import PLUGIN_NAME, guard_live, guard_status
 
+    live, why = guard_live(settings.data_dir)
+    if live is False:  # Hermes 0.22 runs XENIO's sessions inside its gateway: one started elsewhere is unguarded
+        return Check("Safety", "FAIL", why)
     status = guard_status(settings.hermes.command)
     if status.ok and not status.tools_visible:
         return Check("Safety", "WARN", f"{PLUGIN_NAME} enabled, but your own tools.tool_search setting may hide "

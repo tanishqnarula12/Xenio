@@ -95,12 +95,32 @@ class EngineeringService:
 
     async def _ask(self, session_id: str, req: HermesPermissionRequest) -> bool:
         scope = self.registry.get(session_id) or {}
+        if scope and req.kind == "edit":
+            # an engineering session's edit is decided by the engineering rules only: in its own worktree and file
+            # scope (the guard already allowed it) - or not at all, whatever the normal policy would allow
+            return self._edit_in_scope(scope, req)
         request = from_hermes_request(req, self.paths)
         if scope:
             request.description = f"(engineering task {scope.get('task')}, {scope.get('role')}) {request.description}"
         if self.gate is None:
             return False
         return (await self.gate.check(request)).approved
+
+    def _edit_in_scope(self, scope: dict, req: HermesPermissionRequest) -> bool:
+        """Hermes 0.22's gateway asks before every edit (it has no accept-edits mode for ACP). For an engineering
+        session XENIO answers itself when every edited file passes the same engineering rules the guard applied."""
+        from app.safety.policy import classify_engineering, classify_tool_call
+
+        paths = [str(c.get("path")) for c in req.content if isinstance(c, dict) and c.get("type") == "diff" and c.get("path")]
+        if not paths:
+            return False
+        for path in paths:
+            args = {"path": path, "content": ""}
+            decision = classify_engineering("write_file", args, scope,
+                                            classify_tool_call("write_file", args, self.paths, scope.get("root")))
+            if decision.blocked or decision.level > RiskLevel.SAFE_WRITE:
+                return False
+        return True
 
     def projects(self):
         if self._projects is None:

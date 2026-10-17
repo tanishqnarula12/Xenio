@@ -47,6 +47,45 @@ def _hermes_executable(command: tuple[str, ...]) -> str:
     return command[0] if command else "hermes"
 
 
+def guard_live(data_dir: Path, hermes_home: Path | None = None) -> tuple[bool | None, str]:
+    """Is the Hermes process that runs XENIO's sessions guarded right now?
+
+    Hermes 0.22 runs ACP sessions inside its gateway. A gateway started outside XENIO (the Hermes app, `hermes
+    gateway`, a one-off `hermes -z`) does not carry XENIO_GUARD, and XENIO's sessions would then run without XENIO's
+    policy. (True, why) when the gateway in gateway.lock is the process the guard marked; (False, why) when another
+    process holds it; (None, why) when no gateway runs (the next one XENIO starts will carry the guard)."""
+    import json
+    import os
+
+    home = hermes_home or default_hermes_home()
+    try:
+        lock = json.loads((home / "gateway.lock").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, "no Hermes gateway is running"
+    pid = int(lock.get("pid") or 0)
+    try:
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return None, "no Hermes gateway is running"
+    try:
+        marked = int(json.loads((data_dir / "guard.json").read_text(encoding="utf-8")).get("pid") or 0)
+    except (OSError, ValueError):
+        marked = 0
+    if marked == pid or _process_env_has(pid, "XENIO_GUARD=1"):
+        return True, f"the Hermes gateway (pid {pid}) carries XENIO's guard"
+    return False, (f"a Hermes gateway (pid {pid}) is running that XENIO did not start, so XENIO's safety guard is not "
+                   "active in it. Stop it with `hermes gateway stop` (or quit the Hermes app), then start XENIO again")
+
+
+def _process_env_has(pid: int, entry: str) -> bool:
+    """Whether a process of this user was started with ``entry`` in its environment (macOS/Linux ``ps eww``)."""
+    try:
+        out = subprocess.run(["ps", "eww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return f" {entry} " in f" {out.stdout.strip()} "
+
+
 def guard_status(hermes_command: tuple[str, ...], hermes_home: Path | None = None) -> GuardStatus:
     target = _target(hermes_home or default_hermes_home())
     installed = all((target / f).is_file() for f in PLUGIN_FILES)

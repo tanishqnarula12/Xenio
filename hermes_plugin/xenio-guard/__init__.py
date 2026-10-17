@@ -704,3 +704,20 @@ def register(ctx):
     ctx.register_system_prompt_section("xenio-guard.web", _web_prompt, position="after_memory", max_chars=4000)
     ctx.register_system_prompt_section("xenio-guard.personal", _personal_prompt, position="after_memory", max_chars=4000)
     _audit("PLUGIN_LOADED", tools=[t.hermes_name for t in _state["tools"]])
+    _mark_active()
+
+
+def _mark_active():
+    """Tell XENIO which Hermes process carries the guard (V6): with a gateway-owned ACP, sessions run inside the
+    gateway, and a gateway started outside XENIO has no guard. XENIO compares this pid with Hermes' gateway.lock."""
+    data_dir = os.environ.get("XENIO_DATA_DIR")
+    if not data_dir:
+        return
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        tmp = os.path.join(data_dir, "guard.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"pid": os.getpid(), "time": time.time(), "policy": _state["policy"].POLICY_VERSION}, fh)
+        os.replace(tmp, os.path.join(data_dir, "guard.json"))
+    except OSError:
+        pass
