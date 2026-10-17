@@ -18,6 +18,17 @@ web/browser/GitHub: [docs/WEB_CAPABILITIES.md](docs/WEB_CAPABILITIES.md) · perm
 
 ## Quick start
 
+macOS (this Mac):
+
+```bash
+cd ~/Desktop/Xenio/"Xenio Personal Ai"
+.venv/bin/python -m app.main --health           # system check (names any missing macOS permission)
+.venv/bin/python -m app.main                    # text mode
+.venv/bin/python -m app.main --voice            # voice mode: say "Hey Xenio", then your request
+```
+
+Windows:
+
 ```powershell
 .\.venv\Scripts\Activate.ps1          # or prefix commands with .\.venv\Scripts\python.exe
 python -m app.main --health           # system check (add --live to call Hermes/STT/TTS for real)
@@ -28,6 +39,21 @@ python -m app.main --briefing         # the daily briefing, printed (no model ca
 ```
 
 First-time setup on a new machine: see [docs/SETUP.md](docs/SETUP.md).
+
+## Instant commands (fast path)
+
+Simple commands never wait for the model: XENIO does them itself and answers in well under a second (measured on
+the MacBook Air: the time 0-2 ms, volume 0.13 s, opening an app with its window verified 0.8 s, quitting one 0.08 s,
+finding a song 0.9 s and opening exactly one tab).
+
+* "Open Spotify" · "switch to Safari" · "minimize Discord" · "close Calculator" · "open YouTube"
+* "Play Kesariya" · "Tum Hi Ho chalao" · "play Believer on Spotify" · "pause" · "agla gaana" · "previous song"
+* "Volume up" · "awaaz kam karo" · "volume 40" · "mute" · "what time is it" · "kitne baje hain"
+
+The same safety policy decides first; anything that needs your yes, or that is more than such a command, goes to
+Hermes as before (and Hermes is told what XENIO just did, so "close it" works). Songs open on YouTube in one tab;
+with `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` in `.env` they play in the Spotify app. `XENIO_FAST_PATH=false`
+turns it off.
 
 ## Text mode
 

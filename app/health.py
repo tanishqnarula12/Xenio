@@ -8,6 +8,7 @@ turn), STT/TTS are checked for configuration, audio devices are opened briefly.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -355,6 +356,35 @@ async def run_mic_test(settings: Settings, seconds: float = 10.0) -> int:
     return 0
 
 
+def _check_desktop() -> Check:
+    """V5.5 desktop control: on macOS the app XENIO runs in needs Accessibility (hands) and Screen Recording (eyes)."""
+    if sys.platform != "darwin":
+        return Check("Desktop", "OK", "apps, windows, mouse and keyboard through Win32 and UI Automation"
+                     if os.name == "nt" else "desktop control is available on Windows and macOS only")
+    try:
+        from app.desktop import macos
+
+        hands, eyes = macos.trusted(), macos.screen_access()
+    except Exception as exc:  # noqa: BLE001
+        return Check("Desktop", "FAIL", f"macOS desktop access could not be checked ({exc})")
+    missing = [what for ok, what in ((hands, "Accessibility (typing, clicking, window control, media keys)"),
+                                     (eyes, "Screen & System Audio Recording (looking at the screen)")) if not ok]
+    if not missing:
+        return Check("Desktop", "OK", "Accessibility and Screen Recording allowed: apps, windows, mouse, keyboard, screen")
+    return Check("Desktop", "WARN", "opening/switching apps works; still needed: " + "; ".join(missing)
+                 + ". System Settings > Privacy & Security: switch them on for the app XENIO runs in, then restart XENIO")
+
+
+def _check_fast(settings: Settings) -> Check:
+    f = settings.fast
+    if not f.enabled:
+        return Check("Fast path", "OK", "off (XENIO_FAST_PATH=false): every request goes through Hermes")
+    spotify = bool(f.spotify_client_id and f.spotify_client_secret)
+    music = "Spotify" if f.music_service == "spotify" or (f.music_service == "auto" and spotify) else "YouTube (one tab)"
+    return Check("Fast path", "OK", f"apps, windows, music ({music}), pause/next, volume and time without the model; "
+                 "everything else goes to Hermes")
+
+
 async def run_health(settings: Settings, live: bool = False) -> int:
     name = settings.name.upper()
     print(f"{name} SYSTEM CHECK" + (" (live)" if live else ""))
@@ -374,6 +404,8 @@ async def run_health(settings: Settings, live: bool = False) -> int:
     checks.append(_check_wakeword(settings))
     checks.append(_check_realtime(settings))
     checks.append(await asyncio.to_thread(_check_vision, settings))
+    checks.append(await asyncio.to_thread(_check_desktop))
+    checks.append(_check_fast(settings))
 
     print()
     for c in checks:

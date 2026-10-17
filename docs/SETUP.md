@@ -1,6 +1,60 @@
 # XENIO setup
 
-## What is already done on this machine
+## This Mac (MacBook Air M5, macOS 26.6; set up 2026-10-17)
+
+| Step | Status |
+|---|---|
+| Code copied from the Windows laptop; baseline git commit (the old `.git` had no commits), work on branch `macos-port` | done |
+| Virtualenv `.venv` from the CPython 3.14.7 that Hermes' installer already put on this Mac (`~/.local/share/uv/python`), `requirements.txt` installed | done |
+| `.env` carried over (STT/TTS keys, `XENIO_GITHUB_USER`) | done |
+| Wake-word and voice-activity models in `~/.local/share/xenio/models` (20 MB) | done |
+| Hermes Agent 0.22.2 (`~/.hermes`): `xenio-guard` plugin 0.7 installed and enabled, `platform_toolsets.acp: [hermes-acp, xenio]`, Tool Search scoped to XENIO; `config.yaml` backed up to `~/.local/share/xenio/backups` | done |
+| Hermes model chain, free models only (see [Model reliability](#model-reliability)): main `thinkingmachines/inkling:free` (sees images), reasoning effort `low`, `auxiliary.free_only: true` (side tasks can never fall back to a paid model) | done |
+| macOS port: safety rules for macOS folders, Trash, desktop control through the Accessibility API, in-memory screen capture, media keys | done (`macos-port` branch) |
+| Fast path for simple commands (apps, music, volume, time) | done |
+| GitHub CLI signed in as `tanishqnarula12` | already done |
+| IDE uses `.venv` (`../.vscode/settings.json`) | done |
+
+## What only you can do (macOS)
+
+> **MANUAL STEP REQUIRED — permissions for the app XENIO runs in.** macOS asks once per app. Run XENIO from
+> **Terminal** (or iTerm/VS Code) and allow, in *System Settings > Privacy & Security*:
+> * **Microphone** — voice mode (macOS asks on the first `--voice` run);
+> * **Accessibility** — reading a window's controls, typing, clicking, window control, media keys
+>   (add Terminal with the + button, switch it on, restart XENIO). Opening and switching apps works without it;
+> * **Screen & System Audio Recording** — "look at my screen" and window titles;
+> * **Automation > Spotify / Music** — pause/next/play in those apps (macOS asks the first time).
+>
+> Check with `.venv/bin/python -m app.main --health`: missing permissions are named there.
+
+> **Your call — Codex (ChatGPT sign-in) as the main model, like on Windows.** Run
+> `hermes auth add openai-codex --type oauth` and approve it in the browser. Then switch the main model with
+> `hermes config set model.provider openai-codex` and `hermes config set model.default gpt-6-luna`; the free
+> OpenRouter models stay as the fallback chain behind it.
+
+> **Your call — Gemini as the last fallback.** Put `GEMINI_API_KEY=...` into `~/.hermes/.env` yourself (never into a
+> chat), then `hermes fallback add` and pick *gemini*. The Google AI Studio free tier costs nothing; if billing is
+> enabled on that Google project it can.
+
+> **Optional — songs on Spotify instead of YouTube.** Create a free app at developer.spotify.com and put
+> `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` into XENIO's `.env`. Without them "play <song>" opens the song on
+> YouTube in one tab. To make it start by itself in Safari: *Safari > Settings > Websites > Auto-Play > youtube.com:
+> Allow All Auto-Play*.
+
+> **MANUAL STEP REQUIRED: Google sign-in (Calendar + Gmail, read-only mail).** Your OAuth client file is in
+> `user_required_steps/`. Run `.venv/bin/python -m app.main --connect-google --client-file "user_required_steps/credentials.json"`
+> and press *Allow* in the browser. Details: [PERSONAL_INTEGRATIONS.md](PERSONAL_INTEGRATIONS.md#google-calendar--gmail-one-sign-in-minimal-permissions).
+
+> **MANUAL STEP REQUIRED — say the words.** `.venv/bin/python -m app.main --voice`, say **"Hey Xenio"**, then
+> **"What can you do?"**.
+
+> **Your call — rotate the nabh.cloud key.** It was pasted into a chat on Windows; it is stored only in `.env`.
+
+> **Optional: other mailboxes.** `brew install himalaya`, then run `himalaya` and follow its wizard.
+
+## Windows (the previous machine)
+
+### What was done on the Windows laptop
 
 | Step | Status |
 |---|---|
@@ -21,7 +75,7 @@
 | V5: plugin 0.6 with `xenio_look_at_screen` (screen vision with gpt-6-luna, nothing to install: capture uses Windows itself) | done |
 | V5: `hermes auth reset openai-codex` cleared stale model cooldowns (gpt-6-sol, gpt-5.4, ... refused for ChatGPT sign-ins) that blocked Codex for vision; sign-in tokens untouched | done |
 
-## What only you can do
+### What only you could do there
 
 > **MANUAL STEP REQUIRED — microphone access.** Windows must allow desktop apps to use the
 > microphone: *Settings → Privacy & security → Microphone → "Let desktop apps access your
@@ -90,7 +144,25 @@ No manual step is needed for vision. If `--health` ever shows "blocked for visio
 
 ## Model reliability
 
-**Current setup (2026-10-03, chosen by measurement):**
+**This Mac (2026-10-17, chosen by measurement, free models only):**
+
+| Order | Model | Measured through XENIO (warm Hermes session) |
+|---|---|---|
+| main | `thinkingmachines/inkling:free` (OpenRouter), reasoning `low` | greeting 4.0 s, a tool task 20.9 s, arithmetic 6.6 s; reads images (test card read correctly in 12.6 s) |
+| fallback 1 | `nvidia/nemotron-3.5-super-vl:free` | sees images; direct API: tool call 2.0 s, vision 4.3 s, but 20-128 s per turn with Hermes' full prompt |
+| fallback 2 | `google/gemma-4-31b-it:free` | sees images; often rate-limited |
+| fallback 3 | `nvidia/nemotron-3-super-120b-a12b:free` | text only, another vendor's capacity |
+| fallback 4 | `nvidia/nemotron-3-ultra-550b-a55b:free` | text only (was the main model: 32 s for "OK", 79 s then a 503 in a real turn) |
+
+`auxiliary.free_only: true` keeps Hermes' side tasks (titles, compression, vision fallback) on free models. The
+OpenRouter account has purchased credits, which raises the free-model limit to 1,000 requests a day; nothing in this
+setup spends them. `thinkingmachines/inkling:free` answers only "agentic harnesses" (Hermes qualifies; a plain API
+call gets 403). A local model was considered and not used: on this 16 GB MacBook Air an 8B model is the practical
+size, too weak at choosing among XENIO's 60+ tools, and would take ~5 GB of memory while you work.
+
+Model turns stay at seconds; the **fast path** answers simple commands without the model (see README).
+
+**Windows laptop (2026-10-03):**
 
 | Order | Model | Why |
 |---|---|---|
@@ -133,6 +205,20 @@ XENIO's safety does not depend on the model: every tool call is checked by the p
 the model decides.
 
 ## Setting up from scratch (another machine)
+
+macOS:
+
+```bash
+# 1. Hermes Agent installed and working:  hermes status
+cd "path/to/Xenio Personal Ai"
+python3.14 -m venv .venv          # any CPython 3.11+; Hermes' installer ships 3.14 in ~/.local/share/uv/python
+.venv/bin/python -m pip install -r requirements.txt
+cp .env.example .env              # then put your keys into STT_API_KEY / TTS_API_KEY
+.venv/bin/python -m app.main --install-guard
+.venv/bin/python -m app.main --health
+```
+
+Windows:
 
 ```powershell
 # 1. Hermes Agent must already be installed and working:  hermes status
