@@ -1,0 +1,10 @@
+name: xenio-guard
+version: "0.7.0"
+description: >-
+  XENIO's tools and safety policy for Hermes. Only active in Hermes processes started by XENIO
+  (XENIO_GUARD=1): checks every tool call with XENIO's permission engine (allow / ask the user /
+  block) - files, terminal, web, browser, GitHub, email, memory and screen vision - adds XENIO's file,
+  web, personal (calendar, read-only email, GitHub, tasks, projects, briefing, scheduled checks) and
+  observe-only screen tools and desktop control (apps, windows, mouse, keyboard - every action
+  policy-checked), records the web sources used, flags instructions hidden in outside
+  content (including text seen on screen), and redacts secrets from tool output. A no-op elsewhere.

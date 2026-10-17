@@ -1,0 +1,29 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Runtime data (logs, recordings, downloaded models)
+data/
+logs/
+*.wav
+*.mp3
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Google OAuth client files and tokens (contain client secrets)
+user_required_steps/
+client_secret*.json
+*credentials*.json
+google_token.json

@@ -1,0 +1,14 @@
+# XENIO runtime (Python 3.11+; developed on 3.14.2, Windows 11)
+httpx>=0.28,<1            # STT/TTS HTTP clients
+python-dotenv>=1.0,<2     # .env loading (values never enter os.environ)
+numpy>=2.0,<3             # audio buffers
+sounddevice>=0.5,<1       # microphone / speaker (bundles PortAudio on Windows)
+sherpa-onnx>=1.13,<2      # local wake-word keyword spotting
+sentencepiece>=0.2,<1     # tokenises the wake phrase for sherpa-onnx
+
+# Tests
+pytest>=9,<10
+pytest-asyncio>=1.0,<2
+
+# Not listed on purpose: Hermes Agent. XENIO talks to the separately installed
+# `hermes` CLI over ACP and never imports Hermes code.
