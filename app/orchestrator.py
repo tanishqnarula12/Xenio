@@ -113,8 +113,10 @@ class XenioResponse:
 
 class Orchestrator:
     def __init__(self, hermes: HermesClient, gate: PermissionGate | None, paths: PathPolicy | Path,
-                 sources_file: Path | None = None):
+                 sources_file: Path | None = None, fast_path=None):
         self.hermes = hermes
+        self.fast = fast_path  # app.fastpath.FastPath: simple commands without the model (None = always Hermes)
+        self._local_notes: list[str] = []  # what the fast path did since Hermes' last turn
         self.gate = gate
         self.paths = paths if isinstance(paths, PathPolicy) else PathPolicy(workspace=paths)
         self.sources = SourceLog(sources_file)
@@ -159,8 +161,18 @@ class Orchestrator:
             event(log, "User command received", chars=len(text))
             log.debug("User command text: %s", text)
             started = time.monotonic()
+            if self.fast is not None:
+                fast = await self.fast.handle(text)
+                if fast is not None:  # done by XENIO itself, in well under a second
+                    if fast.note:
+                        self._local_notes = [*self._local_notes, fast.note][-5:]
+                    if on_chunk is not None:
+                        on_chunk(fast.text)
+                    # a failed step is a normal reply ("That didn't work: ..."), marked [FAILED] in the action list
+                    return XenioResponse(fast.text, ok=True, tool_calls=fast.actions)
             # V5.5: the language this request was spoken in (reply in it) and its language-independent intents
-            notes = "\n".join(n for n in (context, language_note(text)) if n)
+            local, self._local_notes = "\n".join(self._local_notes), []
+            notes = "\n".join(n for n in (context, local, language_note(text)) if n)
             message = f"{text}\n\n{notes}" if notes else text
             mark = self.sources.mark()
             self._declined, self._approved = [], []

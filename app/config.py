@@ -152,6 +152,16 @@ class VoiceSettings:
 
 
 @dataclass(frozen=True)
+class FastPathSettings:
+    """Simple commands XENIO carries out itself, without the model (app/fastpath.py)."""
+
+    enabled: bool = True
+    music_service: str = "auto"  # auto (Spotify when its keys are set, else YouTube) | youtube | spotify
+    spotify_client_id: str = ""
+    spotify_client_secret: Secret = Secret("")
+
+
+@dataclass(frozen=True)
 class Settings:
     name: str
     data_dir: Path
@@ -161,6 +171,7 @@ class Settings:
     stt: STTSettings
     tts: TTSSettings
     voice: VoiceSettings
+    fast: FastPathSettings = FastPathSettings()
 
     @property
     def models_dir(self) -> Path:
@@ -173,7 +184,7 @@ class Settings:
     def secret_values(self) -> list[str]:
         """Raw secret strings, used only by the log redactor."""
         vision_key = self.hermes.vision.api_key if self.hermes.vision else Secret("")
-        return [s.reveal() for s in (self.stt.api_key, self.tts.api_key, vision_key) if s]
+        return [s.reveal() for s in (self.stt.api_key, self.tts.api_key, vision_key, self.fast.spotify_client_secret) if s]
 
     def problems(self) -> list[str]:
         """Human-readable configuration gaps (empty list = fully configured)."""
@@ -358,6 +369,13 @@ def load_settings(env_file: Path | None = None, environ: Mapping[str, str] | Non
         early_transcribe=r.bool("XENIO_EARLY_TRANSCRIBE", True),
         turn_patience_seconds=r.float("XENIO_TURN_PATIENCE_SECONDS", 2.0, minimum=0.5, maximum=5.0),
     )
+    fast = FastPathSettings(
+        enabled=r.bool("XENIO_FAST_PATH", True),
+        music_service=_choice(r.str("XENIO_MUSIC_SERVICE", "auto").lower(), ("auto", "youtube", "spotify"),
+                              "XENIO_MUSIC_SERVICE"),
+        spotify_client_id=r.str("SPOTIFY_CLIENT_ID"),
+        spotify_client_secret=Secret(r.str("SPOTIFY_CLIENT_SECRET")),
+    )
     return Settings(
         name=name,
         data_dir=data_dir,
@@ -367,4 +385,5 @@ def load_settings(env_file: Path | None = None, environ: Mapping[str, str] | Non
         stt=stt,
         tts=tts,
         voice=voice,
+        fast=fast,
     )

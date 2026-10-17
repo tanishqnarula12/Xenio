@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
 try:  # started with a Python that does not have XENIO's packages (e.g. plain `python` outside the venv)
@@ -21,8 +22,9 @@ try:  # started with a Python that does not have XENIO's packages (e.g. plain `p
 except ModuleNotFoundError as _missing:
     sys.exit(f"XENIO's packages are not installed for this Python ({sys.executable}): missing '{_missing.name}'.\n"
              "Start XENIO with the project's virtual environment:\n"
-             "    .\\.venv\\Scripts\\python.exe -m app.main --voice\n"
-             "or activate it first:  .\\.venv\\Scripts\\Activate.ps1")
+             + ("    .\\.venv\\Scripts\\python.exe -m app.main --voice\n"
+                "or activate it first:  .\\.venv\\Scripts\\Activate.ps1" if os.name == "nt" else
+                "    .venv/bin/python -m app.main --voice\nor activate it first:  source .venv/bin/activate"))
 
 from app import __version__
 from app.config import ConfigError, Settings, default_hermes_home, load_settings
@@ -67,7 +69,22 @@ def build_path_policy(settings: Settings) -> PathPolicy:
 
 def build_orchestrator(settings: Settings, gate: PermissionGate) -> Orchestrator:
     hermes = create_hermes_client(settings.hermes, settings.data_dir)
-    return Orchestrator(hermes, gate, build_path_policy(settings), sources_file=settings.data_dir / "sources.jsonl")
+    paths = build_path_policy(settings)
+    return Orchestrator(hermes, gate, paths, sources_file=settings.data_dir / "sources.jsonl",
+                        fast_path=build_fast_path(settings, paths))
+
+
+def build_fast_path(settings: Settings, paths):
+    """XENIO's own fast path for simple commands (open apps, music, volume, time), warmed up at start."""
+    if not settings.fast.enabled:
+        return None
+    from app.fastpath import FastPath
+    from app.media import Music
+
+    fast = FastPath(paths, music=Music(settings.fast.music_service, settings.fast.spotify_client_id,
+                                       settings.fast.spotify_client_secret))
+    fast.warm()
+    return fast
 
 
 def build_proactive(settings: Settings, hermes=None):

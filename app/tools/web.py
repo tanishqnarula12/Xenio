@@ -21,6 +21,9 @@ import hashlib
 import os
 import socket
 import ssl
+import subprocess
+import sys
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -44,13 +47,16 @@ DEFAULT_MAX_MB = 200
 MAX_MB_LIMIT = 2048
 TIMEOUT_SECONDS = 30
 _CHUNK = 64 * 1024
-_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) XENIO/0.3 (personal assistant)"
+_USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) XENIO/0.3 (personal assistant)" if sys.platform == "darwin"
+               else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) XENIO/0.3 (personal assistant)")
 
 
 def _default_opener(url: str) -> bool:
     if os.name == "nt":
         os.startfile(url)  # the user's default browser; only http(s) links get here
         return True
+    if sys.platform == "darwin":  # LaunchServices directly: one tab in the default browser, ~0.1 s
+        return subprocess.run(["/usr/bin/open", url], capture_output=True, timeout=15).returncode == 0
     return webbrowser.open(url, new=2)
 
 
@@ -67,7 +73,7 @@ def open_url(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     try:
         opened = OPENER(url)
     except OSError as exc:
-        return ToolResult.fail(tool, f"Windows could not open your browser: {exc.strerror or exc}")
+        return ToolResult.fail(tool, f"The system could not open your browser: {exc.strerror or exc}")
     if opened is False:
         return ToolResult.fail(tool, "No web browser is available to open the page")
     return ToolResult.ok(tool, f"Opened {url} in your default web browser", url=url, host=url_host(url))
@@ -94,7 +100,12 @@ def _max_bytes(args: dict[str, Any]) -> int:
 
 
 def _mark_from_internet(path: Path, url: str) -> bool:
-    """Windows "Mark of the Web": Windows and Office warn before the file is opened or run."""
+    """Windows "Mark of the Web" / macOS quarantine flag: the system warns before the file is opened or run."""
+    if sys.platform == "darwin":
+        # the flag Safari sets on downloads; Gatekeeper checks it before a downloaded app or script runs
+        flag = f"0081;{int(time.time()):x};XENIO;"
+        return subprocess.run(["/usr/bin/xattr", "-w", "com.apple.quarantine", flag, str(path)],
+                              capture_output=True, timeout=10).returncode == 0
     if os.name != "nt":
         return False
     try:

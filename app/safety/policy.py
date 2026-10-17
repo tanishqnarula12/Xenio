@@ -2068,6 +2068,23 @@ def unattended_desktop(decision: Decision, tool: str, session_id: str = "") -> D
     return decision
 
 
+MEDIA_ACTIONS = {"play", "pause", "next", "previous", "volume", "play_track", "time"}
+
+
+def classify_media_action(action: str, detail: str = "") -> Decision:
+    """XENIO's fast path (speed): playing music, pausing, skipping, the volume and the time. They change only what
+    is playing and how loud: SAFE_WRITE; the time is READ. Unknown media actions are blocked, never guessed."""
+    act = str(action or "").lower()
+    if act not in MEDIA_ACTIONS:
+        return blocked("media.action", f"{act or 'an unknown'} media action", "unknown media action")
+    if act == "time":
+        return read("media.time", "tell the time")
+    words = {"play": "resume playback", "pause": "pause playback", "next": "skip to the next track",
+             "previous": "go back to the previous track", "volume": f"set the volume ({detail})",
+             "play_track": f"play {detail}"}
+    return Decision(RiskLevel.SAFE_WRITE, f"media.{act}", words[act])
+
+
 # Foundation for LATER screen interaction (V5 is observe-only: no XENIO tool clicks or types on the screen).
 # Hermes' own computer_use stays CONFIRM_REQUIRED and is not in XENIO's tool set at all.
 _SECURITY_OFF = re.compile(

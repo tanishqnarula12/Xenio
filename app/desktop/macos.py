@@ -508,6 +508,31 @@ def press_media_key(code: int) -> None:
     post(media_event(code, False))
 
 
+def quit_app(pid: int, timeout: float = 4.0) -> str:
+    """Quit an app the way Cmd+Q does (it may ask to save; nothing is forced). "closed" | "still open" | "not running".
+    NSRunningApplication.terminate needs no permission."""
+    L = lib()
+    pool = L.objc.objc_autoreleasePoolPush()
+    try:
+        app = L.send(L.cls("NSRunningApplication"), "runningApplicationWithProcessIdentifier:", _P, pid,
+                     argtypes=(ctypes.c_int32,))
+        if not app:
+            return "not running"
+        L.send(app, "terminate", ctypes.c_bool)
+    finally:
+        L.objc.objc_autoreleasePoolPop(pool)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return "closed"
+        except PermissionError:
+            pass
+        time.sleep(0.05)
+    return "still open"
+
+
 def can_post_events() -> bool:
     return bool(lib().cg.CGPreflightPostEventAccess())
 
