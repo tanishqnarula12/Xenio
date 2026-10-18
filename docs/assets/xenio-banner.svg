@@ -41,7 +41,7 @@
         <animate attributeName="stroke-dashoffset" values="225;0" dur="7.5s" repeatCount="indefinite"/>
       </path>
     </g>
-    <animateTransform attributeName="transform" type="scale" values=".96;1.035;.96" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.8s" repeatCount="indefinite"/>
+    <animateTransform attributeName="transform" type="scale" additive="sum" values=".96;1.035;.96" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.8s" repeatCount="indefinite"/>
   </g>
   <circle cx="995" cy="158" r="61" fill="none" stroke="#D8F9FF" stroke-opacity=".48" stroke-width="1.2">
     <animate attributeName="r" values="61;69;61" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.8s" repeatCount="indefinite"/>
