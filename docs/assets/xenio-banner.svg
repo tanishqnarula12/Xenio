@@ -29,20 +29,26 @@
   <ellipse cx="995" cy="158" rx="94" ry="34" transform="rotate(-32 995 158)" stroke="url(#orb)" stroke-opacity=".68" stroke-width="1.5" stroke-dasharray="80 520">
     <animate attributeName="stroke-dashoffset" values="600;0" dur="9s" repeatCount="indefinite"/>
   </ellipse>
-  <g transform="translate(995 158)">
-    <g transform="translate(-995 -158)">
-      <circle cx="995" cy="158" r="73" fill="#8A9CFF" opacity=".36" filter="url(#core-glow)"/>
-      <circle cx="995" cy="158" r="61" fill="url(#orb-core)"/>
-      <circle cx="995" cy="158" r="61" fill="url(#orb-highlight)"/>
-      <path d="M950 151c21-20 63-28 91-9" stroke="#F2FFFF" stroke-opacity=".72" stroke-width="2" stroke-linecap="round" stroke-dasharray="76 140">
-        <animate attributeName="stroke-dashoffset" values="216;0" dur="6s" repeatCount="indefinite"/>
-      </path>
-      <path d="M943 173c22 24 70 34 104 11" stroke="#E5D8FF" stroke-opacity=".55" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="45 180">
-        <animate attributeName="stroke-dashoffset" values="225;0" dur="7.5s" repeatCount="indefinite"/>
-      </path>
-    </g>
-    <animateTransform attributeName="transform" type="scale" additive="sum" values=".96;1.035;.96" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.8s" repeatCount="indefinite"/>
-  </g>
+  <circle cx="995" cy="158" r="66" fill="#8A9CFF" opacity=".28" filter="url(#core-glow)">
+    <animate attributeName="r" values="62;79;62" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values=".2;.42;.2" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.2s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="995" cy="158" r="54" fill="#788CFF" stroke="url(#orb)" stroke-width="1.5" stroke-opacity=".8">
+    <animate attributeName="r" values="51;57;51" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.2s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="995" cy="158" r="54" fill="url(#orb-core)" opacity=".92">
+    <animate attributeName="r" values="51;57;51" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.2s" repeatCount="indefinite"/>
+  </circle>
+  <ellipse cx="976" cy="132" rx="27" ry="17" fill="url(#orb-highlight)" opacity=".74">
+    <animate attributeName="rx" values="23;28;23" dur="4.2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values=".55;.85;.55" dur="4.2s" repeatCount="indefinite"/>
+  </ellipse>
+  <path d="M948 154c23-19 66-24 94-6" stroke="#F2FFFF" stroke-opacity=".75" stroke-width="2" stroke-linecap="round" stroke-dasharray="64 120">
+    <animate attributeName="stroke-dashoffset" values="184;0" dur="6s" repeatCount="indefinite"/>
+  </path>
+  <path d="M950 173c23 22 62 26 90 10" stroke="#E5D8FF" stroke-opacity=".6" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="44 150">
+    <animate attributeName="stroke-dashoffset" values="194;0" dur="7s" repeatCount="indefinite"/>
+  </path>
   <circle cx="995" cy="158" r="61" fill="none" stroke="#D8F9FF" stroke-opacity=".48" stroke-width="1.2">
     <animate attributeName="r" values="61;69;61" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.8s" repeatCount="indefinite"/>
     <animate attributeName="stroke-opacity" values=".5;.08;.5" dur="4.8s" repeatCount="indefinite"/>
