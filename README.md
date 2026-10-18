@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/xenio-banner.svg?v=3" alt="XENIO — a voice-first control layer for Hermes Agent" width="100%">
+  <img src="docs/assets/xenio-banner.svg?v=4" alt="XENIO — a voice-first control layer for Hermes Agent" width="100%">
 </p>
 
 <p align="center">
