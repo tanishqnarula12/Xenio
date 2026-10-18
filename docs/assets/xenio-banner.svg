@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="44" y1="24" x2="1134" y2="312" gradientUnits="userSpaceOnUse"><stop stop-color="#101B36"/><stop offset=".55" stop-color="#171A35"/><stop offset="1" stop-color="#301A46"/></linearGradient>
+    <linearGradient id="orb" x1="896" y1="72" x2="1063" y2="247" gradientUnits="userSpaceOnUse"><stop stop-color="#86F7E5"/><stop offset=".48" stop-color="#8A9CFF"/><stop offset="1" stop-color="#D895FF"/></linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="matrix(170 0 0 148 997 157)" gradientUnits="userSpaceOnUse"><stop stop-color="#8A9CFF" stop-opacity=".36"/><stop offset="1" stop-color="#8A9CFF" stop-opacity="0"/></radialGradient>
+    <filter id="blur" x="814" y="7" width="330" height="310" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse"><feGaussianBlur stdDeviation="24"/></filter>
+  </defs>
+  <rect width="1200" height="320" rx="28" fill="url(#bg)"/>
+  <path d="M0 254c191-43 300-28 462 12 149 37 254 17 398-26 144-43 225-51 340-11v91H0v-66Z" fill="#0B1328" fill-opacity=".55"/>
+  <circle cx="995" cy="158" r="118" fill="url(#glow)" filter="url(#blur)"/>
+  <circle cx="995" cy="158" r="79" fill="#10182E" stroke="url(#orb)" stroke-width="2"/>
+  <circle cx="995" cy="158" r="66" fill="url(#orb)" fill-opacity=".12"/>
+  <path d="M963 156c0-5 4-9 9-9s9 4 9 9-4 9-9 9-9-4-9-9Zm46 0c0-5 4-9 9-9s9 4 9 9-4 9-9 9-9-4-9-9Z" fill="#D8F9FF"/>
+  <path d="M973 184c12 10 32 10 44 0" stroke="#D8F9FF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M995 69v-17m0 212v-17M906 158h-17m212 0h-17m-151-63-12-12m150 150-12-12m0-126 12-12m-150 150 12-12" stroke="#A9B7FF" stroke-opacity=".65" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="884" cy="105" r="3" fill="#86F7E5"/><circle cx="1098" cy="215" r="4" fill="#D895FF"/><circle cx="1070" cy="77" r="2.5" fill="#86F7E5"/>
+  <text x="76" y="105" fill="#A6F7E8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" letter-spacing="4">VOICE · TOOLS · SAFETY</text>
+  <text x="72" y="190" fill="#F6F8FF" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="76" font-weight="750" letter-spacing="-3">XENIO</text>
+  <text x="78" y="232" fill="#C7D0EA" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="21">A voice-first control layer for Hermes Agent</text>
+  <rect x="78" y="263" width="150" height="1" fill="#536385"/>
+  <text x="78" y="289" fill="#9AA8C8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" letter-spacing="1.2">YOUR ASSISTANT. YOUR APPROVAL.</text>
+</svg>
