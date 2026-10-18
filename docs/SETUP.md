@@ -8,7 +8,8 @@
 | Virtualenv `.venv` from the CPython 3.14.7 that Hermes' installer already put on this Mac (`~/.local/share/uv/python`), `requirements.txt` installed | done |
 | `.env` carried over (STT/TTS keys, `XENIO_GITHUB_USER`) | done |
 | Wake-word and voice-activity models in `~/.local/share/xenio/models` (20 MB) | done |
-| Hermes Agent 0.22.2 (`~/.hermes`): `xenio-guard` plugin 0.7 installed and enabled, `platform_toolsets.acp: [hermes-acp, xenio]`, Tool Search scoped to XENIO; `config.yaml` backed up to `~/.local/share/xenio/backups` | done |
+| Hermes Agent 0.22.2 (`~/.hermes`): `xenio-guard` plugin 0.9 installed and enabled, `platform_toolsets.acp: [hermes-acp, xenio]`, `tools.tool_search.enabled: off` (see [HERMES_INTEGRATION.md](HERMES_INTEGRATION.md): Hermes 0.22's gateway runs every session of the profile, so this applies to all of them); `config.yaml` backed up to `~/.local/share/xenio/backups` | done |
+| Google sign-in (Calendar + read-only Gmail) with the *Desktop app* client `user_required_steps/calendar_credentials.json.json`; token in `~/.local/share/xenio/google_token.json` (owner-only) | done 2026-10-18 |
 | Hermes model chain, free models only (see [Model reliability](#model-reliability)): main `thinkingmachines/inkling:free` (sees images), reasoning effort `low`, `auxiliary.free_only: true` (side tasks can never fall back to a paid model) | done |
 | macOS port: safety rules for macOS folders, Trash, desktop control through the Accessibility API, in-memory screen capture, media keys | done (`macos-port` branch) |
 | Fast path for simple commands (apps, music, volume, time) | done |
@@ -17,13 +18,16 @@
 
 ## What only you can do (macOS)
 
-> **MANUAL STEP REQUIRED — permissions for the app XENIO runs in.** macOS asks once per app. Run XENIO from
-> **Terminal** (or iTerm/VS Code) and allow, in *System Settings > Privacy & Security*:
+> **MANUAL STEP REQUIRED — permissions for the app XENIO runs in.** macOS grants these to the app you start XENIO
+> from, not to Python: on this Mac that is **Antigravity IDE** (XENIO finds it and names it in every permission
+> message). Allow, in *System Settings > Privacy & Security*:
 > * **Microphone** — voice mode (macOS asks on the first `--voice` run);
-> * **Accessibility** — reading a window's controls, typing, clicking, window control, media keys
->   (add Terminal with the + button, switch it on, restart XENIO). Opening and switching apps works without it;
-> * **Screen & System Audio Recording** — "look at my screen" and window titles;
-> * **Automation > Spotify / Music** — pause/next/play in those apps (macOS asks the first time).
+> * **Accessibility** — reading a window's controls, typing, clicking, window control, media keys, finding a chat in
+>   WhatsApp (switch on Antigravity IDE, then restart XENIO). **Off as of 2026-10-18.** Opening apps, running a
+>   command in Terminal and Spotify/Music control work without it;
+> * **Screen & System Audio Recording** — "look at my screen" and window titles (on);
+> * **Automation > Terminal / Spotify / Music** — "open Terminal and run X", pause/next/play in those apps (macOS asks
+>   the first time; answer *OK*).
 >
 > Check with `.venv/bin/python -m app.main --health`: missing permissions are named there.
 
@@ -41,9 +45,10 @@
 > YouTube in one tab. To make it start by itself in Safari: *Safari > Settings > Websites > Auto-Play > youtube.com:
 > Allow All Auto-Play*.
 
-> **MANUAL STEP REQUIRED: Google sign-in (Calendar + Gmail, read-only mail).** Your OAuth client file is in
-> `user_required_steps/`. Run `.venv/bin/python -m app.main --connect-google --client-file "user_required_steps/credentials.json"`
-> and press *Allow* in the browser. Details: [PERSONAL_INTEGRATIONS.md](PERSONAL_INTEGRATIONS.md#google-calendar--gmail-one-sign-in-minimal-permissions).
+> **Google sign-in (Calendar + Gmail, read-only mail): done 2026-10-18.** To redo it:
+> `.venv/bin/python -m app.main --connect-google --client-file "user_required_steps/calendar_credentials.json.json"`
+> and press *Allow* in the browser (that is the *Desktop app* client; `credentials.json` there is a *Web application*
+> client, which XENIO refuses). Details: [PERSONAL_INTEGRATIONS.md](PERSONAL_INTEGRATIONS.md#google-calendar--gmail-one-sign-in-minimal-permissions).
 
 > **MANUAL STEP REQUIRED — say the words.** `.venv/bin/python -m app.main --voice`, say **"Hey Xenio"**, then
 > **"What can you do?"**.

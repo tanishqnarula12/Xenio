@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.desktop import apps as apps_mod
+from app.desktop import mac_terminal
 from app.desktop.input import DesktopController, InputError, Stopped, normalize_combo, parse_keys
 from app.desktop.stop import EscWatcher, stop_requested_since
 from app.desktop.uia import UIAClient, UIAError
@@ -34,7 +35,9 @@ TRAY_GRACE = 6.0  # seconds a tray app gets to show its own window again before 
 
 
 class DesktopError(Exception):
-    pass
+    def __init__(self, message: str, status: str = "FAILED"):
+        super().__init__(message)
+        self.status = status  # app.tools.base.STATUSES
 
 
 def _platform_backends():
@@ -61,8 +64,10 @@ def _norm_text(text: str) -> str:
 
 class DesktopService:
     def __init__(self, catalog: apps_mod.AppCatalog | None = None, uia: UIAClient | None = None, controller=None,
-                 windows=None, data_dir: Path | None = None, clock=time.time, screen_digest=None, sleep=time.sleep):
+                 windows=None, data_dir: Path | None = None, clock=time.time, screen_digest=None, sleep=time.sleep,
+                 terminal=None):
         self.catalog = catalog or apps_mod.AppCatalog(data_dir)
+        self._terminal = terminal or mac_terminal.run_in_terminal
         if uia is None or windows is None:
             platform_windows, platform_uia = _platform_backends()
             uia, windows = uia or platform_uia(), windows or platform_windows
@@ -117,16 +122,19 @@ class DesktopService:
     def resolve_app(self, name: str) -> apps_mod.Resolution:
         return self.catalog.resolve(name)
 
-    def open_app(self, name: str, wait_seconds: float = 25.0) -> dict:
+    def open_app(self, name: str, wait_seconds: float = 25.0, command: str = "") -> dict:
         if self.stopped():
             raise DesktopError("stopped by the user")
+        if command.strip():
+            return self.run_in_terminal(name, command, wait_seconds)
         res = self.resolve_app(name)
         if not res.matches or res.confidence < 0.6:
-            raise DesktopError(f"No installed app called {name!r} was found. Ask the user for its exact name, or use "
-                               f"xenio_list_apps to search.")
+            raise DesktopError(f"No installed app called {name!r} was found on this "
+                               f"{'Mac' if sys.platform == 'darwin' else 'PC'}, so nothing was opened. Tell the user it "
+                               "is not installed, or ask for its exact name (xenio_list_apps searches).", "NOT_SUPPORTED")
         if res.ambiguous:
             raise DesktopError(f"Several installed apps match {name!r}: {', '.join(res.candidates())}. Ask the user "
-                               "which one they mean.")
+                               "which one they mean.", "NEEDS_CLARIFICATION")
         entry = res.best
         self._check_unlocked()
         started = time.monotonic()
@@ -166,6 +174,21 @@ class DesktopService:
         self.remember(entry.name)
         return {"app": entry.name, "verified": True, "how": how, "window": window.public(), "in_front": bool(focused),
                 "launch_s": elapsed, "resolution": res.describe()}
+
+    def run_in_terminal(self, name: str, command: str, wait_seconds: float = 10.0) -> dict:
+        """"Open Terminal and run X": a new, visible window of the user's Terminal runs X (macOS Terminal only)."""
+        res = self.resolve_app(name)
+        entry = res.best if res.matches and res.confidence >= 0.6 and not res.ambiguous else None
+        if sys.platform != "darwin" or entry is None or entry.app_id != mac_terminal.TERMINAL_BUNDLE:
+            raise DesktopError(f"XENIO runs a command in a visible window only in the macOS Terminal app (name "
+                               f"'Terminal'), not in {name!r}. Nothing was run.", "NOT_SUPPORTED")
+        self._check_unlocked()
+        try:
+            out = self._terminal(command, max(2.0, min(float(wait_seconds or 10), 60.0)))
+        except mac_terminal.TerminalError as exc:
+            raise DesktopError(str(exc)) from None
+        self.remember(entry.name)
+        return out
 
     # ---- windows ------------------------------------------------------------------------------------------------
 

@@ -36,7 +36,10 @@ When active it:
      Each mouse/keyboard action is classified with live facts (the app in front, the control a click really hits,
      the focused field): sending/posting/deleting asks first, secrets and password fields are blocked, scheduled
      runs never act, "Xenio stop" / Esc ends automation, and runaway loops are cut off. Typed text never reaches
-     the audit log.
+     the audit log. On macOS, xenio_open_app with a 'command' runs it in a new visible Terminal window, judged by
+     exactly the terminal tool's command rules.
+ 13. registers xenio_media (play a song, pause/resume/next/previous, what is playing, volume) - the same player
+     code and rules as XENIO's fast path.
 Decisions are appended to ``XENIO_DATA_DIR/logs/xenio-guard.log`` (JSON lines, redacted).
 
 Installed by ``python -m app.main --install-guard``; remove with ``hermes plugins disable xenio-guard``.
@@ -84,13 +87,13 @@ def _load():
         if not origin.startswith(root):
             raise ImportError(f"a different package named 'app' shadows XENIO ({origin})")
         from app.safety import policy
-        from app.tools import base, desktop, engineering, filesystem, personal, vision, web
+        from app.tools import base, desktop, engineering, filesystem, media, personal, vision, web
 
         base.AUDIT = lambda event, fields: _audit(event, **fields)
         _state.update(policy=policy, base=base, desktop=desktop,
                       tools=[*filesystem.xenio_tools(), *web.xenio_tools(), *personal.xenio_tools(),
                              *vision.xenio_tools(), *(desktop.xenio_tools() if _DESKTOP_PLATFORM else []),
-                             *engineering.xenio_tools()],
+                             *media.xenio_tools(), *engineering.xenio_tools()],
                       paths=policy.default_path_policy(), secrets=policy.secret_env_values())
         _memory_at_start.update(_memory_entries())
         return True
@@ -171,6 +174,9 @@ def _desktop_decision(tool_name, args, session):
             from app.desktop.apps import launch_risk
 
             info["app_entry"] = {"name": res.best.name, "risk": launch_risk(res.best), "path": res.best.path}
+        if str(args.get("command") or "").strip():  # "open Terminal and run X": X gets the terminal tool's rules
+            paths = _state["paths"]
+            info["command_decision"] = policy.classify_command(str(args["command"]), paths, str(paths.home))
     elif tool_name == "xenio_gui":
         info = service.probe(args)
     decision = policy.unattended_desktop(policy.classify_desktop_tool(tool_name, args, info), tool_name, session)
@@ -612,6 +618,25 @@ def _post_approval_response(choice=None, pattern_key="", **_kwargs):
 
 # ---- system prompt (Hermes allows 4000 characters per section, 8000 in total) -------------------
 
+def _desktop_prompt():
+    if not _DESKTOP_PLATFORM:
+        return ""
+    computer = "Mac" if sys.platform == "darwin" else "PC"
+    return (
+        f"DESKTOP: you control the user's {computer} through XENIO's tools - never say you cannot open or use apps. "
+        "Open an app: xenio_open_app (it reports whether the window really appeared; an app that is not installed is "
+        "reported as such - say so). Then xenio_window, xenio_find_ui (read the window's controls) and xenio_gui "
+        "(mouse/keyboard), e.g. find a chat in WhatsApp: open it, find_ui for its search field, type the name, pick "
+        "the matching chat, type the draft - XENIO asks the user before anything is sent. "
+        + ("Their Terminal app: 'open Terminal and run/print X' = xenio_open_app name 'Terminal' with command 'X' (a "
+           "new visible window); the terminal tool never counts as opening Terminal. " if sys.platform == "darwin" else "")
+        + "Music and sound: xenio_media (play_song, play, pause, next, previous, now_playing, volume). "
+        "Results carry status: SUCCEEDED, UNVERIFIED (done but not confirmed - say exactly that), RUNNING, FAILED, "
+        "NOT_SUPPORTED, NEEDS_CLARIFICATION (ask the user), NEEDS_PERMISSION (tell the user the exact macOS setting "
+        "the result names). Never report a stronger result than the status.\n"
+    )
+
+
 def _system_prompt(_info=None):
     paths = _state["paths"]
     folders = ", ".join(f"{name} = {path}" for name, path in paths.named_roots.items())
@@ -621,9 +646,18 @@ def _system_prompt(_info=None):
         f"The user's folders: {folders}; home = {paths.home}; XENIO workspace = {paths.workspace}. "
         "\"My Desktop\" means the Desktop path above.\n"
         "FILES: to create, list, inspect, move/rename or delete files and folders ALWAYS use xenio_create_directory, "
-        "xenio_list_directory, xenio_inspect_path, xenio_move_path, xenio_delete_path (normal Windows paths; deletes go "
-        "to the Recycle Bin unless permanent=true). Use read_file / write_file / patch / search_files for contents. "
-        "The terminal tool runs BASH (Git Bash) even on Windows: bash syntax only, never cmd syntax.\n"
+        "xenio_list_directory, xenio_inspect_path, xenio_move_path, xenio_delete_path ("
+        + ("macOS paths; deletes go to the Trash unless permanent=true). " if sys.platform == "darwin" else
+           "normal Windows paths; deletes go to the Recycle Bin unless permanent=true). ")
+        + "Use read_file / write_file / patch / search_files for contents. "
+        + ("The terminal tool is XENIO's HIDDEN background shell (zsh): the user never sees it.\n"
+           if sys.platform == "darwin" else
+           "The terminal tool runs BASH (Git Bash) even on Windows: bash syntax only, never cmd syntax.\n")
+        + _desktop_prompt() +
+        "ENGINEERING TEAM: anything about XENIO's engineering team or its runs ('is the team working on anything?', "
+        "'what did they find?') = xenio_engineering status / report / list. Work on a repository by the team = "
+        "xenio_engineering start with 'request' (what to do), 'path' or 'project', and 'mode' (explain | review | test | "
+        "plan | change).\n"
         "Every tool returns a result. Tell the user an action succeeded ONLY if its result reports success. If a "
         "tool was blocked, declined by the user, or failed, say so plainly with the real reason and do not try to "
         "achieve the same thing another way in that turn. A decline applies only to that one attempt: when the user "
@@ -698,7 +732,8 @@ def register(ctx):
         ctx.register_tool(name=tool.hermes_name, toolset="xenio", schema=tool.hermes_schema(),
                           handler=_make_handler(tool), description=tool.description,
                           emoji="🌐" if tool.name.startswith("web.") else "👁" if tool.name.startswith("vision.")
-                          else "🖱" if tool.name.startswith("desktop.") else "🗂")
+                          else "🖱" if tool.name.startswith("desktop.") else "🎵" if tool.name.startswith("media.")
+                          else "🗂")
     ctx.register_system_prompt_section("xenio-guard.environment", _system_prompt, position="after_memory",
                                        max_chars=4000)
     ctx.register_system_prompt_section("xenio-guard.web", _web_prompt, position="after_memory", max_chars=4000)

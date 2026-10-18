@@ -1,0 +1,33 @@
+{
+  "name": "xenio-ui",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "XENIO UI V1: the local interface over XENIO (served by `python -m app.main --ui`).",
+  "scripts": {
+    "dev": "vite",
+    "dev:demo": "VITE_XENIO_DEMO=1 vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "gsap": "3.15.0",
+    "lucide-react": "1.59.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.8",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "jsdom": "30.1.3",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  }
+}

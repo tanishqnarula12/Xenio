@@ -2,6 +2,7 @@
 
     python -m app.main                    terminal text mode
     python -m app.main --voice            voice mode (wake word -> STT -> Hermes -> TTS)
+    python -m app.main --ui               XENIO's interface in your browser (http://127.0.0.1:8765)
     python -m app.main --health           system check
     python -m app.main --connect-google   sign in to Google for Calendar + Gmail (read-only mail)
     python -m app.main --briefing         print the daily briefing (no model call)
@@ -42,6 +43,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m app.main", description="XENIO personal AI (powered by Hermes)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--voice", action="store_true", help="voice mode: wake word, speech in, speech out")
+    mode.add_argument("--ui", action="store_true", help="XENIO's interface in your browser (local only)")
     mode.add_argument("--health", action="store_true", help="run the system check and exit")
     mode.add_argument(
         "--install-guard", action="store_true", help="install/update the xenio-guard Hermes plugin (safety policy)"
@@ -63,6 +65,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--mode", choices=["change", "plan", "explain", "review", "test"],
                         help="with --engineer: what kind of work (default: from the request)")
     parser.add_argument("--yes", action="store_true", help="with --engineer: start a team plan without asking")
+    parser.add_argument("--ui-port", type=int, default=8765, help="with --ui: the local port (default 8765)")
+    parser.add_argument("--no-browser", action="store_true", help="with --ui: print the address instead of opening it")
+    parser.add_argument("--ui-no-voice", action="store_true",
+                        help="with --ui: leave the Mac's microphone alone (no \"Hey XENIO\"; the page records itself)")
+    parser.add_argument("--ui-dev-origin", action="append", default=[], metavar="ORIGIN",
+                        help="with --ui: also accept requests from a development server (e.g. http://localhost:5173)")
     parser.add_argument("-v", "--verbose", action="store_true", help="show INFO logs on the console")
     parser.add_argument("--version", action="version", version=f"XENIO {__version__}")
     return parser.parse_args(argv)
@@ -163,6 +171,104 @@ async def _run_voice(settings: Settings, args: argparse.Namespace) -> int:
     notifications, proactive = build_proactive(settings, orchestrator.hermes)
     return await _with_engineering(settings, gate, orchestrator, notifications, lambda: run_voice_mode(
         settings, orchestrator, gate, push_to_talk=args.no_wake, notifications=notifications, proactive=proactive))
+
+
+class _UiNotifications:
+    """The notification center the engineering service writes to, and the UI's milestone events."""
+
+    def __init__(self, inner, publish):
+        self._inner, self._publish = inner, publish
+
+    def add(self, title, message, **kw):
+        self._publish("engineering.milestone", {"title": title, "message": message, "priority": kw.get("priority"),
+                                                "action_required": bool(kw.get("action_required"))})
+        return self._inner.add(title, message, **kw) if self._inner is not None else None
+
+
+async def _run_ui(settings: Settings, args: argparse.Namespace) -> int:
+    """XENIO's interface in the browser: the same orchestrator, gate, engineering team and scheduler as the other
+    modes; the browser answers the PermissionGate's questions (app/ui)."""
+    import signal
+    import webbrowser
+
+    from app.logging_setup import Redactor
+    from app.safety.policy import secret_env_values
+    from app.ui.approvals import WebConfirmer
+    from app.ui.assistant import AssistantState
+    from app.ui.controller import UiController
+    from app.ui.events import EventHub
+    from app.ui.server import UiServer
+    from app.voice.stt import create_stt
+    from app.voice.tts import create_tts
+
+    hub = EventHub(settings.data_dir / "ui" / "activity.jsonl",
+                   redact=Redactor([*settings.secret_values(), *secret_env_values()]))
+    state = AssistantState()
+    holder: dict = {}
+
+    def approvals_changed(count: int) -> None:
+        state.approvals = count
+        if "ctl" in holder:
+            holder["ctl"].publish_state()
+
+    confirmer = WebConfirmer(hub.publish, timeout=settings.hermes.permission_timeout, on_change=approvals_changed)
+    gate = PermissionGate(confirmer, timeout=settings.hermes.permission_timeout)
+    if args.new_session:
+        _forget_session(settings)
+    orchestrator = build_orchestrator(settings, gate)
+    notifications, proactive = build_proactive(settings, orchestrator.hermes)
+    engineering = build_engineering(settings, gate, orchestrator.paths, _UiNotifications(notifications, hub.publish))
+    ctl = UiController(settings, orchestrator, gate, confirmer, hub, state, engineering, notifications, proactive,
+                       MemoryManager(orchestrator.hermes), create_stt(settings.stt), create_tts(settings.tts))
+    holder["ctl"] = ctl
+    try:
+        server = UiServer(ctl, port=args.ui_port, extra_origins=tuple(args.ui_dev_origin))
+    except OSError as exc:
+        print(f"The XENIO interface could not use port {args.ui_port} ({exc.strerror or exc}). Is XENIO's UI already "
+              f"running? Otherwise start it with --ui-port <another port>.")
+        return 1
+    if engineering is not None:
+        if hasattr(orchestrator.hermes, "extra_env"):
+            orchestrator.hermes.extra_env = engineering.endpoint_env()
+        await engineering.serve()
+    server.start()
+    print(f"XENIO interface: {server.url}")
+    print(f"Open this address to sign in to it (it holds this session's key; do not share it):\n  {server.launch_url()}")
+    if not args.no_browser:
+        webbrowser.open(server.launch_url())
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):  # Windows: Ctrl+C arrives as KeyboardInterrupt
+            pass
+    background = [asyncio.ensure_future(ctl.start()), asyncio.ensure_future(ctl.watch())]
+    if proactive is not None:
+        background.append(asyncio.ensure_future(proactive.run_forever(deliver=ctl.deliver_notifications)))
+    if not args.ui_no_voice:
+        from app.ui.voice import run_ui_voice
+
+        background.append(asyncio.ensure_future(run_ui_voice(ctl)))  # "Hey XENIO", the Mac's mic and speaker
+    else:
+        ctl.voice_problem = "switched off with --ui-no-voice: the page records in the browser"
+    try:
+        await stop.wait()
+    finally:
+        print("Stopping XENIO...")
+        confirmer.cancel_all()
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)  # the talk engine releases the mic and speaker
+        server.stop()
+        if engineering is not None:
+            await engineering.close()
+        await orchestrator.close()
+        for speech in (ctl.stt, ctl.tts):
+            if speech is not None and hasattr(speech, "aclose"):
+                await speech.aclose()
+    return 0
 
 
 class _PrintNotifications:
@@ -353,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
         "tick": _run_tick,
         "engineer": _run_engineer,
         "voice": _run_voice,
+        "ui": _run_ui,
         "text": _run_text,
     }
     mode = next(
@@ -360,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
                          ("mic-test", args.mic_test), ("barge-in-test", args.barge_in_test),
                          ("connect-google", args.connect_google), ("disconnect-google", args.disconnect_google),
                          ("briefing", args.briefing), ("tick", args.tick), ("engineer", args.engineer),
-                         ("voice", args.voice)) if on),
+                         ("voice", args.voice), ("ui", args.ui)) if on),
         "text",
     )
     event(log, "XENIO started", version=__version__, mode=mode, log_file=log_file)

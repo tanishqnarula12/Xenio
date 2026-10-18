@@ -249,6 +249,15 @@ def interpret_answer(answer: str, strict: bool = False) -> str:
     return "yes" if len(unrelated) <= 3 else "unclear"
 
 
+def is_new_request(answer: str) -> bool:
+    """An "answer" that is really the user's next request ("No, play some music instead", or a new question typed or
+    said while XENIO was asking): three or more words beyond yes, no and filler. Unless it is a clear yes, the
+    question ends as not approved and the words are kept as the next request instead of being used up as an
+    unclear answer."""
+    words = re.findall(r"[a-z']+", (answer or "").lower().replace("’", "'"))
+    return len([w for w in words if w not in _YES and w not in _NO and w not in _FILLER]) >= 3
+
+
 def is_affirmative(answer: str) -> bool:
     return interpret_answer(answer) == "yes"
 

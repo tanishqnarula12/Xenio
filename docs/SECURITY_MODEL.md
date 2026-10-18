@@ -92,9 +92,13 @@ Details: [VISION_SECURITY.md](VISION_SECURITY.md).
 ## Confirmation behaviour
 * "yes" (or "confirm" for HIGH_RISK) runs that one action — XENIO always answers `allow_once`, never
   "always allow".
-* "no", silence, an unrelated sentence, a timeout or any error = **no**; unclear answers get "Please
+* "no", silence, an unrelated sentence, a timeout or any error = **no**; short unclear answers get "Please
   confirm yes or no." (up to 3 tries). Only an explicit yes counts. Silence is reported truthfully as
   "no clear answer, so it was cancelled", not as "you declined".
+* A new request is never an answer (text and voice alike): something with three or more real words beyond
+  yes/no ("What time is it in Tokyo?", "No, play some music instead") ends the question at once as not approved, and
+  XENIO handles it as the next request after the current one. Lines typed while XENIO was busy, before the question
+  appeared, are kept as requests too (they used to be discarded).
 * A "no" cancels only that attempt. Hermes' denial text says "Do NOT retry", which made the model
   refuse later, separate requests. So for up to 3 user messages after a "no", the plugin adds a note
   to the user's message. The note names the declined operation and says that asking again starts a
@@ -111,8 +115,24 @@ Details: [VISION_SECURITY.md](VISION_SECURITY.md).
   - The reply says an action failed although the matching tool reported success: a correction is
     appended.
 
+## Honest results and the user's own apps
+* Every XENIO tool result carries `status`: `SUCCEEDED` only when nothing says otherwise, `UNVERIFIED` for an action
+  without proof (`verified` not true: e.g. a system media key, a YouTube tab), `RUNNING`, `FAILED`, `NOT_SUPPORTED`
+  (e.g. the app is not installed), `NEEDS_CLARIFICATION` (several apps or players could be meant),
+  `NEEDS_PERMISSION` (the macOS setting is named, for the app XENIO runs in). Approval is not a result status: the
+  guard asks before the call. The fast path never says "Paused." unless the player read back "paused".
+* "Open Terminal and run X" runs X in a **new, visible window of the user's Terminal** (`xenio_open_app` with
+  `command`, AppleScript `do script`; never typed into an existing window), and X is judged by exactly the rules of
+  the hidden terminal tool: `echo` runs, `rm -rf` asks or is refused, secrets and `printenv` are blocked. The
+  window's text is read back as outside content. The hidden terminal tool never counts as opening Terminal.
+* Media control acts on the player that really plays: a paused Spotify is not what "pause" means while a browser
+  tab plays (then the system key is pressed and reported as unverified); two paused players are a question.
+
 ## Secrets
 * XENIO reads its own `.env` without putting keys into the environment; Hermes keeps its keys.
+* The engineering service's socket answers only XENIO, its own `hermes acp` and the guarded Hermes gateway (peer
+  pid), so an agent's command that obtained the token is still refused.
+* `google_token.json` and `engineering/token.json` are owner-only files.
 * All logs and the guard's audit log are redacted; tool results are redacted before the model sees them.
 * Source records keep only short excerpts, redacted.
 

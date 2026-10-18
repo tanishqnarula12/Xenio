@@ -25,7 +25,12 @@ cd ~/Desktop/Xenio/"Xenio Personal Ai"
 .venv/bin/python -m app.main --health           # system check (names any missing macOS permission)
 .venv/bin/python -m app.main                    # text mode
 .venv/bin/python -m app.main --voice            # voice mode: say "Hey Xenio", then your request
+.venv/bin/python -m app.main --ui               # the interface: orb, conversation and Mission Control in your browser
+                                                 # (also listens for "Hey Xenio" and talks back, like --voice)
 ```
+
+The interface needs one build first: `cd ui && npm install && npm run build`. What it shows and how it is secured:
+[docs/UI.md](docs/UI.md).
 
 Windows:
 
@@ -108,8 +113,14 @@ Just say it — no tool names needed. Hermes picks the tool, XENIO checks it, th
 
 * "Create a folder called Projects on my Desktop" · "List the files in Downloads"
 * "Create notes.txt in that folder containing …" · "Rename report.docx to final.docx"
-* "Delete the old folder" (asks first; goes to the Recycle Bin) · "What's my Python version?"
+* "Delete the old folder" (asks first; goes to the Trash / Recycle Bin) · "What's my Python version?"
 * "Run the tests" · "What's the git status of this project?"
+* "Open Spotify" · "Open VS Code" (opened only when its window really appears; an app that isn't installed is said
+  to be not installed) · "Open Terminal and print Hello World" (a new, visible Terminal window runs it, with the same
+  command rules as XENIO's hidden terminal)
+* "What's playing on Spotify?" · "Pause the music" · "Next song" (the player that really plays; unconfirmed results
+  are reported as unconfirmed)
+* "In WhatsApp, open my chat with Rahul and write …" (needs the Accessibility permission; sending always asks first)
 
 ## Web, browser and GitHub
 

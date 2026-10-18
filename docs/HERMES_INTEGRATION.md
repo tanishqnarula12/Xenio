@@ -130,11 +130,33 @@ and adds a system-prompt section. Two facts learned while wiring it:
 * Hermes' **Tool Search** (default `auto`) hides every non-core plugin tool behind
   `tool_search`/`tool_describe`/`tool_call`; the free model then answered "xenio_inspect_path is not
   available" instead of searching (observed live, and the Hermes docs warn about exactly this).
-  There is no per-tool "keep visible" flag, so `--install-guard` sets
-  `tools.tool_search.enabled: ${XENIO_TOOL_SEARCH}` and XENIO starts Hermes with
-  `XENIO_TOOL_SEARCH=off`. Hermes leaves an unset `${VAR}` verbatim and reads an unknown value as
-  `auto`, so every other Hermes process is unaffected (verified with Hermes' own config loader:
-  unset → `auto`, XENIO's process → `off`). Policy hooks run on the real tool name either way.
+  There is no per-tool "keep visible" flag. Until Hermes 0.21 `--install-guard` set
+  `tools.tool_search.enabled: ${XENIO_TOOL_SEARCH}` and XENIO started Hermes with `XENIO_TOOL_SEARCH=off`,
+  so only XENIO's own Hermes process had it off.
+* **Hermes 0.22 broke that (found 2026-10-18).** ACP sessions now run inside the profile's shared gateway, and
+  the gateway *multiplexes profiles* (`gateway.multiplex_profiles: true`, the installer's default): a config
+  `${VAR}` is then resolved from the profile's `.env` only, never from the process environment (Hermes'
+  `_env_ref_lookup`, so one profile's secrets never leak into another). The placeholder stayed unexpanded, read as
+  `auto`, and the model saw 19 tools: **no `xenio_*` tool at all**, plus the tool_search bridge. It called
+  `xenio_project`/`xenio_engineering` from XENIO's prompt and got "Tool does not exist", then tried `tool_search`
+  (which XENIO's guard asks about). Reproduced with Hermes' own resolver (`tests/test_chat_tools.py` runs it against
+  the installed Hermes). Fix: `--install-guard` now writes `tools.tool_search.enabled: off` (it replaces the old
+  placeholder, never a value you chose). Because one gateway runs every session of the profile, this applies to all
+  of them: Hermes' own rarely used tools (todo_list, session_search, process_manage...) are then always offered too.
+  Undo: `hermes config set tools.tool_search.enabled auto`. Live after the fix: 46 tools, all 26 `xenio_*` among them.
+* **The engineering tool in the gateway.** XENIO handed the engineering service's socket and token to its
+  `hermes acp` through the environment; in 0.22 the tool runs in the gateway, which never had them (and a gateway
+  outlives the XENIO that started it). The service now also writes `engineering/token.json` (owner-only; a secret by
+  name to XENIO's policy, so agents' file and terminal tools cannot read it), and the socket answers only XENIO
+  itself, its own `hermes acp`, or the gateway process that carries the guard (checked with the socket's peer pid).
+  This also closes an older gap: Hermes passes `XENIO_ENGINEERING_TOKEN` on to the commands its agents run
+  (measured: `hermes_subprocess_env` keeps it), so an agent's command could have used it - its process is now refused.
+* **A repeated reply (Hermes 0.22).** When a turn streams text before a tool call that never starts (XENIO's guard
+  blocked it, or the user said no), Hermes' ACP projection keeps that text in its stream buffer, its "already shown?"
+  prefix check fails, and it sends the whole final reply again (`acp_adapter/gateway_reply.py`, `_final_remainder`;
+  captured live). XENIO's ACP client drops exactly that repeat (a "\n\n" chunk that repeats the end of what was just
+  streamed), so text and voice show and speak it once. It is Hermes' bug; this is the narrowest place XENIO can fix it.
+  Policy hooks run on the real tool name either way.
 
 Full capability inventory and decisions: [HERMES_CAPABILITIES.md](HERMES_CAPABILITIES.md).
 

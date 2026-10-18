@@ -54,10 +54,52 @@ class MacError(Exception):
     pass
 
 
+def host_app(pid: int | None = None) -> str:
+    """The app XENIO was started from (Terminal, iTerm, an IDE...): macOS grants Accessibility, Screen Recording and
+    Automation to that app, not to Python. XENIO passes it on to Hermes (XENIO_HOST_APP): a detached Hermes gateway
+    can no longer see its parents. "" when unknown."""
+    if pid is None and os.environ.get("XENIO_HOST_APP"):
+        return os.environ["XENIO_HOST_APP"]
+    pid = pid or os.getpid()
+    for _ in range(12):
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        ppid, _, comm = out.stdout.strip().partition(" ")
+        if ".app/" in comm:
+            return os.path.basename(comm[:comm.index(".app/")])  # the outermost bundle, not its "Helper" app
+        if not ppid.strip().isdigit() or int(ppid) <= 1:
+            return ""
+        pid = int(ppid)
+    return ""
+
+
+_PRIVACY_PANES = {"accessibility": "Privacy_Accessibility", "screen": "Privacy_ScreenCapture",
+                  "automation": "Privacy_Automation"}
+_opened_panes: dict[str, float] = {}
+
+
+def open_privacy_settings(kind: str, runner=subprocess.run, clock=time.monotonic) -> bool:
+    """Show System Settings > Privacy & Security at the page the user must switch on (accessibility | screen |
+    automation): only the page - granting is the user's own click, XENIO never changes a permission. At most once per
+    5 minutes per page, so repeated failures do not keep pulling the window up."""
+    if sys.platform != "darwin" or kind not in _PRIVACY_PANES or clock() - _opened_panes.get(kind, -1e9) < 300:
+        return False
+    _opened_panes[kind] = clock()
+    url = f"x-apple.systempreferences:com.apple.preference.security?{_PRIVACY_PANES[kind]}"
+    try:
+        return runner(["/usr/bin/open", url], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+_HOST = host_app() if sys.platform == "darwin" else ""
+_HOST_WORDS = f"the app XENIO runs in ({_HOST})" if _HOST else "the app XENIO runs in (Terminal, iTerm or your IDE)"
 ACCESSIBILITY_STEP = ("macOS has not given XENIO Accessibility access. Open System Settings > Privacy & Security > "
-                      "Accessibility and switch on the app XENIO runs in (Terminal, iTerm or VS Code), then restart XENIO.")
+                      f"Accessibility and switch on {_HOST_WORDS}, then restart XENIO.")
 SCREEN_STEP = ("macOS has not given XENIO screen access. Open System Settings > Privacy & Security > Screen & System "
-               "Audio Recording and switch on the app XENIO runs in (Terminal, iTerm or VS Code), then restart XENIO.")
+               f"Audio Recording and switch on {_HOST_WORDS}, then restart XENIO.")
 
 
 class _Lib:
@@ -759,18 +801,27 @@ class AX:
 
     def frontmost(self) -> tuple[int, int]:
         """(pid, window id) of the app and window the user is working in."""
-        app = self.copy(self.system, "AXFocusedApplication")
-        if not app:
-            return 0, 0
-        try:
-            pid = self.pid_of(app)
-            window = self.copy(app, "AXFocusedWindow") or self.copy(app, "AXMainWindow")
+        focused = self.copy(self.system, "AXFocusedApplication")
+        pid = 0
+        if focused:
             try:
-                return pid, (self.window_id(window) if window else 0)
+                pid = self.pid_of(focused)
             finally:
-                self.L.release(window)
+                self.L.release(focused)
+        if not pid:
+            # measured on macOS 26: the system-wide AXFocusedApplication answers nothing to a background process (XENIO
+            # inside Hermes), so every "is it in front now?" check failed. The window server's front-to-back order
+            # does answer: the first normal window on screen belongs to the active app.
+            front = next((w for w in cg_windows(on_screen_only=True) if w["layer"] == 0), None)
+            if front is None:
+                return 0, 0
+            pid = int(front["pid"])
+        app = self.app(pid)  # cached, not released here
+        window = self.copy(app, "AXFocusedWindow") or self.copy(app, "AXMainWindow")
+        try:
+            return pid, (self.window_id(window) if window else 0)
         finally:
-            self.L.release(app)
+            self.L.release(window)
 
     def app_windows(self, pid: int) -> list[tuple[int, dict]]:
         """[(retained AX window, facts)] for one app's standard windows and dialogs."""

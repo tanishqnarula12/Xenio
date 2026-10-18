@@ -27,3 +27,10 @@ user_required_steps/
 client_secret*.json
 *credentials*.json
 google_token.json
+
+# UI V1 (ui/): dependencies and the build (`npm install && npm run build` in ui/)
+ui/node_modules/
+ui/dist/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

@@ -23,6 +23,7 @@ rules that only ever make things stricter.
 | Invented review findings | reviewer findings whose file/line does not exist are marked as unverified in the report | `orchestrator._checked_findings` |
 | Paid models | roles run on Hermes' main model unless a free model is pinned; paid pins are refused unless `allow_paid`; Hermes' `auxiliary.free_only` keeps side tasks free | `roles.CostPolicy` |
 | An unguarded Hermes gateway | Hermes 0.22 runs ACP sessions inside its gateway. A gateway started outside XENIO has no guard: engineering refuses to start on it and `--health` fails with the fix | `hermes/guard.guard_live` |
+| Something else driving the service (apply/push arrive already confirmed by the guard) | the socket needs a per-start token **and** the calling process must be XENIO, XENIO's own `hermes acp`, or the guarded gateway (socket peer pid). Hermes passes `XENIO_ENGINEERING_TOKEN` on to agents' commands (measured), so a command or code run that read it is still refused. The gateway's copy is `engineering/token.json`: owner-only, unreadable to agents by XENIO's secret-file rule | `service._authorized` |
 
 ## Enforcement path for one tool call
 

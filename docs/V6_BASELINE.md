@@ -135,3 +135,45 @@ XENIO's process over a local socket, the `--engineer` CLI, and notifications for
 * At most 4 agent turns run at once per Hermes process (Hermes' executor size).
 * A Hermes restart does not resume a running task; XENIO marks it failed/unknown and keeps completed work.
 * The accessibility permission is still missing on this Mac (desktop typing/clicking); not needed for V6.
+
+## 9. Status against the V6 completion criteria (2026-10-18)
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| Existing implementation audited | done | sections 1-5 |
+| Baseline recorded | done | section 2 |
+| Hermes capabilities verified | done | section 5; ACP gateway behaviour re-checked live (section 10) |
+| Engineering orchestrator works | done | `tests/test_engineering_orchestrator.py`; live tests 1-12 ([ENGINEERING_TEAM.md](ENGINEERING_TEAM.md#live-acceptance-results-2026-101718-this-mac-free-models)) |
+| Task graph works | done | `tests/test_engineering_core.py`; live test 4 (dependencies, parallel disjoint scopes) |
+| Specialized roles are configurable | done | `roles.py`, TOML overrides, cost policy; tests |
+| Delegation works | done | Hermes ACP sessions per task (real stdio in `tests/test_engineering_service.py`; live tests) |
+| Natural-language use from XENIO's chat | done (fixed 2026-10-18) | cause: Hermes 0.22's multiplexing gateway read `tools.tool_search.enabled: ${XENIO_TOOL_SEARCH}` as `auto` and hid every `xenio_*` tool, and the gateway never had the engineering socket's address ([HERMES_INTEGRATION.md](HERMES_INTEGRATION.md)). Live after the fix: "Is your engineering team working on anything?" -> `xenio_engineering` status; "explain the architecture of <repo>" -> explain run 1018-0146-26de, answered read-only; follow-up questions read the report (also after a restart) |
+| Repository isolation works | done | `tests/test_engineering_repo.py`; live runs left every source repo unchanged |
+| Existing user changes are preserved | done | tests; live test 7 checked on disk |
+| Conflicts are detected and handled | done (tested with fakes) | merge-conflict abort + one controlled re-apply; a real conflict did not occur live (scopes keep writers apart) |
+| Tests execute and report honestly | done | `verify.py` tests (passed/failed/no_tests/blocked/timeout); live tests 3-7 |
+| Security review is integrated | done | deterministic scan + two reviewer roles; live test 6 |
+| Approval boundaries are enforced | done | tool levels + gate; live test 10 (declined push, nothing pushed) |
+| Provider failures are handled | done | live test 11 |
+| Unauthorized model fallback is prevented | done | cost policy tests; `auxiliary.free_only`; live test 11 |
+| Cancellation works within documented limits | done | live test 8 (`still_running: []`) |
+| Project context is integrated | done (unit-tested) | V4 project resolution, ambiguity → ask; no project with a local folder is recorded on this Mac yet, so not exercised live |
+| Live acceptance tests completed or marked blocked | done | 12/12 run; 2 failed first and pass after fixes |
+| Regression suite results documented | done | unit suite 954 passed / 3 skipped (Windows-only); live voice, desktop control and Google integrations need the user (section 11) |
+| Documentation is complete | done | ENGINEERING_TEAM, AGENT_ROLES, ENGINEERING_SECURITY, ENGINEERING_WORKFLOWS, this file; README, ARCHITECTURE, SECURITY_MODEL, HERMES_CAPABILITIES, SETUP updated |
+
+## 10. Hermes behaviour found during the live tests
+
+* `hermes acp` is a client of the Hermes gateway (`GatewayACPAgent`): sessions and tools run in the gateway process,
+  which exits after 2 idle minutes. The guard is active only if that gateway was started with XENIO's environment;
+  XENIO now verifies this (`guard_live`) and refuses engineering work on an unguarded gateway.
+* The gateway refuses `session/set_mode accept_edits` (only the owner's "ask" policy), so every edit is a permission
+  request; XENIO answers engineering edits with its engineering rules.
+* `session/set_model` works per session; an unknown model is refused with an internal error (reported as a provider
+  failure).
+
+## 11. What could not be tested here
+
+* Voice end to end (needs a person to speak; microphone works, wake-word model installed).
+* Desktop control live (macOS Accessibility not yet granted to the app XENIO runs in).
+* Google Calendar/Gmail (not connected on this Mac), Codex (not signed in), Spotify playback (no developer keys).

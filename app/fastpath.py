@@ -320,7 +320,7 @@ class FastPath:
 
     def _control(self, action: str, say: dict) -> _Step:
         def said(r):
-            if r.get("verified") is None:
+            if r.get("verified") is not True:  # the player did not confirm it: never announce it as done
                 return say["pressed"].format(key={"play": "play", "pause": "pause", "next": "next",
                                                   "previous": "previous"}[action])
             now = r.get("now_playing") or ""

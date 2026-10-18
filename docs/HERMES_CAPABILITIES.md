@@ -11,9 +11,9 @@ docs under `website/docs`, plus `hermes skills list`, `hermes mcp list`, `hermes
 **How XENIO reaches all of this:** XENIO runs `hermes acp` and sends your words with
 `session/prompt`. Hermes picks and runs tools itself. ACP sessions get the `hermes-acp` toolset
 (the coding tools minus `clarify`) **plus XENIO's `xenio` toolset**, pinned by
-`platform_toolsets.acp: [hermes-acp, xenio]`; Hermes' Tool Search is switched off only in
-XENIO's Hermes process (`tools.tool_search.enabled: ${XENIO_TOOL_SEARCH}`) so the model sees
-those tools directly. The `xenio-guard` plugin checks every tool call before it runs (see
+`platform_toolsets.acp: [hermes-acp, xenio]`; Hermes' Tool Search is switched off
+(`tools.tool_search.enabled: off`; since Hermes 0.22 that covers every session of the profile, see
+[HERMES_INTEGRATION.md](HERMES_INTEGRATION.md)) so the model sees those tools directly. The `xenio-guard` plugin checks every tool call before it runs (see
 "Permissions" below).
 
 | # | Capability | Hermes implementation | How XENIO invokes it | XENIO wrapper? | Security implications |

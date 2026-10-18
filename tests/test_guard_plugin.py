@@ -59,6 +59,8 @@ def test_registers_tools_hooks_and_prompt(monkeypatch, tmp_path):
                               "xenio_look_at_screen",
                               # V5.5 desktop control
                               "xenio_open_app", "xenio_list_apps", "xenio_window", "xenio_find_ui", "xenio_gui",
+                              # music and sound (the fast path's player)
+                              "xenio_media",
                               # V6 engineering team
                               "xenio_engineering"}
     assert not any("send" in name for name in ctx.tools)  # V4: no tool can send email

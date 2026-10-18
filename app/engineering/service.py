@@ -13,7 +13,10 @@
 
 Milestones go to XENIO's notifications (spoken when XENIO is idle). Agents' permission requests reach the user
 labelled with the task and role that asked. The chat's Hermes reaches this service through a local socket guarded by
-a per-start token that only the chat's Hermes process gets (never the engineering agents' process).
+a per-start token: in the environment of XENIO's own Hermes process (Hermes before 0.22 runs tools there), and in
+``token.json`` for a Hermes 0.22 gateway, which runs every session's tools and outlives the XENIO that started it.
+A token alone is not enough: Hermes passes its environment on to the commands agents run, so the socket only answers
+XENIO itself, XENIO's own ``hermes acp`` and the guarded gateway process - never an agent's command or code run.
 """
 
 from __future__ import annotations
@@ -24,7 +27,10 @@ import logging
 import os
 import hashlib
 import secrets
+import socket
+import struct
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -41,6 +47,12 @@ from app.safety.policy import PathPolicy, RiskLevel, classify_command
 log = logging.getLogger("xenio.engineering")
 
 SOCKET_NAME = "engineering.sock"
+TOKEN_FILE = "token.json"  # a secret by name to XENIO's policy: agents' file and terminal tools cannot read it
+# A start that only names the kind of work (models often leave 'request' out for these)
+MODE_REQUESTS = {"explain": "Explain the repository's architecture: its parts, how they fit together and where to "
+                            "start reading.",
+                 "review": "Review the repository for bugs and security problems.",
+                 "test": "Run the tests and explain any failures."}
 
 
 class EngineeringError(Exception):
@@ -71,6 +83,8 @@ class EngineeringService:
         self._jobs: dict[str, asyncio.Task] = {}
         self._server: asyncio.AbstractServer | None = None
         self.token = secrets.token_urlsafe(24)
+        self.gateway_token = secrets.token_urlsafe(24)
+        self.token_file = self.root / TOKEN_FILE
         self.socket_path = self.root / SOCKET_NAME
         if len(str(self.socket_path)) > 100:  # macOS: a Unix socket path holds at most 104 bytes
             tag = hashlib.sha256(str(self.root).encode()).hexdigest()[:10]
@@ -151,7 +165,8 @@ class EngineeringService:
     # ---- actions ----------------------------------------------------------------------------------------------
 
     async def start(self, request: str, project: str = "", path: str = "", mode: str = "", auto_run: bool = False) -> dict:
-        if not request or not request.strip():
+        request = (request or "").strip() or MODE_REQUESTS.get((mode or "").lower(), "")
+        if not request:
             raise EngineeringError("what should the engineering team do?")
         folder, project_name = self.resolve_repository(project, path)
         busy = [r for r in self.runs.values() if r.source == folder and r.status in ("planning", "running", "verifying",
@@ -219,17 +234,41 @@ class EngineeringService:
                             "model": self.agents.models.get(session) or "Hermes main model"})
         return {"run": run.id, "request": run.request, "status": run.status, "mode": run.mode,
                 "tasks": graph.counts() if graph else {}, "running": running,
-                "failed": [{"task": t.id, "why": t.failure} for t in (graph.tasks.values() if graph else [])
-                           if t.status in ("failed", "blocked")],
+                # not "failed": Hermes marks any result whose start holds the word "failed" in quotes as a failed call
+                "failed_tasks": [{"task": t.id, "why": t.failure} for t in (graph.tasks.values() if graph else [])
+                                 if t.status in ("failed", "blocked")],
                 "plan": [{"id": t.id, "title": t.title, "role": t.role, "depends_on": t.depends_on,
                           "allowed_paths": t.allowed_paths, "status": t.status} for t in (graph.tasks.values() if graph else [])],
                 "risks": run.risks, "last_events": [e["text"] for e in run.events[-5:]], "outcome": run.outcome}
 
+    def _saved_runs(self) -> list[dict]:
+        """Runs of earlier XENIO starts, newest first: a run does not survive a restart, its run.json and report do."""
+        saved = []
+        for path in self.runs_root.glob("*/run.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("id") == path.parent.name and data.get("id") not in self.runs:
+                saved.append(data)
+        return sorted(saved, key=lambda d: str(d.get("created") or ""), reverse=True)
+
     def list_runs(self) -> list[dict]:
-        return [{"run": r.id, "request": r.request[:80], "status": r.status, "outcome": r.outcome[:120]}
+        live = [{"run": r.id, "request": r.request[:80], "status": r.status, "outcome": r.outcome[:120]}
                 for r in sorted(self.runs.values(), key=lambda r: r.created, reverse=True)[:10]]
+        earlier = [{"run": d["id"], "request": str(d.get("request") or "")[:80], "status": str(d.get("status") or ""),
+                    "outcome": str(d.get("outcome") or "")[:120], "before_restart": True}
+                   for d in self._saved_runs()[:max(0, 10 - len(live))]]
+        return live + earlier
 
     def report(self, run_id: str = "", limit: int = 6000) -> dict:
+        if (run_id and run_id not in self.runs) or (not run_id and not self.runs):
+            saved = [d for d in self._saved_runs() if not run_id or d["id"] == run_id]
+            path = Path(str(saved[0].get("report_path") or "")) if saved else None
+            if path is not None and path.is_file():
+                return {"run": saved[0]["id"], "status": str(saved[0].get("status") or ""),
+                        "report": path.read_text(encoding="utf-8")[:limit], "report_file": str(path),
+                        "note": "a run from before XENIO was restarted: its report, as saved then"}
         run = self.get(run_id)
         text = Path(run.report_path).read_text(encoding="utf-8") if run.report_path else self.orch.generate_report(run)
         return {"run": run.id, "status": run.status, "report": text[:limit], "report_file": run.report_path}
@@ -321,12 +360,28 @@ class EngineeringService:
         self.socket_path.unlink(missing_ok=True)
         self._server = await asyncio.start_unix_server(self._handle, path=str(self.socket_path))
         os.chmod(self.socket_path, 0o600)
+        tmp = self.token_file.with_name(TOKEN_FILE + ".tmp")
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
+            json.dump({"socket": str(self.socket_path), "token": self.gateway_token, "pid": os.getpid()}, fh)
+        os.replace(tmp, self.token_file)
+
+    def _authorized(self, token: str, writer: asyncio.StreamWriter) -> bool:
+        if not (secrets.compare_digest(token, self.token) or secrets.compare_digest(token, self.gateway_token)):
+            return False
+        pid = _peer_pid(writer.get_extra_info("socket"))
+        if pid is None:
+            return False
+        if pid == os.getpid() or _parent_pid(pid) == os.getpid():
+            return True  # XENIO itself, or its own `hermes acp` (Hermes before 0.22 runs the chat's tools there)
+        from app.hermes.guard import gateway_pid, guard_live
+
+        return pid == gateway_pid() and guard_live(self.settings.data_dir)[0] is True
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             line = await asyncio.wait_for(reader.readline(), 10)
             req = json.loads(line or b"{}")
-            if not secrets.compare_digest(str(req.get("token") or ""), self.token):
+            if not await asyncio.to_thread(self._authorized, str(req.get("token") or ""), writer):
                 out = {"ok": False, "error": "not authorized"}
             else:
                 out = {"ok": True, "result": await self.dispatch(str(req.get("action") or ""), req.get("args") or {},
@@ -373,4 +428,29 @@ class EngineeringService:
         if self._server is not None:
             self._server.close()
         self.socket_path.unlink(missing_ok=True)
+        try:
+            if json.loads(self.token_file.read_text(encoding="utf-8")).get("token") == self.gateway_token:
+                self.token_file.unlink()  # only our own: a later XENIO may have taken the socket over
+        except (OSError, ValueError):
+            pass
         await self.agents.close()
+
+
+def _peer_pid(sock) -> int | None:
+    """The process at the other end of a local socket (macOS LOCAL_PEERPID, Linux SO_PEERCRED)."""
+    try:
+        if sys.platform == "darwin":
+            return int(sock.getsockopt(0, 0x002))  # SOL_LOCAL, LOCAL_PEERPID
+        if hasattr(socket, "SO_PEERCRED"):
+            return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[0]
+    except (OSError, AttributeError, TypeError):
+        pass
+    return None
+
+
+def _parent_pid(pid: int) -> int | None:
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+        return int(out.stdout.strip())
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None

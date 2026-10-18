@@ -196,6 +196,7 @@ def test_the_socket_needs_the_token_and_the_tool_reaches_the_service(settings, t
     async def go():
         await svc.serve()
         try:
+            monkeypatch.delenv("XENIO_DATA_DIR", raising=False)  # the environment's endpoint (Hermes before 0.22)
             monkeypatch.setenv("XENIO_ENGINEERING_SOCKET", str(svc.socket_path))
             monkeypatch.setenv("XENIO_ENGINEERING_TOKEN", "wrong")
             bad = await asyncio.to_thread(tool.call_service, "status", {})

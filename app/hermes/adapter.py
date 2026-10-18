@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -62,12 +63,25 @@ class _Turn:
                 log.exception("Tool handler failed")
 
     def add_text(self, text: str, message_id: str | None) -> None:
+        if self._repeats_reply(text):
+            log.debug("Dropped a repeat of the streamed reply (%d chars)", len(text))
+            return
         # A turn can hold several assistant messages (e.g. before and after a tool call).
         if message_id and self.last_message_id and message_id != self.last_message_id and self.parts:
             self._emit("\n\n")
         if message_id:
             self.last_message_id = message_id
         self._emit(text)
+
+    def _repeats_reply(self, text: str) -> bool:
+        """Hermes 0.22's ACP projection sends the settled reply again, as one "\\n\\n" + full text chunk, when the
+        turn streamed text before a tool call that never started (blocked by the guard, or denied by the user): that
+        text stays in its stream buffer, so its "already shown?" prefix check fails (acp_adapter/gateway_reply.py
+        ``_final_remainder``). Such a chunk repeats the tail of what was just streamed, word for word."""
+        if not text.startswith("\n\n"):
+            return False
+        repeat, shown = " ".join(text.split()), " ".join("".join(self.parts).split())
+        return bool(repeat) and shown.endswith(repeat)
 
     def _emit(self, text: str) -> None:
         self.parts.append(text)
@@ -424,8 +438,9 @@ def guard_environment(settings: HermesSettings, data_dir: Path | None) -> dict[s
         "XENIO_ROOT": str(PROJECT_ROOT),
         "XENIO_WORKSPACE": str(settings.workspace),
         "XENIO_ALLOWED_DIRS": ";".join(str(p) for p in settings.allowed_dirs),
-        # Read by Hermes' config as tools.tool_search.enabled: ${XENIO_TOOL_SEARCH} (set by
-        # --install-guard): keeps XENIO's tools directly visible instead of behind tool_search.
+        # For a config still holding the pre-0.22 placeholder tools.tool_search.enabled: ${XENIO_TOOL_SEARCH}:
+        # a Hermes that runs sessions in its own process reads "off" here. A 0.22 gateway ignores it (profile .env
+        # only), so --install-guard now writes "off" itself (app/hermes/guard.py).
         "XENIO_TOOL_SEARCH": "off",
         "XENIO_DOWNLOAD_MAX_MB": str(settings.download_max_mb),
         **({"XENIO_DATA_DIR": str(data_dir)} if data_dir else {}),
@@ -435,7 +450,19 @@ def guard_environment(settings: HermesSettings, data_dir: Path | None) -> dict[s
         # browser.headed is not in its config). Off by default: xenio_open_url shows pages to the user.
         **({"AGENT_BROWSER_HEADED": "1"} if settings.show_browser else {}),
         **(settings.vision.env() if settings.vision else {}),
+        **_host_app_env(),
     }
+
+
+def _host_app_env() -> dict[str, str]:
+    """macOS grants permissions to the app XENIO was started from; a detached Hermes gateway cannot find it itself, so
+    its permission messages name it from here."""
+    if sys.platform != "darwin":
+        return {}
+    from app.desktop.macos import host_app
+
+    host = host_app()
+    return {"XENIO_HOST_APP": host} if host else {}
 
 
 def _text_of(content: Any) -> str:

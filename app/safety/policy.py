@@ -26,7 +26,7 @@ from enum import IntEnum
 from pathlib import Path, PurePath
 from urllib.parse import unquote, urlsplit
 
-POLICY_VERSION = "8"
+POLICY_VERSION = "9"
 
 
 class RiskLevel(IntEnum):
@@ -1745,7 +1745,9 @@ UNTRUSTED_SOURCE_TOOLS = {"web_extract", "web_search", "browser_exec", "browser_
                           "browser_vision", "read_file", "xenio_email_search", "xenio_email_read", "xenio_calendar_events",
                           "xenio_github", "xenio_daily_briefing", "session_search", "terminal",
                           "xenio_look_at_screen", "vision_analyze", "video_analyze",  # V5: text seen in images
-                          "xenio_find_ui"}  # V5.5: names of on-screen controls (chat text, page text)
+                          "xenio_find_ui",  # V5.5: names of on-screen controls (chat text, page text)
+                          "xenio_open_app",  # a command's output in the user's Terminal window
+                          "xenio_media"}  # track names
 _INJECTION = re.compile(
     r"(ignore|disregard|forget|override)\s+(all\s+|any\s+|the\s+|your\s+)?(previous|prior|above|earlier|system|safety)?\s*"
     r"(instructions|rules|prompts?|guidelines|policies)"
@@ -2056,7 +2058,15 @@ def classify_desktop_tool(tool: str, args: dict, info: dict | None = None) -> De
     if tool in DESKTOP_READ_TOOLS:
         return read(f"desktop.{tool[6:]}", "look up apps" if tool == "xenio_list_apps" else "read the controls of a window")
     if tool == "xenio_open_app":
-        return classify_app_launch(str(a.get("name") or ""), (info or {}).get("app_entry"))
+        launch = classify_app_launch(str(a.get("name") or ""), (info or {}).get("app_entry"))
+        command = str(a.get("command") or "").strip()
+        if not command or launch.blocked:
+            return launch
+        # "Open Terminal and run X": X runs in the user's real shell, so it gets exactly the terminal tool's rules
+        judged = (info or {}).get("command_decision")
+        if not isinstance(judged, Decision):
+            return blocked("desktop.terminal_command", f"run in Terminal: {command[:80]}", "the command could not be checked")
+        return combine([launch, replace(judged, summary=f"open a Terminal window and {judged.summary}")], launch)
     if tool == "xenio_window":
         return classify_window_action(str(a.get("action") or ""), str(a.get("name") or ""))
     return classify_gui_action(a, info)
@@ -2069,21 +2079,38 @@ def unattended_desktop(decision: Decision, tool: str, session_id: str = "") -> D
     return decision
 
 
-MEDIA_ACTIONS = {"play", "pause", "next", "previous", "volume", "play_track", "time"}
+MEDIA_ACTIONS = {"play", "pause", "next", "previous", "volume", "play_track", "time", "now_playing"}
 
 
 def classify_media_action(action: str, detail: str = "") -> Decision:
-    """XENIO's fast path (speed): playing music, pausing, skipping, the volume and the time. They change only what
-    is playing and how loud: SAFE_WRITE; the time is READ. Unknown media actions are blocked, never guessed."""
+    """XENIO's fast path (speed) and the xenio_media tool: playing music, pausing, skipping, the volume and the time.
+    They change only what is playing and how loud: SAFE_WRITE; the time and what is playing are READ. Unknown media
+    actions are blocked, never guessed."""
     act = str(action or "").lower()
     if act not in MEDIA_ACTIONS:
         return blocked("media.action", f"{act or 'an unknown'} media action", "unknown media action")
     if act == "time":
         return read("media.time", "tell the time")
+    if act == "now_playing":
+        return read("media.now_playing", "check what is playing")
     words = {"play": "resume playback", "pause": "pause playback", "next": "skip to the next track",
              "previous": "go back to the previous track", "volume": f"set the volume ({detail})",
              "play_track": f"play {detail}"}
     return Decision(RiskLevel.SAFE_WRITE, f"media.{act}", words[act])
+
+
+def classify_media_tool(a: dict) -> Decision:
+    """The xenio_media tool: the same rules as the fast path's media actions (a song from YouTube opens one browser
+    tab, which xenio_open_url's rules allow for http(s) pages)."""
+    action = str(a.get("action") or "").lower()
+    if action == "play_song":
+        query = str(a.get("query") or "").strip()
+        if not query:
+            return blocked("media.play_track", "play a song", "which song? the 'query' is missing")
+        return classify_media_action("play_track", query[:80])
+    if action == "volume":
+        return classify_media_action("volume", str(a.get("level") or "")[:20])
+    return classify_media_action(action)
 
 
 # ---- engineering sessions (V6): a role's tools, its task's files, its terminal --------------------------------------
@@ -2370,9 +2397,12 @@ def classify_engineering_tool(a: dict) -> Decision:
     if action in ("status", "list", "plan", "report"):
         return read(f"engineering.{action}", f"show the engineering team's {action}{run}")
     if action == "start":
-        request = " ".join(str(a.get("request") or "").split())[:100]
+        mode = str(a.get("mode") or "").lower()
+        request = " ".join(str(a.get("request") or "").split())[:100] or (f"{mode} the repository" if mode in
+                                                                             ("explain", "review", "test") else "")
         if not request:
-            return blocked("engineering.start", "start engineering work", "say what the team should do")
+            return blocked("engineering.start", "start engineering work",
+                           "the 'request' argument is missing: call it again with what the team should do")
         return Decision(RiskLevel.SAFE_WRITE, "engineering.start",
                         f"start engineering work on {a.get('project') or a.get('path') or 'the current project'}: {request}")
     if action in ("approve", "cancel"):
@@ -2386,8 +2416,12 @@ def classify_engineering_tool(a: dict) -> Decision:
 def _classify_xenio_tool(tool: str, a: dict, paths: PathPolicy, cwd) -> Decision:
     if tool == "xenio_engineering":
         return classify_engineering_tool(a)
+    if tool == "xenio_media":
+        return classify_media_tool(a)
     if tool in DESKTOP_TOOLS:  # without the plugin's live probe: text-only rules (secret typing stays blocked)
-        return classify_desktop_tool(tool, a, None)
+        command = str(a.get("command") or "").strip() if tool == "xenio_open_app" else ""
+        return classify_desktop_tool(tool, a, {"command_decision": classify_command(command, paths, str(paths.home))}
+                                     if command else None)
     if tool == "xenio_look_at_screen":
         return classify_screen_look(a)  # the plugin adds screen_capture_consent (it knows the user's words)
     if tool in ("xenio_list_directory", "xenio_inspect_path"):

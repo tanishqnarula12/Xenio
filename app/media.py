@@ -44,7 +44,12 @@ _SERVICE_HINT = re.compile(r"\s+(?:on|in|from|auf|par|pe|per)\s+(?P<s>spotify|yo
 
 
 class MediaError(Exception):
-    pass
+    status = "FAILED"  # app.tools.base.STATUSES
+
+
+class MediaChoice(MediaError):
+    """Several players could be meant: XENIO asks instead of guessing."""
+    status = "NEEDS_CLARIFICATION"
 
 
 @dataclass
@@ -210,28 +215,63 @@ class Music:
         return {"player": "Spotify", "verified": state == "playing" and name.strip().lower() == track.title.lower(),
                 "state": state, "now_playing": f"{name} by {artist}" if artist else name}
 
+    def _players(self) -> dict[str, tuple[str, str]]:
+        """Spotify and Music when running: app -> (player state, "track by artist"). Nothing is started to ask."""
+        found = {}
+        for app in ("Spotify", "Music"):
+            if _running(app, self._run):
+                out = _osascript(f'tell application "{app}"\nset s to player state as string\nif s is "stopped" then '
+                                 'return s & "|"\nreturn s & "|" & (name of current track) & " by " & (artist of current '
+                                 'track)\nend tell', runner=self._run)
+                state, _, track = out.partition("|")
+                found[app] = (state, track)
+        return found
+
     def control(self, action: str) -> dict:
-        """play | pause | next | previous, for whatever is playing."""
+        """play | pause | next | previous, for the player that is really playing. Spotify or Music only count when they
+        play (a paused Spotify is not what "pause" means while a browser tab plays); with nothing identifiable the
+        system media keys go to whatever played last, which XENIO cannot read back (unverified)."""
         if sys.platform != "darwin":
             return self._keys({"play": "playpause", "pause": "playpause", "next": "medianext",
                                "previous": "mediaprev"}[action])
-        verbs = {"play": "play", "pause": "pause", "next": "next track", "previous": "previous track"}
-        for app in ("Spotify", "Music"):
-            if _running(app, self._run):
-                out = _osascript(f'tell application "{app}"\n{verbs[action]}\ndelay 0.35\n'
-                                 'return (player state as string) & "|" & (name of current track)\nend tell',
-                                 runner=self._run)
-                state, _, name = out.partition("|")
-                ok = state == ("paused" if action == "pause" else "playing")
-                return {"player": app, "verified": ok, "state": state, "now_playing": name}
+        players = self._players()
+        playing = [app for app, (state, _) in players.items() if state == "playing"]
+        target = playing[0] if playing else None
+        if target is None and action != "pause":
+            loaded = [app for app, (state, _) in players.items() if state == "paused"]
+            if len(loaded) > 1:
+                raise MediaChoice(f"Both {' and '.join(loaded)} are paused: which one should I {action}?")
+            target = loaded[0] if loaded else None
+        if target is not None:
+            verbs = {"play": "play", "pause": "pause", "next": "next track", "previous": "previous track"}
+            before = players[target][1]
+            out = _osascript(f'tell application "{target}"\n{verbs[action]}\ndelay 0.35\n'
+                             'return (player state as string) & "|" & (name of current track) & " by " & '
+                             '(artist of current track)\nend tell', runner=self._run)
+            state, _, now = out.partition("|")
+            ok = state == "paused" if action == "pause" else (now != before if action in ("next", "previous")
+                                                             else state == "playing")
+            return {"player": target, "verified": ok, "state": state, "now_playing": now}
         from app.desktop import macos
 
         if not macos.trusted():
-            raise MediaError("Nothing is playing in Spotify or Music, and the system media keys need the "
-                             "Accessibility permission. " + macos.ACCESSIBILITY_STEP)
+            raise MediaError(("Spotify and Music are not playing, and the system media keys" if players else
+                              "Nothing is playing in Spotify or Music, and the system media keys")
+                             + " need the Accessibility permission. " + macos.ACCESSIBILITY_STEP)
         macos.press_media_key({"play": macos.NX_PLAY, "pause": macos.NX_PLAY, "next": macos.NX_NEXT,
                                "previous": macos.NX_PREVIOUS}[action])
-        return {"player": "media keys", "verified": None}
+        return {"player": "media keys", "verified": None,
+                "note": "pressed the system media key (play/pause is a toggle): it reaches the app that played last, "
+                        "often a browser tab, which XENIO cannot read back - say it was pressed, not that it worked"}
+
+    def now_playing(self) -> dict:
+        """What Spotify and Music are playing (read from the apps). A browser tab's audio cannot be identified."""
+        if sys.platform != "darwin":
+            raise MediaError("reading what is playing is supported on macOS only")
+        players = [{"player": app, "state": state, "track": track or None} for app, (state, track) in self._players().items()]
+        return {"players": players, "playing": [p for p in players if p["state"] == "playing"],
+                "note": "Only Spotify and Apple Music can be read. Audio from a browser tab (YouTube) is not visible "
+                        "to XENIO, so never say what a browser is playing."}
 
     def _keys(self, key: str) -> dict:
         from app.desktop.input import DesktopController

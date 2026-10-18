@@ -26,6 +26,11 @@ log = logging.getLogger("xenio.voice.audio")
 
 SAMPLE_RATE = 16_000
 FRAME_SAMPLES = 1_280  # 80 ms at 16 kHz — the wake-word engine's natural chunk
+# Output streams are fed by a Python callback. With PortAudio's variable, tiny buffers (blocksize 0) the callback runs
+# ~1700 times a second and every wait for the interpreter lock drops audio: measured on this Mac with other Python
+# threads busy in short bursts (as in the UI process), only 7.4% of the audio reached the device - XENIO's voice
+# cracked. Fixed 1024-sample blocks with "high" latency delivered 100% under the same load, for ~70 ms of latency.
+OUTPUT_BLOCK = 1_024
 
 
 class AudioError(Exception):
@@ -148,6 +153,24 @@ def tone(frequency: float = 880.0, ms: int = 120, sample_rate: int = 24_000, vol
     wave_ = np.sin(2 * np.pi * frequency * t) * volume
     fade = np.minimum(1.0, np.minimum(t, t[::-1]) * sample_rate / 240)  # 10 ms fades, no clicks
     return (wave_ * fade * 32767).astype(np.int16).reshape(-1, 1)
+
+
+def wake_chime(sample_rate: int = 24_000, volume: float = 0.22) -> np.ndarray:
+    """XENIO's wake sound (~0.26 s): a quick rising synth glide that resolves into a bright, shimmering ping."""
+    t = np.arange(int(sample_rate * 0.26)) / sample_rate
+    # a phase-continuous exponential sweep 520 -> 1040 Hz over 90 ms, then it fades into the ping
+    sweep, f0, ratio = 0.09, 520.0, 2.0
+    ts = np.minimum(t, sweep)
+    phase = 2 * np.pi * f0 * (sweep / np.log(ratio) * (ratio ** (ts / sweep) - 1) + ratio * np.maximum(t - sweep, 0))
+    glide = np.sin(phase) * np.clip(t / 0.008, 0, 1) * np.exp(-np.maximum(t - sweep, 0) / 0.025)
+    # the ping: a fifth (G6 + D7), each with a slightly detuned twin for the shimmer, ringing out from 75 ms
+    tp = np.maximum(t - 0.075, 0)
+    ring = np.where(t >= 0.075, np.clip(tp / 0.004, 0, 1) * np.exp(-tp / 0.06), 0.0)
+    ping = sum(a * np.sin(2 * np.pi * f * tp) for f, a in ((1568.0, 0.5), (1571.5, 0.35), (2349.3, 0.3), (2353.4, 0.2)))
+    wave_ = 0.55 * glide + ping * ring
+    wave_ *= np.minimum(1.0, (t[-1] - t) * sample_rate / 240)  # 10 ms fade-out, no click
+    wave_ *= volume / max(float(np.max(np.abs(wave_))), 1e-9)
+    return (wave_ * 32767).astype(np.int16).reshape(-1, 1)
 
 
 def resample(pcm: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
@@ -489,6 +512,8 @@ class LiveSpeaker:
         self._fallback: Speaker | None = None
         self._generation = 0  # bumped by stop(): everything queued before it is cancelled
         self.finished_at = 0.0
+        self._tail = 0.0  # the device's output latency: audio handed over keeps playing this long
+        self.output_level = 0.0  # RMS of the last buffer actually sent to the device (the UI's orb follows it)
 
     @property
     def playing(self) -> bool:
@@ -496,7 +521,7 @@ class LiveSpeaker:
             return bool(self._queue)
 
     def echo_possible(self, holdoff: float = 0.1) -> bool:
-        return self.playing or time.monotonic() - self.finished_at < holdoff
+        return self.playing or time.monotonic() - self.finished_at < holdoff + self._tail
 
     def _callback(self, outdata, frames, _time, _status) -> None:  # PortAudio thread
         written, events = 0, []
@@ -516,6 +541,7 @@ class LiveSpeaker:
                     if not self._queue:
                         self.finished_at = time.monotonic()
         outdata[written:] = 0
+        self.output_level = rms(outdata[:written]) if written else 0.0
         if events and self._loop is not None:
             for callback in events:
                 self._loop.call_soon_threadsafe(callback)
@@ -533,9 +559,11 @@ class LiveSpeaker:
         try:
             sd = _sd()
             stream = sd.OutputStream(samplerate=self._rate, channels=1, dtype="int16", device=self._device,
-                                     callback=self._callback, finished_callback=self._on_stream_end, latency="low")
+                                     callback=self._callback, finished_callback=self._on_stream_end,
+                                     blocksize=OUTPUT_BLOCK, latency="high")
             stream.start()
             self._stream = stream
+            self._tail = float(getattr(stream, "latency", 0.0) or 0.0)
             return True
         except Exception as exc:
             log.warning("Persistent audio output unavailable; opening a stream per reply",
@@ -653,6 +681,8 @@ class Speaker:
                 device=self._device,
                 callback=callback,
                 finished_callback=on_finished,
+                blocksize=OUTPUT_BLOCK,
+                latency="high",
             )
             s.start()
             return s
@@ -752,7 +782,7 @@ class Speaker:
         """A started mono int16 output stream at ``rate`` (or the device's native rate if it refuses)."""
         def open_at(r: int):
             s = sd.OutputStream(samplerate=r, channels=1, dtype="int16", device=self._device, callback=callback,
-                                finished_callback=on_finished)
+                                finished_callback=on_finished, blocksize=OUTPUT_BLOCK, latency="high")
             s.start()
             return s
 

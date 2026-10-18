@@ -344,11 +344,15 @@ async def test_voice_confirmation_flow(make_settings):
     assert await hermes.handler(cmd("git push origin main")) is True
     a.stt = FakeSTT(["No."])
     assert await hermes.handler(cmd("git push origin dev")) is False
-    # an unrelated sentence is not a yes: XENIO asks again, then accepts the clear answer
+    # a short unclear answer is asked again, then the clear answer counts
     a.tts = FakeTTS()
-    a.stt = FakeSTT(["What's the weather like today?", "yes"])
+    a.stt = FakeSTT(["Hmm?", "yes"])
     assert await hermes.handler(cmd("pip install requests")) is True
     assert "Please confirm yes or no." in a.tts.texts
+    # a new request is never an answer: the action is cancelled and the request kept for after this turn
+    a.stt = FakeSTT(["What's the weather like today?", "yes"])
+    assert await hermes.handler(cmd("pip install flask")) is False
+    assert a.held_request == "What's the weather like today?"
     # HIGH_RISK needs the word "confirm"; "yes" alone is unclear
     a.stt = FakeSTT(["yes", "confirm"])
     assert await hermes.handler(cmd("format D:")) is True

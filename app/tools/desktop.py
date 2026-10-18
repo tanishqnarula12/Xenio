@@ -12,7 +12,7 @@ import sys
 from typing import Any
 
 from app.safety.policy import RiskLevel
-from app.tools.base import Tool, ToolContext, ToolResult
+from app.tools.base import Tool, ToolContext, ToolResult, action_failed
 
 _service = None
 
@@ -41,14 +41,16 @@ def _run(tool: str, fn) -> ToolResult:
     try:
         return ToolResult.ok(tool, "done", **fn())
     except (DesktopError, WindowError, UIAError, InputError) as exc:
-        return ToolResult.fail(tool, str(exc))
+        return action_failed(tool, str(exc), getattr(exc, "status", "FAILED"))
     except ImportError as exc:  # neither Windows nor macOS
-        return ToolResult.fail(tool, f"desktop control is not available here ({exc})")
+        return ToolResult.fail(tool, f"desktop control is not available here ({exc})", "NOT_SUPPORTED")
 
 
 def open_app(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    wait = args.get("wait_seconds")
-    return _run("desktop.open_app", lambda: service().open_app(str(args["name"]), float(wait) if isinstance(wait, int) else 25.0))
+    wait, command = args.get("wait_seconds"), str(args.get("command") or "")
+    default = 10.0 if command.strip() else 25.0
+    return _run("desktop.open_app", lambda: service().open_app(str(args["name"]), float(wait) if isinstance(wait, int)
+                                                               else default, command))
 
 
 def list_apps(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -95,8 +97,13 @@ _TOOLS = [
     Tool("desktop.open_app",
          f"Open an installed application by name: {_APPS_WHERE} or a kind of app ('my code editor', 'the browser'). "
          "XENIO finds it, starts it and waits until its window really appears; report it as open only if the result "
-         "says verified. If several apps match, ask the user which one.",
-         _obj({"name": _S, "wait_seconds": _I}, ["name"]), RiskLevel.SAFE_WRITE, "xenio", "xenio_open_app", open_app),
+         "says verified. If several apps match, ask the user which one."
+         + (" To run something in the user's OWN visible Terminal ('open Terminal and run/print X'), give name "
+            "'Terminal' and 'command': a new Terminal window runs it and the result holds that window's text. The "
+            "terminal tool is XENIO's hidden background shell - the user never sees it, so it never counts as opening "
+            "Terminal." if _MAC else ""),
+         _obj({"name": _S, "wait_seconds": _I, **({"command": _S} if _MAC else {})}, ["name"]), RiskLevel.SAFE_WRITE,
+         "xenio", "xenio_open_app", open_app),
     Tool("desktop.list_apps", "Search the installed applications by name (names only).",
          _obj({"query": _S}), RiskLevel.READ, "xenio", "xenio_list_apps", list_apps),
     Tool("desktop.window",

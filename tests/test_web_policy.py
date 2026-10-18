@@ -312,4 +312,4 @@ def test_writing_gits_internal_files_needs_confirmation(name, paths, tmp_path):
 
 
 def test_policy_version_bumped():
-    assert p.POLICY_VERSION == "8"  # V6 engineering-session rules -> XENIO starts a fresh Hermes session
+    assert p.POLICY_VERSION == "9"  # Terminal commands + macOS desktop prompt -> XENIO starts a fresh Hermes session

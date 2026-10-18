@@ -39,17 +39,31 @@ class ToolResult:
     message: str = ""
     data: dict[str, Any] | None = None
     error: str | None = None
+    status: str | None = None  # a failure's kind (STATUSES); a success's is derived from its evidence
 
     @classmethod
     def ok(cls, tool: str, message: str, **data: Any) -> ToolResult:
         return cls(True, tool, message, data or None)
 
     @classmethod
-    def fail(cls, tool: str, error: str) -> ToolResult:
-        return cls(False, tool, error=error)
+    def fail(cls, tool: str, error: str, status: str = "FAILED") -> ToolResult:
+        return cls(False, tool, error=error, status=status)
+
+    @property
+    def outcome(self) -> str:
+        """What the evidence supports: SUCCEEDED only when nothing says otherwise; an action whose result carries
+        ``verified`` other than True is UNVERIFIED; work still going on is RUNNING."""
+        if not self.success:
+            return self.status or "FAILED"
+        data = self.data or {}
+        if data.get("still_running") or data.get("running"):
+            return "RUNNING"
+        if "verified" in data and data["verified"] is not True:
+            return "UNVERIFIED"
+        return "SUCCEEDED"
 
     def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"success": self.success, "tool": self.tool}
+        out: dict[str, Any] = {"success": self.success, "tool": self.tool, "status": self.outcome}
         if self.success:
             out["message"] = self.message
             if self.data:
@@ -60,6 +74,38 @@ class ToolResult:
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, default=str)
+
+
+# What a tool result may report (``status``): NEEDS_APPROVAL is never a result - XENIO's guard asks before the call.
+STATUSES = ("SUCCEEDED", "UNVERIFIED", "RUNNING", "FAILED", "NOT_SUPPORTED", "NEEDS_CLARIFICATION", "NEEDS_PERMISSION")
+
+
+def failure_status(message: str) -> str:
+    """The kind of a desktop/media failure, from XENIO's own wording of it."""
+    return "NEEDS_PERMISSION" if _missing_permission(message) else "FAILED"
+
+
+def _missing_permission(message: str) -> str:
+    from app.desktop.macos import ACCESSIBILITY_STEP, SCREEN_STEP  # stdlib-only module; the constants are plain text
+
+    if ACCESSIBILITY_STEP in message:
+        return "accessibility"
+    if SCREEN_STEP in message:
+        return "screen"
+    return "automation" if "(Automation permission)" in message else ""
+
+
+def action_failed(tool: str, message: str, status: str = "FAILED") -> ToolResult:
+    """A desktop/media failure with its kind. A missing macOS permission also brings up the System Settings page to
+    switch it on (only the page: the user grants it)."""
+    kind = _missing_permission(message)
+    if status == "FAILED" and kind:
+        status = "NEEDS_PERMISSION"
+        from app.desktop.macos import open_privacy_settings
+
+        if open_privacy_settings(kind):
+            message += " XENIO has opened that page in System Settings; the user only has to switch it on."
+    return ToolResult.fail(tool, message, status)
 
 
 @dataclass
