@@ -53,8 +53,14 @@ user request is answered by Hermes Agent over ACP; XENIO never calls an LLM itse
 | `app/tools/personal.py` | V4: the personal tools registered in Hermes (`xenio_calendar_events` … `xenio_integrations`) |
 | `app/vision/` | V5: `capture` (Windows GDI screen capture, PNG in memory), `providers` (`VisionProvider`: Hermes' model access, strict; optional OpenAI-compatible), `service` (`ScreenLook`: capture → describe → mask → discard) |
 | `app/tools/vision.py` | V5: `xenio_look_at_screen` (observe-only) |
-| `app/desktop/` | V5.5 desktop control; `common.py` shared; Windows `windows`/`win32`/`uia`; macOS `macos` (CoreGraphics, Accessibility, ImageIO via ctypes + a persistent accessibility helper process), `mac_windows`, `ax` |
+| `app/desktop/` | V5.5 desktop control; `common.py` shared; Windows `windows`/`win32`/`uia`; macOS `macos` (CoreGraphics, Accessibility, ImageIO via ctypes + a persistent accessibility helper process), `mac_windows`, `ax`, `mac_terminal` (a command in a new visible Terminal window, read back) |
 | `app/fastpath.py`, `app/media.py` | simple commands carried out by XENIO itself without the model (apps, windows, music, media keys, volume, time); same policy, only READ/SAFE_WRITE steps |
+| `app/tools/media.py` | `xenio_media`: the same player code for the chat (play a song, pause/next/previous, what is playing, volume) |
+| `app/ui/` + `ui/` | UI V1 (`--ui`): a local web interface over the same components; `server` (127.0.0.1, token, SSE), `controller` (every page -> a real component), `events`, `assistant` (the orb's states), `approvals` (the PermissionGate's web confirmer). See [UI.md](UI.md) |
+
+One action layer for voice and text: both go through `Orchestrator.process_text` - XENIO's fast path for simple
+commands, else Hermes with XENIO's guarded `xenio_*` tools. The fast path and the tools share the desktop service and
+the player, so "open Spotify" or "pause" behave the same whichever path handles them.
 | `app/engineering/` | V6 engineering team: `service` (runs, status, cancel, apply/push/PR, socket for the chat's Hermes), `orchestrator` (plan → tasks → execute → review → report), `agents` (Hermes ACP sessions per task), `graph` (task graph), `roles` (enforced capabilities, cost policy), `repo` (snapshot, worktrees, merges), `verify` (tests run by XENIO, sandboxed), `security` (deterministic scan), `prompts` |
 | `app/tools/engineering.py` | V6: `xenio_engineering`, the tool Hermes uses to work with the engineering team |
 | `hermes_plugin/xenio-guard/` | Hermes plugin enforcing XENIO's policy inside Hermes (and, V6, each engineering session's role and file scope) |

@@ -30,6 +30,7 @@ from app.safety.policy import (
     classify_command,
     combine,
     parse_escalation,
+    parse_escalation_confined,
     parse_escalation_scopes,
     scope_covers,
 )
@@ -38,7 +39,7 @@ log = logging.getLogger("xenio.safety")
 
 __all__ = [
     "RiskLevel", "ACTION_RISK", "classify_action", "PermissionRequest", "PermissionDecision", "PermissionGate",
-    "Confirmer", "from_hermes_request", "interpret_answer", "is_affirmative", "is_strict_confirmation",
+    "Confirmer", "from_hermes_request", "interpret_answer", "is_affirmative", "is_strict_confirmation", "APPROVE_TASK",
 ]
 
 # Named actions (spec examples + integrations). Tool calls are classified on their real arguments
@@ -83,6 +84,7 @@ class PermissionRequest:
     reason: str = ""
     dedupe_key: str = ""  # same action approved moments ago -> don't ask twice
     scopes: tuple[str, ...] = ()  # destructive targets ("delete:<path>"); see policy.scope_covers
+    confined: bool = False  # everything it writes stays in XENIO's workspace (PathPolicy.confined)
 
 
 @dataclass
@@ -105,7 +107,8 @@ def from_hermes_request(req: HermesPermissionRequest, paths: PathPolicy | Path) 
         checks = [paths.check(str(d["path"]), "create" if d.get("oldText") is None else "modify") for d in diffs]
         decision = combine(checks, fallback=checks[0])
         return PermissionRequest(decision.action, decision.summary, decision.level, "hermes",
-                                 {"paths": [str(d["path"]) for d in diffs]}, decision.blocked, decision.reason)
+                                 {"paths": [str(d["path"]) for d in diffs]}, decision.blocked, decision.reason,
+                                 confined=paths.confined(decision))
 
     if req.kind == "execute":
         command = str(req.raw_input.get("command") or "").strip()
@@ -117,7 +120,8 @@ def from_hermes_request(req: HermesPermissionRequest, paths: PathPolicy | Path) 
                 level, summary, key = parsed
                 return PermissionRequest("policy." + plugin.group(1), summary, level, "hermes",
                                          {"tool": plugin.group(1)}, dedupe_key=key,
-                                         scopes=parse_escalation_scopes(description))
+                                         scopes=parse_escalation_scopes(description),
+                                         confined=level == RiskLevel.CONFIRM_REQUIRED and parse_escalation_confined(description))
             return PermissionRequest("plugin." + plugin.group(1), description or f"use {plugin.group(1)}",
                                      RiskLevel.CONFIRM_REQUIRED, "hermes")
         # Hermes' own dangerous-command prompt: judge the real command; never below CONFIRM.
@@ -126,7 +130,7 @@ def from_hermes_request(req: HermesPermissionRequest, paths: PathPolicy | Path) 
         summary = decision.summary if decision.summary.startswith(("run", "permanently", "push")) else f"run: {command}"
         return PermissionRequest(decision.action, summary, level, "hermes", {"command": command},
                                  decision.blocked, decision.reason, dedupe_key=f"terminal:{command}",
-                                 scopes=decision.scopes)
+                                 scopes=decision.scopes, confined=level == decision.level and paths.confined(decision))
 
     return PermissionRequest(req.kind or "unknown", req.title or "perform an unknown action",
                              RiskLevel.CONFIRM_REQUIRED, "hermes")
@@ -146,12 +150,31 @@ class _NoClearAnswer:
 NO_CLEAR_ANSWER = _NoClearAnswer()
 
 
+class _ApproveTask:
+    """A confirmer's "yes - and go ahead with the rest of this task in XENIO's workspace without asking". Truthy like
+    any yes; the gate then opens a task grant (only for a request confined to the workspace)."""
+
+    def __bool__(self) -> bool:
+        return True
+
+    def __repr__(self) -> str:
+        return "APPROVE_TASK"
+
+
+APPROVE_TASK = _ApproveTask()
+
+
 class Confirmer(Protocol):
     async def confirm(self, request: PermissionRequest, *, strict: bool) -> bool | _NoClearAnswer: ...
 
 
 class PermissionGate:
+    """``check`` decides every action; a task grant (the user's "allow for this task") lets confirmable actions that
+    stay inside XENIO's workspace go ahead without asking until it expires or is ended. Never a high-risk action,
+    never one with a target outside the workspace - those still ask every time."""
+
     REMEMBER_SECONDS = 120.0
+    TASK_GRANT_SECONDS = 30 * 60.0
 
     def __init__(
         self,
@@ -165,6 +188,40 @@ class PermissionGate:
         self._timeout = timeout
         self._recent: dict[str, float] = {}
         self._approved_scopes: list[tuple[str, float]] = []  # (scope, expiry)
+        self._grant: dict | None = None  # {"expires": monotonic, "until": wall clock, "covered": n, "reason": ...}
+        self.on_grant_change = lambda grant: None  # the UI publishes the grant's state
+
+    # ---- the task grant -----------------------------------------------------------------------------------------
+
+    def grant_task(self, reason: str = "", seconds: float | None = None) -> dict:
+        seconds = self.TASK_GRANT_SECONDS if seconds is None else seconds
+        self._grant = {"expires": time.monotonic() + seconds, "until": time.time() + seconds, "covered": 0,
+                       "reason": reason[:200]}
+        event(log, "TASK_GRANT_STARTED", minutes=round(seconds / 60, 1))
+        self.on_grant_change(self.task_grant())
+        return self.task_grant()
+
+    def end_task(self, why: str = "ended") -> None:
+        if self._grant is not None:
+            event(log, "TASK_GRANT_ENDED", why=why, covered=self._grant["covered"])
+        self._grant = None
+        self.on_grant_change(None)
+
+    def task_grant(self) -> dict | None:
+        """The grant's state for display, or None (also once it has expired)."""
+        g = self._grant
+        if g is None:
+            return None
+        if g["expires"] <= time.monotonic():
+            self._grant = None
+            self.on_grant_change(None)
+            return None
+        return {"active": True, "until": g["until"], "seconds_left": int(g["expires"] - time.monotonic()),
+                "covered": g["covered"], "reason": g["reason"]}
+
+    def _grant_covers(self, request: PermissionRequest) -> bool:
+        return (request.confined and request.risk == RiskLevel.CONFIRM_REQUIRED and not request.blocked
+                and self.task_grant() is not None)
 
     def _covered(self, request: PermissionRequest, now: float) -> bool:
         """True if the user just approved this exact action, or a delete/move of the same or an
@@ -189,6 +246,11 @@ class PermissionGate:
         if self._covered(request, now):
             event(log, "Permission granted (already confirmed moments ago)", **fields)
             return PermissionDecision(True, "already confirmed by the user")
+        if self._grant_covers(request):
+            self._grant["covered"] += 1
+            event(log, "Permission granted (the user's approval for this task, XENIO's workspace only)", **fields)
+            self.on_grant_change(self.task_grant())
+            return PermissionDecision(True, "covered by the user's approval for this task (XENIO's workspace only)")
         if self.confirmer is None:
             event(log, "Permission denied (no way to ask the user)", logging.WARNING, **fields)
             return PermissionDecision(False, "no confirmation channel available")
@@ -196,7 +258,7 @@ class PermissionGate:
         event(log, "CONFIRMATION_REQUESTED", **fields, strict=strict)
         try:
             answer = await asyncio.wait_for(self.confirmer.confirm(request, strict=strict), self._timeout)
-            approved = answer is True  # only an explicit yes; anything else is a no
+            approved = answer is True or answer is APPROVE_TASK  # only an explicit yes; anything else is a no
         except TimeoutError:
             event(log, "CONFIRMATION_RECEIVED", logging.WARNING, **fields, approved=False, why="timeout")
             return PermissionDecision(False, "confirmation timed out")
@@ -204,6 +266,8 @@ class PermissionGate:
             log.exception("Confirmer failed; denying")
             return PermissionDecision(False, "confirmation failed")
         event(log, "CONFIRMATION_RECEIVED", **fields, approved=approved)
+        if answer is APPROVE_TASK and request.confined and not strict:
+            self.grant_task(request.description)
         if approved:
             expiry = time.monotonic() + self.REMEMBER_SECONDS
             if request.dedupe_key:
@@ -247,6 +311,15 @@ def interpret_answer(answer: str, strict: bool = False) -> str:
         return "unclear"
     unrelated = [w for w in words if w not in _YES and w not in _FILLER]
     return "yes" if len(unrelated) <= 3 else "unclear"
+
+
+def is_new_request(answer: str) -> bool:
+    """An "answer" that is really the user's next request ("No, play some music instead", or a new question typed or
+    said while XENIO was asking): three or more words beyond yes, no and filler. Unless it is a clear yes, the
+    question ends as not approved and the words are kept as the next request instead of being used up as an
+    unclear answer."""
+    words = re.findall(r"[a-z']+", (answer or "").lower().replace("’", "'"))
+    return len([w for w in words if w not in _YES and w not in _NO and w not in _FILLER]) >= 3
 
 
 def is_affirmative(answer: str) -> bool:

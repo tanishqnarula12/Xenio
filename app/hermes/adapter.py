@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -62,12 +63,25 @@ class _Turn:
                 log.exception("Tool handler failed")
 
     def add_text(self, text: str, message_id: str | None) -> None:
+        if self._repeats_reply(text):
+            log.debug("Dropped a repeat of the streamed reply (%d chars)", len(text))
+            return
         # A turn can hold several assistant messages (e.g. before and after a tool call).
         if message_id and self.last_message_id and message_id != self.last_message_id and self.parts:
             self._emit("\n\n")
         if message_id:
             self.last_message_id = message_id
         self._emit(text)
+
+    def _repeats_reply(self, text: str) -> bool:
+        """Hermes 0.22's ACP projection sends the settled reply again, as one "\\n\\n" + full text chunk, when the
+        turn streamed text before a tool call that never started (blocked by the guard, or denied by the user): that
+        text stays in its stream buffer, so its "already shown?" prefix check fails (acp_adapter/gateway_reply.py
+        ``_final_remainder``). Such a chunk repeats the tail of what was just streamed, word for word."""
+        if not text.startswith("\n\n"):
+            return False
+        repeat, shown = " ".join(text.split()), " ".join("".join(self.parts).split())
+        return bool(repeat) and shown.endswith(repeat)
 
     def _emit(self, text: str) -> None:
         self.parts.append(text)
@@ -321,6 +335,8 @@ class HermesAcpClient(HermesClient):
             activity.status = update.get("status") or activity.status
             if activity.status == "failed":
                 activity.detail = _text_of(update.get("content")) or activity.detail
+            elif activity.status == "completed":
+                activity.result = _text_of(update.get("content")) or activity.result
             label = (activity.title or tool_id)[:160]
             if new:
                 event(log, "TOOL_REQUESTED", tool=label, kind=activity.kind or "-")
@@ -381,9 +397,14 @@ class HermesAcpClient(HermesClient):
         if data.get("workspace") != str(self._settings.workspace):
             return None
         # Hermes freezes a session's system prompt (incl. XENIO's rules) at creation: a new policy
-        # version needs a new session.
+        # version, or any change to the guard's prompt text (fingerprinted, so it cannot be forgotten), needs
+        # a new session.
         if data.get("policy_version") != POLICY_VERSION:
             log.info("XENIO policy changed since the saved session; starting a new one")
+            return None
+        prompt = self._prompt_signature()
+        if prompt and data.get("prompt", "") != prompt:
+            log.info("XENIO's rules for the model changed since the saved session; starting a new one")
             return None
         # Hermes also keeps the model a session was created with: after `hermes model` (or a new
         # fallback chain) the saved conversation would keep using the old model.
@@ -399,6 +420,13 @@ class HermesAcpClient(HermesClient):
             return ""  # model unknown (no readable config): never a reason to drop the conversation
         return "|".join([setup.signature, setup.reasoning_effort, *(f"{p}:{m}" for p, m in setup.fallbacks)])
 
+    def _prompt_signature(self) -> str:
+        from app.hermes.fingerprint import prompt_fingerprint
+        from app.hermes.guard import PLUGIN_NAME, SOURCE_DIR
+
+        installed = self._hermes_home / "plugins" / PLUGIN_NAME / "__init__.py"  # what Hermes loads
+        return prompt_fingerprint(installed if installed.is_file() else SOURCE_DIR / "__init__.py")
+
     def _save_session(self, session_id: str) -> None:
         if self._session_file is None:
             return
@@ -406,7 +434,8 @@ class HermesAcpClient(HermesClient):
             self._session_file.parent.mkdir(parents=True, exist_ok=True)
             self._session_file.write_text(
                 json.dumps({"session_id": session_id, "workspace": str(self._settings.workspace),
-                            "policy_version": POLICY_VERSION, "model": self._model_signature()}),
+                            "policy_version": POLICY_VERSION, "model": self._model_signature(),
+                            "prompt": self._prompt_signature()}),
                 encoding="utf-8",
             )
         except OSError:
@@ -424,8 +453,9 @@ def guard_environment(settings: HermesSettings, data_dir: Path | None) -> dict[s
         "XENIO_ROOT": str(PROJECT_ROOT),
         "XENIO_WORKSPACE": str(settings.workspace),
         "XENIO_ALLOWED_DIRS": ";".join(str(p) for p in settings.allowed_dirs),
-        # Read by Hermes' config as tools.tool_search.enabled: ${XENIO_TOOL_SEARCH} (set by
-        # --install-guard): keeps XENIO's tools directly visible instead of behind tool_search.
+        # For a config still holding the pre-0.22 placeholder tools.tool_search.enabled: ${XENIO_TOOL_SEARCH}:
+        # a Hermes that runs sessions in its own process reads "off" here. A 0.22 gateway ignores it (profile .env
+        # only), so --install-guard now writes "off" itself (app/hermes/guard.py).
         "XENIO_TOOL_SEARCH": "off",
         "XENIO_DOWNLOAD_MAX_MB": str(settings.download_max_mb),
         **({"XENIO_DATA_DIR": str(data_dir)} if data_dir else {}),
@@ -435,7 +465,19 @@ def guard_environment(settings: HermesSettings, data_dir: Path | None) -> dict[s
         # browser.headed is not in its config). Off by default: xenio_open_url shows pages to the user.
         **({"AGENT_BROWSER_HEADED": "1"} if settings.show_browser else {}),
         **(settings.vision.env() if settings.vision else {}),
+        **_host_app_env(),
     }
+
+
+def _host_app_env() -> dict[str, str]:
+    """macOS grants permissions to the app XENIO was started from; a detached Hermes gateway cannot find it itself, so
+    its permission messages name it from here."""
+    if sys.platform != "darwin":
+        return {}
+    from app.desktop.macos import host_app
+
+    host = host_app()
+    return {"XENIO_HOST_APP": host} if host else {}
 
 
 def _text_of(content: Any) -> str:

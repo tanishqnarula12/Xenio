@@ -97,12 +97,15 @@ class _Defer(Exception):
 
 
 class FastPath:
-    def __init__(self, paths: PathPolicy, music=None, desktop=None, enabled: bool = True, clock=dt.datetime.now):
+    def __init__(self, paths: PathPolicy, music=None, desktop=None, enabled: bool = True, clock=dt.datetime.now,
+                 reminders=None, tasks=None):
         self.paths = paths
         self.enabled = enabled
         self._music = music
         self._desktop = desktop
         self._clock = clock
+        self.reminders = reminders  # app.reminders.Reminders (None: reminders go to Hermes)
+        self._tasks = tasks  # () -> app.personal.tasks.TaskList
 
     # ---- collaborators (built on first use: importing them costs nothing until a command needs them) ------------
 
@@ -147,6 +150,9 @@ class FastPath:
         """The reply, or None when Hermes should take the request."""
         if not self.enabled:
             return None
+        personal = await self._personal(text)
+        if personal is not None:
+            return personal
         intents, complete = parse_command(text)
         if not complete or any(i.kind not in FAST_KINDS for i in intents):
             return None
@@ -185,6 +191,59 @@ class FastPath:
         note = (f"[XENIO did this itself just now, without you: {'; '.join(done)}"
                 + (f"; failed: {actions[-1].title[6:]} ({actions[-1].detail})" if not ok else "") + "]") if actions else ""
         return FastReply(" ".join(s for s in sentences if s), ok, actions, note, ms)
+
+    # ---- reminders and the user's tasks (app/personal/quick.py) ---------------------------------------------------
+
+    def _task_list(self):
+        if self._tasks is not None:
+            return self._tasks()
+        from app.personal.tasks import TaskList
+
+        return TaskList()
+
+    async def _personal(self, text: str) -> FastReply | None:
+        from app.personal import quick
+
+        req = quick.parse(text, self._clock())
+        if req is None or (req.kind == "remind" and self.reminders is None):
+            return None
+        started = time.monotonic()
+        try:
+            reply, title = await asyncio.to_thread(self._do_personal, req, quick)
+        except _Defer as exc:
+            event(log, "FAST_PATH_DEFERRED", reason=str(exc)[:80])
+            return None
+        except Exception as exc:  # noqa: BLE001 - reported, never hidden
+            why = _reason(exc)
+            event(log, "FAST_PATH_ACTION", logging.WARNING, action=f"personal.{req.kind}", ok=False, error=why[:120])
+            return FastReply(f"That didn't work: {why}", False,
+                             [ToolActivity("fast-0", f"fast: {req.kind}", "fast", "failed", why)],
+                             ms=int((time.monotonic() - started) * 1000))
+        ms = int((time.monotonic() - started) * 1000)
+        event(log, "FAST_PATH", steps=1, ok=True, ms=ms, action=f"personal.{req.kind}")
+        return FastReply(reply, True, [ToolActivity("fast-0", f"fast: {title}", "fast", "completed")],
+                         f"[XENIO did this itself just now, without you: {title}]", ms)
+
+    def _do_personal(self, req, quick) -> tuple[str, str]:
+        if req.kind == "remind":
+            made = self.reminders.create(req.reminder.text, req.reminder.when)
+            return (f"Okay, I'll remind you to {made['text']} {req.reminder.when.display}.",
+                    f"reminder set: {made['text']} ({req.reminder.when.display})")
+        tasks = self._task_list()
+        if req.kind == "add_task":
+            task = tasks.add(req.title, priority=req.priority, due=req.due)
+            due = f", due {task.due}" if task.due else ""
+            return f"Added to your tasks: {task.title}{due}.", f"task added: {task.title}"
+        if req.kind == "list_tasks":
+            open_tasks = tasks.list("open")
+            return quick.describe_tasks(open_tasks), f"listed {len(open_tasks)} open task(s)"
+        if req.kind == "complete_task":
+            found = [t for t in tasks.find(req.query) if t.status != "done"]
+            if len(found) != 1:
+                raise _Defer(f"{len(found)} tasks match {req.query!r}")
+            done = tasks.complete(found[0].id)
+            return f"Marked done: {done.title}.", f"task done: {done.title}"
+        raise _Defer(req.kind)
 
     # ---- planning (no side effects) ----------------------------------------------------------------------------
 
@@ -320,7 +379,7 @@ class FastPath:
 
     def _control(self, action: str, say: dict) -> _Step:
         def said(r):
-            if r.get("verified") is None:
+            if r.get("verified") is not True:  # the player did not confirm it: never announce it as done
                 return say["pressed"].format(key={"play": "play", "pause": "pause", "next": "next",
                                                   "previous": "previous"}[action])
             now = r.get("now_playing") or ""

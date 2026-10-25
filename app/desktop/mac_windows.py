@@ -18,7 +18,7 @@ from app.desktop import macos
 from app.desktop.common import WindowError, WindowInfo, rank_windows
 
 __all__ = ["WindowError", "WindowInfo", "list_windows", "list_hidden_windows", "foreground_window", "active_app_window",
-           "find_windows", "focus", "show", "minimize", "maximize", "restore", "close", "session_locked"]
+           "find_windows", "focus", "show", "minimize", "maximize", "restore", "close", "session_locked", "fullscreen"]
 
 
 def _call(cmd: str, **args):
@@ -121,12 +121,18 @@ def _activate_app(pid: int) -> None:
 
 
 def focus(hwnd: int, timeout: float = 2.0) -> bool:
-    """Bring a window to the front (un-minimizing / un-hiding it). True only if it really is in front afterwards."""
-    if _trusted():
-        return bool(_call("focus", id=int(hwnd), timeout=timeout + 2))
+    """Bring a window to the front (un-minimizing / un-hiding it). True only if it really is in front afterwards.
+    With Accessibility the window itself is raised; macOS can still refuse to activate another app for a background
+    process (measured on macOS 26: AXFrontmost was ignored for Spotify while a Dock-style activation worked), so the
+    app is then brought forward the way a Dock click does and its window raised again."""
     pid = _pid_of(hwnd)
     if not pid:
         raise WindowError("that window no longer exists")
+    if _trusted():
+        if _call("focus", id=int(hwnd), timeout=timeout + 2):
+            return True
+        _activate_app(pid)
+        return bool(_call("focus", id=int(hwnd), timeout=timeout + 2))
     _activate_app(pid)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -164,6 +170,18 @@ def maximize(hwnd: int) -> bool:
 def restore(hwnd: int) -> bool:
     _need_access("restore")
     return bool(_call("restore", id=int(hwnd)))
+
+
+def fullscreen(hwnd: int, set_to: bool | None = None) -> str | bool | None:
+    """The window's full screen: "system" (its own Space), "page" (a page's full screen covering the display), False,
+    or None (unknown, without the Accessibility permission). ``set_to`` enters or leaves the system's full screen
+    first."""
+    if not _trusted():
+        return None
+    out = _call("fullscreen", id=int(hwnd), timeout=6, **({} if set_to is None else {"set": bool(set_to)}))
+    if not isinstance(out, dict):
+        return None
+    return (out.get("kind") or "system") if out.get("fullscreen") else False
 
 
 def close(hwnd: int, timeout: float = 3.0) -> str:

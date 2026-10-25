@@ -98,7 +98,10 @@ class GoogleAuth:
     def save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        # owner-only: it holds a refresh token (the default umask makes new files readable by every account on a Mac)
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=1))
+        os.chmod(tmp, 0o600)  # also when an older .tmp was left behind with wider permissions
         os.replace(tmp, self.path)
 
     def state(self) -> AuthState:

@@ -145,7 +145,9 @@ def test_after_an_injection_only_plain_reading_runs_without_a_yes(paths):
     ("xenio_schedule", {"action": "list"}, "READ"),
     ("xenio_schedule", {"action": "create", "name": "morning", "schedule": "0 8 * * *", "task": "brief me"},
      "CONFIRM_REQUIRED"),
-    ("xenio_schedule", {"action": "remove", "name": "morning"}, "CONFIRM_REQUIRED"),
+    ("xenio_schedule", {"action": "remove", "name": "morning"}, "SAFE_WRITE"),  # only XENIO's own jobs
+    ("xenio_schedule", {"action": "remind", "text": "call mom", "when": "at 3 pm"}, "SAFE_WRITE"),
+    ("xenio_schedule", {"schedule": "2026-10-18T15:00", "task": "Remind to go to office"}, "SAFE_WRITE"),  # no action
     ("xenio_schedule", {"action": "wipe"}, "CONFIRM_REQUIRED"),
     ("cronjob_manage", {"action": "list"}, "READ"),
     ("cronjob_manage", {"action": "create", "prompt": "x", "schedule": "1h"}, "BLOCKED"),

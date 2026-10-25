@@ -10,6 +10,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,7 @@ MSG_HERMES_UNAVAILABLE = "I can't reach my reasoning engine right now."
 MSG_HERMES_TIMEOUT = "My reasoning engine is taking too long to answer. Please try again."
 MSG_HERMES_ERROR = "Something went wrong in my reasoning engine. Please try again."
 MSG_EMPTY_REPLY = "My reasoning engine returned an empty answer."
+MSG_DUPLICATE = "I'm already working on that exact request - I'll answer it once."
 
 
 _STATUS_LABEL = {"completed": "done", "failed": "FAILED", "in_progress": "unfinished", "pending": "not run"}
@@ -53,10 +55,47 @@ _FAILED_ACTION_CLAIM = re.compile(
     rf"|\b(?:was|were|has|have)(?:n'?t| not)(?: been)? (?P<done>{_DONE_VERBS})\b", re.IGNORECASE)
 
 
+# Code on the user's screen (2026-10-25): replies said "compiled with no errors" and "compile finished clean" when the
+# run showed no result at all, and "Done - pasted full C++ solution in the editor" in a turn that ran no tool.
+_CODE_COMPILE_CLAIM = re.compile(
+    r"\bcompil\w*\b(?:(?![.!?]).){0,40}?\b(?:clean(?:ly)?|fine|successful(?:ly)?|without (?:any )?errors?|with no errors?"
+    r"|no errors?|ok(?:ay)?)\b|\bno (?:compile|compilation) errors?\b|\b(?:it|code|program|solution) compiles\b", re.I)
+_CODE_PASS_CLAIM = re.compile(
+    r"\b(?:test ?cases?|tests?|examples?|sample)\b(?:(?![.!?]).){0,25}?\bpass(?:ed|es)?\b"
+    r"|\bpasse[sd]\b(?:(?![.!?]).){0,25}?\b(?:tests?|test ?cases?|examples?|sample)\b|\bmatches the expected\b", re.I)
+_CODE_WRITE_CLAIM = re.compile(
+    r"\b(?:pasted|typed|wrote|written|entered)\b(?:(?![.!?]).){0,60}?\b(?:in|into)\b(?:(?![.!?]).){0,30}?\beditor\b", re.I)
+
+
 def claims_outcome(text: str) -> bool:
     """True when ``text`` states how an action ended ("Done.", "I've created...", "you declined", "I couldn't
-    push"). Voice mode holds such sentences back until ``truth_check`` has compared them with the tool results."""
-    return bool(_SUCCESS_CLAIM.search(text) or _DECLINE_CLAIM.search(text) or _FAILED_ACTION_CLAIM.search(text))
+    push", "it compiled", "the tests passed"). Voice mode holds such sentences back until the checks have compared
+    them with the tool results."""
+    return bool(_SUCCESS_CLAIM.search(text) or _DECLINE_CLAIM.search(text) or _FAILED_ACTION_CLAIM.search(text)
+                or _CODE_COMPILE_CLAIM.search(text) or _CODE_PASS_CLAIM.search(text) or _CODE_WRITE_CLAIM.search(text))
+
+
+def code_claim_check(text: str, tool_calls: list) -> str:
+    """A reply about code on the screen that says more than the tool results do: written into the editor when no
+    write ran in this request, compiled or passed when the last run of this request does not show it. The result's
+    outcome (what XENIO measured) is the truth. Silent when nothing was written or run in this request and the reply
+    does not claim a write: a claim about compiling may then come from the user's own run on screen."""
+    from app.desktop.task import code_facts
+
+    gui = [t for t in tool_calls if str(getattr(t, "title", "") or "").startswith("xenio_gui")]
+    facts = [f for f in (code_facts(str(getattr(t, "result", "") or "")) for t in gui) if f]
+    if _CODE_WRITE_CLAIM.search(text or ""):
+        if not gui:  # (a plain text written with xenio_gui has no code outcome: then nothing is said)
+            return "(XENIO correction: no desktop action ran in this request, so nothing was written into an editor.)"
+        if facts and not any(f["entered"] for f in facts):
+            return f"(XENIO correction: {facts[-1]['say']})"
+    if not facts:
+        return ""
+    last = facts[-1]
+    if (_CODE_COMPILE_CLAIM.search(text or "") and last["compiled"] is not True) or \
+            (_CODE_PASS_CLAIM.search(text or "") and last["tests_passed"] is not True):
+        return f"(XENIO correction: {last['say']})"
+    return ""
 
 
 def truth_check(text: str, tool_calls: list, declined: list[str], approved: list[str]) -> tuple[str, bool]:
@@ -85,6 +124,35 @@ def truth_check(text: str, tool_calls: list, declined: list[str], approved: list
     return "", False
 
 
+_REMINDER_CLAIM = re.compile(r"\b(?:reminder\b[^.?!]{0,40}\b(?:set|scheduled|active|created|added)\b|(?:i'?ll|i will|will)"
+                             r" (?:remind|notify|nudge) you\b|reminder (?:is |has been )?(?:set|scheduled|active))", re.I)
+
+
+def reminder_claim_check(text: str, tool_calls: list, pending_reminders: Callable[[], int]) -> str:
+    """A reply that says a reminder is set, in a turn where no reminder was made, while XENIO's scheduler holds none at
+    all: the model is repeating something it believed earlier (observed: "reminder already set" when nothing was).
+    The scheduler is the truth. Silent whenever a reminder really is pending (it may be the one meant)."""
+    if not _REMINDER_CLAIM.search(text or ""):
+        return ""
+    if any("xenio_schedule" in (getattr(t, "title", "") or "") or "reminder set" in (getattr(t, "title", "") or "")
+           for t in tool_calls):
+        return ""
+    try:
+        if pending_reminders() > 0:
+            return ""
+    except Exception:  # noqa: BLE001 - when the scheduler cannot be read, say nothing rather than guess
+        return ""
+    return ("(XENIO correction: no reminder is set - XENIO's scheduler has none. Say \"remind me at ... to ...\" and "
+            "it will be set.)")
+
+
+def _pending_reminders() -> int:
+    from app.config import default_hermes_home
+    from app.reminders import Reminders
+
+    return len(Reminders(default_hermes_home()).list())
+
+
 def describe_actions(tool_calls: list, declined: list[str] | None = None) -> list[str]:
     """Ground truth under each reply: what Hermes actually ran and how each tool call ended, plus the
     actions the user declined (Hermes reports no tool call for those)."""
@@ -103,6 +171,7 @@ class XenioResponse:
     ok: bool
     error: str | None = None  # empty_input | hermes_unavailable | hermes_timeout | hermes_error | empty_reply
     cancelled: bool = False
+    command_id: str = ""  # this request's own id (logs, duplicate suppression)
     tool_calls: list = field(default_factory=list)  # what Hermes actually did (ToolActivity), for display
     sources: list[Source] = field(default_factory=list)  # web pages this answer used (recorded by the plugin)
     declined: list[str] = field(default_factory=list)  # actions the user said no to (or did not confirm)
@@ -116,6 +185,7 @@ class Orchestrator:
                  sources_file: Path | None = None, fast_path=None):
         self.hermes = hermes
         self.fast = fast_path  # app.fastpath.FastPath: simple commands without the model (None = always Hermes)
+        self.pending_reminders: Callable[[], int] = _pending_reminders  # XENIO reminders waiting in Hermes' scheduler
         self._local_notes: list[str] = []  # what the fast path did since Hermes' last turn
         self.gate = gate
         self.paths = paths if isinstance(paths, PathPolicy) else PathPolicy(workspace=paths)
@@ -123,6 +193,8 @@ class Orchestrator:
         self._declined: list[str] = []
         self._approved: list[str] = []  # actions the user explicitly said yes to in this turn
         self._busy = asyncio.Lock()
+        self._in_flight: dict[str, str] = {}  # the words of each request running or waiting -> its command id
+        self.stop_dir: Path | None = None  # XENIO's data folder: a stop also stops desktop actions (set by main)
         hermes.set_permission_handler(self._on_hermes_permission)
 
     @property
@@ -153,12 +225,32 @@ class Orchestrator:
     ) -> XenioResponse:
         """``context`` is an interface note for Hermes (e.g. "this is a spoken conversation"),
         appended after the user's words so Hermes can adapt its answer. ``on_tool`` sees every tool
-        start/finish while the turn runs (voice mode narrates them)."""
+        start/finish while the turn runs (voice mode narrates them).
+
+        Every request gets a command id. The same words again while that request is still running (or waiting for
+        the one before it) are not run a second time: a double submit, or one request reaching XENIO twice (the quick
+        chat and voice), would otherwise solve and type the same thing twice. Once it has ended, the same words are a
+        new request and run normally."""
         text = text.strip()
         if not text:
             return XenioResponse("", ok=False, error="empty_input")
+        key, command_id = " ".join(text.casefold().split()), uuid.uuid4().hex[:12]
+        if key in self._in_flight:
+            event(log, "DUPLICATE_COMMAND_SUPPRESSED", logging.WARNING, command_id=command_id,
+                  running=self._in_flight[key])
+            return XenioResponse(MSG_DUPLICATE, ok=False, error="duplicate", command_id=command_id)
+        self._in_flight[key] = command_id
+        try:
+            response = await self._process(text, command_id, on_chunk, context, on_tool)
+        finally:
+            self._in_flight.pop(key, None)
+        response.command_id = command_id
+        return response
+
+    async def _process(self, text: str, command_id: str, on_chunk: ChunkHandler | None, context: str | None,
+                       on_tool: Callable[[object], None] | None) -> XenioResponse:
         async with self._busy:
-            event(log, "User command received", chars=len(text))
+            event(log, "User command received", chars=len(text), command_id=command_id)
             log.debug("User command text: %s", text)
             started = time.monotonic()
             if self.fast is not None:
@@ -208,6 +300,10 @@ class Orchestrator:
             if not reply.text:
                 return XenioResponse(MSG_EMPTY_REPLY, ok=False, error="empty_reply", **extra)
             correction, replace = truth_check(reply.text, tools, self._declined, self._approved)
+            if not correction:
+                correction = await asyncio.to_thread(reminder_claim_check, reply.text, tools, self.pending_reminders)
+            if not correction:
+                correction = code_claim_check(reply.text, tools)
             if correction:
                 event(log, "REPLY_CORRECTED", logging.WARNING, note=correction, replaced=replace)
                 if replace:
@@ -217,8 +313,13 @@ class Orchestrator:
             return XenioResponse(reply.text, ok=True, **extra)
 
     async def interrupt(self) -> None:
-        """Stop the Hermes turn in progress, if any (barge-in, Ctrl+C)."""
+        """Stop the Hermes turn in progress, if any (barge-in, Ctrl+C, the UI's stop) - and XENIO's hands with it:
+        Hermes abandons a running tool call on a stop, but the thread typing it would go on."""
         if self.busy:
+            if self.stop_dir is not None:
+                from app.desktop.stop import request_stop
+
+                request_stop("cancel", self.stop_dir)
             await self.hermes.cancel()
 
     async def new_session(self) -> bool:

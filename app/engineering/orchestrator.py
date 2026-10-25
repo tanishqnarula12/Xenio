@@ -121,6 +121,9 @@ class EngineeringOrchestrator:
         self.graphs: dict[str, TaskGraph] = {}
         self.workspaces: dict[str, R.Workspace] = {}
         self.live: dict[str, dict[str, str]] = {}  # run id -> {task id: session id} while agents work
+        # run id -> {task id: {"role", "title"}}: who is working on what, also for the planner's and the reviewers'
+        # turns, whose "tasks" (plan, security-review ...) are not in the plan's task graph
+        self.live_tasks: dict[str, dict[str, dict]] = {}
 
     # ---- bookkeeping ------------------------------------------------------------------------------------------
 
@@ -379,11 +382,13 @@ class EngineeringOrchestrator:
                                     "allowed_paths": list(task.allowed_paths) if role.writes else [],
                                     "docs_only": role.writes_docs_only})
         self.live.setdefault(run.id, {})[task.id] = session
+        self.live_tasks.setdefault(run.id, {})[task.id] = {"role": role.name, "title": task.title, "since": _now()}
         try:
             turn = await self.agents.prompt(session, prompt)
         finally:
             self.registry.remove(session)
             self.live.get(run.id, {}).pop(task.id, None)
+            self.live_tasks.get(run.id, {}).pop(task.id, None)
         usage = dict(turn.usage or {})
         record = {"task": task.id, "role": role.name, "session": session, "model": turn.model or "Hermes main model",
                   "seconds": turn.seconds, "stop": turn.stop_reason, "usage": usage or None,

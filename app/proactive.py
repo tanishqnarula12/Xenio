@@ -34,6 +34,7 @@ from typing import Any
 
 from app.integrations.base import IntegrationError, clip, data_dir
 from app.notifications import NotificationCenter
+from app.reminders import REMINDER_PREFIX
 
 log = logging.getLogger("xenio.proactive")
 
@@ -43,6 +44,7 @@ SILENT = "[SILENT]"
 TICK_TIMEOUT = 15 * 60
 SERVING_HEARTBEAT_SECONDS = 180
 MIN_INTERVAL_MINUTES = 15  # recurring checks cost model tokens on every run
+REMINDER_GRACE_SECONDS = 8  # a reminder this late runs on XENIO's own tick, even when a gateway also ticks
 
 JOB_RULES = (
     "You are XENIO's scheduled check, running unattended (the user is not watching).\n"
@@ -144,6 +146,11 @@ def _parse_time(value: Any) -> float | None:
 
 def parse_run_output(text: str) -> tuple[str, str]:
     """(kind, message) of a Hermes cron run document: kind = "silent" | "message" | "failed"."""
+    if re.search(r"(?m)^\*\*Mode:\*\*\s*no_agent", text):  # a script job (reminders): its output IS the message
+        body = text.split("\n---\n", 1)[1].strip() if "\n---\n" in text else ""
+        if re.search(r"(?m)^\*\*Status:\*\*.*(?:fail|error)", text, re.I) and not body:
+            return "failed", "the reminder script did not run"
+        return ("message", body) if body else ("silent", "")
     status = re.search(r"(?m)^\*\*Status:\*\*\s*(.+)$", text)
     if status:
         value = status.group(1).strip().lower()
@@ -188,9 +195,16 @@ class ProactiveEngine:
         jobs = data.get("jobs") if isinstance(data, dict) else data
         return [j for j in jobs or [] if isinstance(j, dict) and is_xenio_job(j)]
 
-    def due(self) -> list[dict]:
-        now = self.clock()
+    def due(self, within: float = 0.0) -> list[dict]:
+        now = self.clock() + within
         return [j for j in self.jobs() if j.get("enabled", True) and (_parse_time(j.get("next_run_at")) or float("inf")) <= now]
+
+    def _overdue_reminder(self) -> bool:
+        """A reminder has waited past its time: a gateway's ticker may come round only once a minute, and a reminder
+        should not be a minute late. Hermes' own locks keep a job from running twice when both tick."""
+        now = self.clock()
+        return any(str(j.get("name", "")).startswith(REMINDER_PREFIX)
+                   and now - (_parse_time(j.get("next_run_at")) or now) > REMINDER_GRACE_SECONDS for j in self.due())
 
     def gateway_serving(self) -> bool:
         """A Hermes gateway's ticker wrote its heartbeat recently: it runs due jobs itself."""
@@ -202,7 +216,7 @@ class ProactiveEngine:
 
     async def tick_if_due(self) -> bool:
         """Start Hermes' own `cron tick` once if a XENIO job is due. True when a tick ran."""
-        if self._ticking or not self.due() or self.gateway_serving():
+        if self._ticking or not self.due() or (self.gateway_serving() and not self._overdue_reminder()):
             return False
         self._ticking = True
         try:
@@ -243,6 +257,7 @@ class ProactiveEngine:
         created = []
         for job in self.jobs():
             job_id, title = str(job.get("id", "")), str(job.get("name", ""))[len(JOB_PREFIX):] or "Scheduled check"
+            reminder = str(job.get("name", "")).startswith(REMINDER_PREFIX)
             folder = self.cron_dir / "output" / job_id
             try:
                 files = sorted(p for p in folder.glob("*.md") if p.is_file())
@@ -258,7 +273,10 @@ class ProactiveEngine:
                     kind, message = parse_run_output(path.read_text(encoding="utf-8", errors="replace"))
                 except OSError:
                     continue
-                if kind == "message":
+                if kind == "message" and reminder:  # always shown, even with notifications muted
+                    note = self.notifications.add("Reminder", message.removeprefix("Reminder: "), priority="high",
+                                                  source="reminder", key=key)
+                elif kind == "message":
                     note = self.notifications.add(title, message, source="schedule", key=key)
                 elif kind == "failed":
                     note = self.notifications.add(f"{title} failed", message, priority="high", source="schedule", key=key)
@@ -279,7 +297,8 @@ class ProactiveEngine:
         return created
 
     async def run_forever(self, deliver: Callable[[list], Any] | None = None, interval: float = 30.0) -> None:
-        """Background loop while XENIO runs: trigger due runs, then collect and hand over new notifications."""
+        """Background loop while XENIO runs: trigger due runs, then collect and hand over new notifications. While
+        something is due within two minutes it looks every few seconds, so a reminder arrives on time."""
         while True:
             try:
                 await self.tick_if_due()
@@ -292,4 +311,5 @@ class ProactiveEngine:
                 raise
             except Exception:  # the loop must survive one bad tick
                 log.exception("Proactive loop iteration failed")
-            await asyncio.sleep(interval)
+            soon = await asyncio.to_thread(self.due, 120.0)
+            await asyncio.sleep(min(interval, 5.0) if soon else interval)

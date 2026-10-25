@@ -68,6 +68,18 @@ variables and "password is …"-style statements are **blocked**, even when you 
 own (you did not ask) are dropped when they are temporary, guesses, conversation logs or duplicates. Skills
 (`skill_manage`) are checked for real key/token values (placeholders like `${API_KEY}` are fine).
 
+**V3, from Mission Control:** you can correct, delete and add memory entries yourself. XENIO edits Hermes' files the
+way Hermes does (its `<file>.lock`, a re-read under the lock, an atomic replace, owner-only files), so neither can
+lose the other's entries, and the same policy applies to your own edits: secrets are refused even when you type them,
+entries stay under 400 characters and within Hermes' size limit. Activity records that memory changed, never the
+text. A conversation already running is told on its next turn which entries were removed or corrected.
+
+**V3, skills never gain power silently:** the model editing a skill's instructions stays a safe write (Hermes' learning
+loop does this), now recorded by skill name. Adding a **script** to a skill (it could run later) and **deleting** a
+skill ask first. Switching skills on and off is yours, in Mission Control, through Hermes' own `skills.disabled`
+(Hermes' config backed up first; its essential skill cannot be switched off). Installing skills from outside is not
+offered in Mission Control.
+
 ## Personal services and scheduled runs (V4)
 * Google is connected with **your own** OAuth client and the smallest scopes (`gmail.readonly`,
   `calendar.events`); the token is a protected secret file, never logged or returned. Email is read-only.
@@ -91,10 +103,14 @@ Details: [VISION_SECURITY.md](VISION_SECURITY.md).
 
 ## Confirmation behaviour
 * "yes" (or "confirm" for HIGH_RISK) runs that one action — XENIO always answers `allow_once`, never
-  "always allow".
-* "no", silence, an unrelated sentence, a timeout or any error = **no**; unclear answers get "Please
+  "always allow". The one exception is the task approval below, which is time-limited and confined.
+* "no", silence, an unrelated sentence, a timeout or any error = **no**; short unclear answers get "Please
   confirm yes or no." (up to 3 tries). Only an explicit yes counts. Silence is reported truthfully as
   "no clear answer, so it was cancelled", not as "you declined".
+* A new request is never an answer (text and voice alike): something with three or more real words beyond
+  yes/no ("What time is it in Tokyo?", "No, play some music instead") ends the question at once as not approved, and
+  XENIO handles it as the next request after the current one. Lines typed while XENIO was busy, before the question
+  appeared, are kept as requests too (they used to be discarded).
 * A "no" cancels only that attempt. Hermes' denial text says "Do NOT retry", which made the model
   refuse later, separate requests. So for up to 3 user messages after a "no", the plugin adds a note
   to the user's message. The note names the declined operation and says that asking again starts a
@@ -111,8 +127,88 @@ Details: [VISION_SECURITY.md](VISION_SECURITY.md).
   - The reply says an action failed although the matching tool reported success: a correction is
     appended.
 
+  - The reply says a reminder is set, no reminder was made in that turn, and Hermes' scheduler holds no XENIO
+    reminder at all (observed: "reminder already set" when nothing was): a correction is appended.
+
+## What an approval says (V3)
+
+Every question carries, written by XENIO (not the model): **why** it asks (from the kind of action: "it permanently
+deletes something", "it publishes or changes something outside this Mac"...), what it **reaches** (files, the command,
+destructive targets), **who asked** (XENIO for your request, or which engineering agent on which task and run), and
+**what a yes allows** (this action once; or, for "Allow for this task", the workspace for 30 minutes). "Decline and
+stop" declines and stops the request that asked. The same record is answered from Home, Approvals, the orb, the quick
+chat or by voice: the first answer decides, and every view drops the question when XENIO settles it.
+
+## Writing into apps and web editors (V3)
+
+XENIO can paste text (code, long answers) into the focused field through the clipboard - the user's clipboard is kept
+and put back, and if it is too large to keep XENIO does not paste at all - type code line by line where pasting is
+refused, and copy a page's or editor's text to read it. Pasting follows the typing rules (no secrets, no password
+fields, a terminal asks first); copying off the screen needs the user's words to point at the screen, like a screen
+look, and copied text is untrusted. What was written is read back before it is reported as written.
+
+Reading a window's text (`xenio_gui` action `read`, macOS) uses the accessibility tree, the text VoiceOver reads: no
+screenshot, no clipboard, nothing pressed. It follows the copy rules (the user's words must point at the screen; the
+text is untrusted; refused in a live test), never includes password fields (they are not part of it), and for a web
+page reads the page only, not the browser's toolbar or tabs. `editor=true` puts the keyboard focus into the window's
+code editor (Ace, Monaco, CodeMirror, or a large text area) through accessibility, or by clicking into its text when
+that does not take; it never picks a password field. Where a page refuses copying, what was written is checked against
+the lines the editor shows, page by page. `run` (and `run=true` after writing) clicks only a button named Run,
+Compile & Run, Run Code, Run Tests or Execute - never Submit, which stays the user's - and is refused in a live test
+like reading and writing; the result area it returns is untrusted page content.
+
+XENIO does not read questions or write answers in a window titled as a **live** test where outside help is not
+allowed: a proctored exam, a hiring assessment (Codility, CodeSignal, HackerRank for Work...), an interview round, a
+running contest. Practice is not affected: problem pages, mock tests and interviews, test series, quizzes, practice
+exams, virtual or past contests. The title is a best-effort signal, not a proctor.
+
+## The audit (V3)
+
+Mission Control's Activity > Tool calls shows every tool call the guard saw, from its own log: requested, allowed,
+blocked, asked, approved, declined, expired (silence), running, completed, failed. Hermes' own tools (terminal, files,
+browser) report no result to the guard, so they are never shown as completed - "allowed to run" is all that is known.
+Typed text quoted by the policy («…») never leaves the log.
+
+## "Allow for this task" (the task grant)
+Building something means many small steps in XENIO's own workspace (`~/Xenio` by default): create `game.js`, change it,
+`npm install`, run it, delete a scratch folder. Asking for each one (16 times in a few days, 15 of them approved) is
+noise, so a question can be answered once for the whole task:
+
+* **Offered only for confined actions.** The policy records every resolved path an action writes, creates, moves or
+  deletes (`Decision.touches`), plus the folder an install, a project run or a script runs in — after following any
+  `cd` in the command. `PathPolicy.confined` is true only when all of them are inside the workspace and the action is a
+  confirmable file change, an install, `npm run`-style project run, or a script **file** inside the workspace (never
+  inline code such as `python -c` / `node -e`). One target outside — `cd ~/Documents && npm install`, `cp a.js
+  ~/Desktop` — and it is not confined.
+* **Checked in the backend.** The web confirmer accepts `approve_task` only for a request it marked confined; the
+  voice's "yes to all" counts as a single yes otherwise. The gate (`PermissionGate`) then opens a grant: for 30 minutes,
+  confined `CONFIRM_REQUIRED` requests are approved without asking and logged ("covered by the user's approval for this
+  task"). It ends early on the page's End button, a new conversation or a pause. The page only shows it.
+* **Never covered:** `HIGH_RISK` actions, blocked actions, anything with a target outside the workspace, git pushes,
+  messages, settings, credentials — and, after the turn read outside content that tried to give instructions, nothing
+  at all (the plugin never marks such a request confined, because the injected order could be that very action).
+* Limits: an install run from the workspace still writes to the language's package cache or site-packages; a script
+  XENIO wrote may itself do anything when run. The grant is the user's explicit, time-limited choice for a task they
+  asked for, in the folder XENIO works in.
+
+## Honest results and the user's own apps
+* Every XENIO tool result carries `status`: `SUCCEEDED` only when nothing says otherwise, `UNVERIFIED` for an action
+  without proof (`verified` not true: e.g. a system media key, a YouTube tab), `RUNNING`, `FAILED`, `NOT_SUPPORTED`
+  (e.g. the app is not installed), `NEEDS_CLARIFICATION` (several apps or players could be meant),
+  `NEEDS_PERMISSION` (the macOS setting is named, for the app XENIO runs in). Approval is not a result status: the
+  guard asks before the call. The fast path never says "Paused." unless the player read back "paused".
+* "Open Terminal and run X" runs X in a **new, visible window of the user's Terminal** (`xenio_open_app` with
+  `command`, AppleScript `do script`; never typed into an existing window), and X is judged by exactly the rules of
+  the hidden terminal tool: `echo` runs, `rm -rf` asks or is refused, secrets and `printenv` are blocked. The
+  window's text is read back as outside content. The hidden terminal tool never counts as opening Terminal.
+* Media control acts on the player that really plays: a paused Spotify is not what "pause" means while a browser
+  tab plays (then the system key is pressed and reported as unverified); two paused players are a question.
+
 ## Secrets
 * XENIO reads its own `.env` without putting keys into the environment; Hermes keeps its keys.
+* The engineering service's socket answers only XENIO, its own `hermes acp` and the guarded Hermes gateway (peer
+  pid), so an agent's command that obtained the token is still refused.
+* `google_token.json` and `engineering/token.json` are owner-only files.
 * All logs and the guard's audit log are redacted; tool results are redacted before the model sees them.
 * Source records keep only short excerpts, redacted.
 

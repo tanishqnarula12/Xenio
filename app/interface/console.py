@@ -7,11 +7,12 @@ import logging
 import signal
 import sys
 import threading
+from collections import deque
 
 from app.config import Settings
 from app.memory.manager import MemoryManager
 from app.orchestrator import Orchestrator, describe_actions
-from app.safety.permissions import NO_CLEAR_ANSWER, PermissionRequest, interpret_answer
+from app.safety.permissions import NO_CLEAR_ANSWER, PermissionRequest, interpret_answer, is_new_request
 from app.sources import describe_sources
 
 log = logging.getLogger("xenio.console")
@@ -31,6 +32,7 @@ class ConsoleIO:
         self._queue: asyncio.Queue[str | None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
+        self._held: deque[str | None] = deque()  # requests that arrived while XENIO was asking a question
 
     def _ensure_reader(self) -> asyncio.Queue[str | None]:
         if self._queue is None:
@@ -56,11 +58,24 @@ class ConsoleIO:
             self.write(prompt, end="")
         return await queue.get()
 
-    def discard_typeahead(self) -> None:
-        """Drop lines typed while XENIO was busy, so they can't answer a permission prompt."""
+    def hold_typeahead(self) -> None:
+        """Lines typed while XENIO was busy were typed before the question: they are requests for later, never
+        answers to it."""
         queue = self._ensure_reader()
         while not queue.empty():
-            queue.get_nowait()
+            self._held.append(queue.get_nowait())
+
+    def hold(self, line: str) -> None:
+        self._held.append(line)
+
+    async def next_request(self, prompt: str = "") -> str | None:
+        """The next request: one kept from a permission prompt first, else a new line."""
+        if self._held:
+            line = self._held.popleft()
+            if line is not None:
+                self.write(prompt + line)
+            return line
+        return await self.readline(prompt)
 
     def wake(self) -> None:
         """Unblock a pending readline() (used for Ctrl+C at the prompt)."""
@@ -78,7 +93,7 @@ class ConsoleConfirmer:
         self._io = io
 
     async def confirm(self, request: PermissionRequest, *, strict: bool) -> bool:
-        self._io.discard_typeahead()
+        self._io.hold_typeahead()
         self._io.write()
         self._io.write(f"!! PERMISSION REQUIRED [{request.risk.name}]")
         self._io.write(f"   This will {request.description}.")
@@ -89,6 +104,10 @@ class ConsoleConfirmer:
             if answer is None:  # EOF / interrupted: never a yes
                 break
             verdict = interpret_answer(answer, strict=strict)
+            if verdict != "yes" and is_new_request(answer):
+                self._io.hold(answer)
+                self._io.write("   -> cancelled; I'll take that as your next request")
+                return False if verdict == "no" else NO_CLEAR_ANSWER
             if verdict != "unclear":
                 approved = verdict == "yes"
                 self._io.write("   -> continuing" if approved else "   -> cancelled")
@@ -148,7 +167,7 @@ async def run_text_mode(settings: Settings, orchestrator: Orchestrator, io: Cons
 
         while not state["quit"]:
             io.write()
-            line = await io.readline(f"{name} > ")
+            line = await io.next_request(f"{name} > ")
             if line is None or state["quit"]:
                 break
             text = line.strip()

@@ -1,7 +1,9 @@
 """The ``xenio_engineering`` tool (V6): how Hermes, in the user's chat, works with XENIO's engineering team.
 
 Registered in Hermes by the xenio-guard plugin. It forwards each call to XENIO's engineering service over a local
-socket (``XENIO_ENGINEERING_SOCKET``, authenticated with a per-start token that only the chat's Hermes process gets).
+socket with a per-start token: from the environment of XENIO's own Hermes process (``XENIO_ENGINEERING_SOCKET``), or,
+inside a Hermes 0.22 gateway (shared, started by whichever client came first), from ``engineering/token.json`` in
+XENIO's data folder. The service also checks which process is calling (see app/engineering/service.py).
 The guard classifies every call first (``policy.classify_engineering_tool``): planning and implementing in isolated
 worktrees run without an extra question; writing into the user's files, pushing and opening a pull request ask.
 Standard library only (runs inside Hermes).
@@ -20,10 +22,25 @@ from app.tools.base import Tool, ToolContext, ToolResult
 TIMEOUT = 60.0
 
 
+def _endpoint() -> tuple[str | None, str | None]:
+    """The running service's socket and token: the gateway's token file first (a gateway's environment holds the
+    endpoint of whichever XENIO started it, possibly long gone), else this process's environment."""
+    data_dir = os.environ.get("XENIO_DATA_DIR")
+    if data_dir:
+        try:
+            with open(os.path.join(data_dir, "engineering", "token.json"), encoding="utf-8") as fh:
+                info = json.load(fh)
+            if info.get("socket") and info.get("token"):
+                return str(info["socket"]), str(info["token"])
+        except (OSError, ValueError, AttributeError):
+            pass
+    return os.environ.get("XENIO_ENGINEERING_SOCKET"), os.environ.get("XENIO_ENGINEERING_TOKEN")
+
+
 def call_service(action: str, args: dict[str, Any], timeout: float = TIMEOUT) -> dict:
-    path, token = os.environ.get("XENIO_ENGINEERING_SOCKET"), os.environ.get("XENIO_ENGINEERING_TOKEN")
+    path, token = _endpoint()
     if not path or not token:
-        return {"ok": False, "error": "XENIO's engineering team is not running in this session"}
+        return {"ok": False, "error": "XENIO's engineering team is not running (start XENIO, then try again)"}
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)

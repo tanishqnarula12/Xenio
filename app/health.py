@@ -144,8 +144,9 @@ def _check_guard(settings: Settings) -> Check:
         return Check("Safety", "FAIL", why)
     status = guard_status(settings.hermes.command)
     if status.ok and not status.tools_visible:
-        return Check("Safety", "WARN", f"{PLUGIN_NAME} enabled, but your own tools.tool_search setting may hide "
-                                       "XENIO's tools from the model (they stay protected either way)")
+        return Check("Safety", "WARN", f"{PLUGIN_NAME} enabled, but Hermes' tool search hides XENIO's tools from the "
+                                       "model (they stay protected either way): run `python -m app.main --install-guard`"
+                                       ", or set tools.tool_search.enabled: off in Hermes' config yourself")
     if status.ok:
         return Check("Safety", "OK", f"{PLUGIN_NAME} enabled: every tool call checked; XENIO file, web and personal "
                                      "tools on for ACP")

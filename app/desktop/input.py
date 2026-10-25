@@ -26,6 +26,7 @@ from dataclasses import dataclass
 MAX_TEXT = 2000
 MAX_SCROLL = 50
 MAX_HOTKEY_KEYS = 4
+MAX_EVENT_UNITS = 20  # UTF-16 units one macOS key event carries (CGEventKeyboardSetUnicodeString)
 
 _VK = {
     "backspace": 0x08, "tab": 0x09, "enter": 0x0D, "return": 0x0D, "shift": 0x10, "ctrl": 0x11, "control": 0x11,
@@ -62,6 +63,18 @@ class InputError(Exception):
 
 class Stopped(InputError):
     """The emergency stop fired during the action."""
+
+
+def split_units(text: str, limit: int = MAX_EVENT_UNITS) -> list[str]:
+    """``text`` in pieces of at most ``limit`` UTF-16 units, never splitting a character (emoji are two units)."""
+    pieces, cur, units = [], "", 0
+    for ch in text:
+        size = 2 if ord(ch) > 0xFFFF else 1
+        if units + size > limit:
+            pieces.append(cur)
+            cur, units = "", 0
+        cur, units = cur + ch, units + size
+    return pieces + ([cur] if cur else [])
 
 
 def parse_keys(keys: str) -> list[str]:
@@ -175,7 +188,10 @@ class MacBackend:
     """macOS: CGEvents posted where hardware events enter (needs the Accessibility permission). The controller speaks
     Windows' virtual-key codes and mouse flags; they are translated here. Held modifiers are put on every key event
     (apps read the flags, not the order of key events), and repeated clicks carry their click count, so a double
-    click is a double click to the app."""
+    click is a double click to the app. One key event can carry a short string, which the app receives as ONE
+    insertion (``inserts_strings``)."""
+
+    inserts_strings = True
 
     def __init__(self):
         from app.desktop import macos
@@ -348,6 +364,26 @@ class DesktopController:
             typed = self.typed = typed + 1
             self._sleep(self.key_delay)
         return typed
+
+    def insert_text(self, text: str) -> int:
+        """One line of text as a few insertions of up to 20 UTF-16 units each (macOS: one key event carries them), so an
+        editor receives each piece at once: no bracket is auto-closed and no completion list can take a character in
+        the middle (measured in Ace: a whole line arrived exactly). Returns the characters inserted (fewer if
+        stopped)."""
+        if not isinstance(text, str) or not text:
+            raise InputError("nothing to type")
+        if "\n" in text or "\r" in text or "\t" in text:
+            raise InputError("insert_text takes one line without tabs")
+        if len(text) > MAX_TEXT:
+            raise InputError(f"at most {MAX_TEXT} characters per call")
+        done = self.typed = 0
+        for piece in split_units(text):
+            self._guard()
+            data = piece.encode("utf-16-le")
+            self.backend.unicode_tap([int.from_bytes(data[i:i + 2], "little") for i in range(0, len(data), 2)])
+            done = self.typed = done + len(piece)
+            self._sleep(self.key_delay)
+        return done
 
     def press_key(self, key: str) -> None:
         self.hotkey(key)

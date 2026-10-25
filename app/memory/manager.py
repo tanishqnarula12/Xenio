@@ -5,7 +5,8 @@ Hermes stores curated memory in two files under ``HERMES_HOME/memories``: ``MEMO
 
 * ``recall()`` reads those files directly — read-only, no LLM call.
 * ``remember()`` asks Hermes to save the fact with its own memory tool, so Hermes keeps
-  curating and size-limiting it. XENIO never writes Hermes' memory files.
+  curating and size-limiting it. The only writes XENIO itself makes are the user's own corrections, deletions and
+  additions in Mission Control (``app/memory/files.py``, under Hermes' lock and XENIO's memory policy).
 """
 
 from __future__ import annotations

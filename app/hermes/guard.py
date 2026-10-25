@@ -1,8 +1,9 @@
 """Install / inspect the ``xenio-guard`` Hermes plugin (see hermes_plugin/xenio-guard).
 
-Installing touches the user's Hermes setup in exactly two places, both reversible:
+Installing touches the user's Hermes setup in these places, all reversible:
   1. copies the plugin to ``HERMES_HOME/plugins/xenio-guard/``
   2. ``hermes plugins enable xenio-guard`` (Hermes' own command; adds it to plugins.enabled)
+  3. ``platform_toolsets.acp`` lists XENIO's toolset; ``tools.tool_search.enabled: off`` (unless the user chose a value)
 ``config.yaml`` is backed up to the XENIO data dir first.
 Undo: ``hermes plugins disable xenio-guard`` (and delete the plugin folder).
 """
@@ -10,6 +11,7 @@ Undo: ``hermes plugins disable xenio-guard`` (and delete the plugin folder).
 from __future__ import annotations
 
 import filecmp
+import re
 import shutil
 import subprocess
 import time
@@ -21,7 +23,11 @@ from app.config import PROJECT_ROOT, default_hermes_home
 PLUGIN_NAME = "xenio-guard"
 TOOLSET = "xenio"  # the toolset the plugin registers XENIO's tools under
 ACP_PLATFORM = "acp"
+# What --install-guard wrote before Hermes 0.22: off only in XENIO's own Hermes process (from its environment). A
+# 0.22 gateway multiplexes profiles and resolves ${VAR} from the profile's .env only, so the placeholder reads as
+# "auto" there and hides XENIO's tools (observed). Replaced by "off" on the next --install-guard.
 TOOL_SEARCH_PLACEHOLDER = "${XENIO_TOOL_SEARCH}"
+_TOOL_SEARCH_OFF = {"off", "false", "no", "0"}
 SOURCE_DIR = PROJECT_ROOT / "hermes_plugin" / PLUGIN_NAME
 PLUGIN_FILES = ("plugin.yaml", "__init__.py")
 
@@ -55,17 +61,9 @@ def guard_live(data_dir: Path, hermes_home: Path | None = None) -> tuple[bool | 
     policy. (True, why) when the gateway in gateway.lock is the process the guard marked; (False, why) when another
     process holds it; (None, why) when no gateway runs (the next one XENIO starts will carry the guard)."""
     import json
-    import os
 
-    home = hermes_home or default_hermes_home()
-    try:
-        lock = json.loads((home / "gateway.lock").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None, "no Hermes gateway is running"
-    pid = int(lock.get("pid") or 0)
-    try:
-        os.kill(pid, 0)
-    except (OSError, ValueError):
+    pid = gateway_pid(hermes_home)
+    if pid is None:
         return None, "no Hermes gateway is running"
     try:
         marked = int(json.loads((data_dir / "guard.json").read_text(encoding="utf-8")).get("pid") or 0)
@@ -75,6 +73,64 @@ def guard_live(data_dir: Path, hermes_home: Path | None = None) -> tuple[bool | 
         return True, f"the Hermes gateway (pid {pid}) carries XENIO's guard"
     return False, (f"a Hermes gateway (pid {pid}) is running that XENIO did not start, so XENIO's safety guard is not "
                    "active in it. Stop it with `hermes gateway stop` (or quit the Hermes app), then start XENIO again")
+
+
+def stale_gateway(data_dir: Path, hermes_home: Path | None = None) -> int | None:
+    """The pid of a running gateway that carries XENIO's guard but loaded older XENIO code than this, or None.
+
+    A guarded gateway with no record of its code predates the record itself, so it is older code too. A gateway XENIO
+    did not start is never touched here (guard_live reports it instead)."""
+    from app.hermes.fingerprint import code_fingerprint, recorded_gateway_code
+
+    pid = gateway_pid(hermes_home)
+    if pid is None or guard_live(data_dir, hermes_home)[0] is not True:
+        return None
+    record = recorded_gateway_code(data_dir)
+    if record.get("pid") == pid and record.get("code") == code_fingerprint(PROJECT_ROOT):
+        return None
+    return pid
+
+
+def restart_stale_gateway(data_dir: Path, command: tuple[str, ...] = (), hermes_home: Path | None = None,
+                          run=subprocess.run, wait: float = 15.0) -> int | None:
+    """Stop a gateway that runs outdated XENIO code; the next connection starts a fresh one (it is started on demand).
+    Returns the stopped gateway's pid, or None when nothing had to be done."""
+    import logging
+    import os
+    import time
+
+    from app.logging_setup import event
+
+    pid = stale_gateway(data_dir, hermes_home)
+    if pid is None:
+        return None
+    event(logging.getLogger("xenio.hermes"), "Restarting Hermes' gateway: it runs XENIO code from before an update",
+          pid=pid)
+    env = {**os.environ, **({"HERMES_HOME": str(hermes_home)} if hermes_home else {})}
+    try:
+        run([_hermes_executable(command), "gateway", "stop"], capture_output=True, text=True, timeout=30, env=env,
+            stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and gateway_pid(hermes_home) == pid:
+        time.sleep(0.2)
+    return pid
+
+
+def gateway_pid(hermes_home: Path | None = None) -> int | None:
+    """The running Hermes gateway's pid (``gateway.lock``), or None when none runs."""
+    import json
+    import os
+
+    try:
+        pid = int(json.loads(((hermes_home or default_hermes_home()) / "gateway.lock").read_text(encoding="utf-8"))
+                  .get("pid") or 0)
+        if pid > 0:
+            os.kill(pid, 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return pid if pid > 0 else None
 
 
 def _process_env_has(pid: int, entry: str) -> bool:
@@ -106,10 +162,29 @@ def guard_status(hermes_command: tuple[str, ...], hermes_home: Path | None = Non
         toolset_enabled = False
     home = hermes_home or default_hermes_home()
     try:
-        tools_visible = TOOL_SEARCH_PLACEHOLDER in (home / "config.yaml").read_text(encoding="utf-8")
+        configured = configured_tool_search((home / "config.yaml").read_text(encoding="utf-8"))
     except OSError:
-        tools_visible = False
+        configured = None
+    tools_visible = (configured or "").lower() in _TOOL_SEARCH_OFF
     return GuardStatus(installed, up_to_date, enabled, toolset_enabled, tools_visible)
+
+
+def configured_tool_search(config_text: str) -> str | None:
+    """The ``tools.tool_search.enabled`` value written in Hermes' config.yaml (None when the file does not set it;
+    ``hermes config get`` cannot tell, it answers with Hermes' default)."""
+    path, stack = ("tools", "tool_search", "enabled"), []
+    for line in config_text.splitlines():
+        m = re.match(r"^( *)([A-Za-z_][\w-]*):\s*(.*?)\s*$", line)
+        if not m or line.lstrip().startswith("#"):
+            continue
+        indent, key, value = len(m.group(1)), m.group(2), m.group(3)
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, key))
+        if tuple(k for _, k in stack) == path:
+            value = value.split(" #", 1)[0].strip().strip("'\"")
+            return value or None
+    return None
 
 
 def install_guard(hermes_command: tuple[str, ...], backup_dir: Path, hermes_home: Path | None = None) -> GuardStatus:
@@ -129,38 +204,27 @@ def install_guard(hermes_command: tuple[str, ...], backup_dir: Path, hermes_home
     if result.returncode != 0:
         raise RuntimeError(f"`hermes plugins enable {PLUGIN_NAME}` failed: {(result.stderr or result.stdout).strip()[:300]}")
     _enable_toolset_for_acp(hermes_command)
-    _scope_tool_search_switch(hermes_command, home)
+    _keep_tools_visible(hermes_command, home)
     return guard_status(hermes_command, home)
 
 
-def _tool_search_configured_by_user(hermes_home: Path) -> bool:
-    config = hermes_home / "config.yaml"
+def _keep_tools_visible(hermes_command: tuple[str, ...], hermes_home: Path) -> None:
+    """Hermes' Tool Search (default ``auto``) replaces every plugin tool with tool_search/tool_describe/tool_call,
+    and models then claim XENIO's tools don't exist (observed on Windows and again with Hermes 0.22). Set
+    ``tools.tool_search.enabled: off`` for the profile: a 0.22 gateway runs every session of the profile, so the
+    switch can no longer be limited to XENIO's process. Replaces XENIO's old placeholder; never a user's own value."""
     try:
-        text = config.read_text(encoding="utf-8")
+        configured = configured_tool_search((hermes_home / "config.yaml").read_text(encoding="utf-8"))
     except OSError:
-        return False
-    return "tool_search" in text and TOOL_SEARCH_PLACEHOLDER not in text
-
-
-def _scope_tool_search_switch(hermes_command: tuple[str, ...], hermes_home: Path) -> None:
-    """Hermes hides plugin tools behind ``tool_search`` by default, and weaker models then claim the
-    tools don't exist (observed). Set ``tools.tool_search.enabled: ${XENIO_TOOL_SEARCH}``: XENIO's own
-    Hermes gets ``off`` from its environment; every other Hermes process leaves the placeholder
-    unexpanded, which Hermes reads as the default ``auto``. Never overrides a user's own setting."""
-    if _tool_search_configured_by_user(hermes_home):
-        return
-    current = subprocess.run(
-        [_hermes_executable(hermes_command), "config", "get", "tools.tool_search.enabled"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
-    ).stdout.strip()
-    if current == TOOL_SEARCH_PLACEHOLDER:
-        return
+        configured = None
+    if configured is not None and configured != TOOL_SEARCH_PLACEHOLDER:
+        return  # already off, or the user's own choice (--health warns)
     result = subprocess.run(
-        [_hermes_executable(hermes_command), "config", "set", "tools.tool_search.enabled", TOOL_SEARCH_PLACEHOLDER],
+        [_hermes_executable(hermes_command), "config", "set", "tools.tool_search.enabled", "off"],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Could not scope Hermes' tool search: {(result.stderr or result.stdout).strip()[:300]}")
+        raise RuntimeError(f"Could not switch off Hermes' tool search: {(result.stderr or result.stdout).strip()[:300]}")
 
 
 def _acp_toolsets(hermes_command: tuple[str, ...]) -> str | None:

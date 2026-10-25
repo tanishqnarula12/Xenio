@@ -54,11 +54,15 @@ def test_registers_tools_hooks_and_prompt(monkeypatch, tmp_path):
                               # V4 personal tools
                               "xenio_calendar_events", "xenio_calendar_create_event", "xenio_email_search",
                               "xenio_email_read", "xenio_github", "xenio_tasks", "xenio_project", "xenio_daily_briefing",
-                              "xenio_schedule", "xenio_notifications", "xenio_integrations",
+                              "xenio_schedule", "xenio_notifications", "xenio_integrations", "xenio_location",
+                              # V3 context engine (read-only)
+                              "xenio_resume",
                               # V5 observe-only vision
                               "xenio_look_at_screen",
                               # V5.5 desktop control
                               "xenio_open_app", "xenio_list_apps", "xenio_window", "xenio_find_ui", "xenio_gui",
+                              # music and sound (the fast path's player)
+                              "xenio_media",
                               # V6 engineering team
                               "xenio_engineering"}
     assert not any("send" in name for name in ctx.tools)  # V4: no tool can send email

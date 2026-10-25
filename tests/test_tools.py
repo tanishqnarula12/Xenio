@@ -41,9 +41,9 @@ def test_create_list_inspect(ctx):
 
 def test_results_are_structured_json(ctx):
     ok = tool("xenio_create_directory").run({"path": "a"}, ctx).to_dict()
-    assert set(ok) == {"success", "tool", "message", "data"} and ok["success"] is True
+    assert set(ok) == {"success", "tool", "status", "message", "data"} and ok["success"] is True
     bad = tool("xenio_list_directory").run({"path": "does-not-exist"}, ctx).to_dict()
-    assert bad == {"success": False, "tool": "filesystem.list_directory", "error": bad["error"]}
+    assert bad == {"success": False, "tool": "filesystem.list_directory", "status": "FAILED", "error": bad["error"]}
     assert "not found" in bad["error"].lower()
 
 
@@ -189,5 +189,11 @@ async def test_registry_blocks_without_asking(ctx):
 
 
 def test_tool_result_helpers():
-    assert ToolResult.ok("t", "done", a=1).to_dict() == {"success": True, "tool": "t", "message": "done", "data": {"a": 1}}
-    assert ToolResult.fail("t", "nope").to_dict() == {"success": False, "tool": "t", "error": "nope"}
+    assert ToolResult.ok("t", "done", a=1).to_dict() == {"success": True, "tool": "t", "status": "SUCCEEDED",
+                                                         "message": "done", "data": {"a": 1}}
+    assert ToolResult.fail("t", "nope").to_dict() == {"success": False, "tool": "t", "status": "FAILED", "error": "nope"}
+    # never a stronger state than the evidence: an action without proof is UNVERIFIED, ongoing work RUNNING
+    assert ToolResult.ok("t", "done", verified=None).to_dict()["status"] == "UNVERIFIED"
+    assert ToolResult.ok("t", "done", verified=False).to_dict()["status"] == "UNVERIFIED"
+    assert ToolResult.ok("t", "done", verified=True, still_running=True).to_dict()["status"] == "RUNNING"
+    assert ToolResult.fail("t", "which one?", "NEEDS_CLARIFICATION").to_dict()["status"] == "NEEDS_CLARIFICATION"

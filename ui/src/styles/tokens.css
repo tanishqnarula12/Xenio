@@ -1,0 +1,75 @@
+/* XENIO design tokens. Everything downstream references these; no raw colours in components.
+   Depth comes from tone steps between surfaces (not borders or shadows at rest); the orb is the one bold thing. */
+:root {
+  color-scheme: dark;
+
+  /* ground and surfaces: each step is one level closer to the user */
+  --ground: #090a0c;
+  --surface-1: #101114;
+  --surface-2: #16181c;
+  --surface-3: #1d2025;
+  --surface-4: #24282e;
+  --hairline: rgba(255, 255, 255, 0.08); /* only where a real edge needs naming: inputs, the floating panel */
+  --wash: rgba(255, 255, 255, 0.04);
+  --scrim: rgba(5, 6, 8, 0.62);
+
+  /* ink: primary for running text, secondary for supporting text, muted for meta only (contrast >= 4.5:1) */
+  --ink: #f5f5f7;
+  --ink-2: #a1a1aa;
+  --ink-3: #8b909a;
+  --ink-inverse: #0b0c0e;
+
+  /* xenon: the one accent (the light of the gas XENIO is named after), for focus, selection and the orb */
+  --xenon: #a9c8ff;
+  --xenon-strong: #cfe0ff;
+  --xenon-wash: rgba(169, 200, 255, 0.12);
+
+  /* status: always paired with a word and an icon, never colour alone */
+  --ok: #57c78f;
+  --ok-wash: rgba(87, 199, 143, 0.12);
+  --attention: #e8b84f;
+  --attention-wash: rgba(232, 184, 79, 0.13);
+  --danger: #f27474;
+  --danger-wash: rgba(242, 116, 116, 0.12);
+  --running: #7fb2f5;
+  --running-wash: rgba(127, 178, 245, 0.12);
+  --neutral: #8b909a;
+  --neutral-wash: rgba(139, 144, 154, 0.12);
+
+  /* type: the platform's own faces; size-specific tracking (tight large, neutral small) */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  --font-code: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* real code and commands only */
+  --t-meta: 0.8125rem;   /* 13px: timestamps, secondary facts */
+  --t-body: 0.9375rem;   /* 15px: running text */
+  --t-heading: 1.0625rem;/* 17px: section headings */
+  --t-title: 1.5rem;     /* 24px: page titles */
+  --t-display: 2.125rem; /* 34px: the one statement on Home */
+  --lh-body: 1.5;
+  --lh-tight: 1.15;
+
+  /* space: a 4px grid */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 64px;
+
+  /* shape: macOS-like small radius on controls, larger only on what floats */
+  --r-control: 6px;
+  --r-panel: 10px;
+  --r-float: 18px;
+
+  /* motion tokens (GSAP reads the same values in src/motion) */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --d-fast: 120ms;
+  --d-base: 220ms;
+
+  --sidebar-w: 236px;
+  --topbar-h: 56px;
+  --content-max: 1180px;
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --ink-2: #c8c8cf;
+    --ink-3: #b4b8c0;
+    --hairline: rgba(255, 255, 255, 0.28);
+    --surface-1: #0f1013;
+  }
+}

@@ -7,7 +7,11 @@ import pytest
 
 from app.hermes.adapter import HermesAcpClient, _pick_option
 from app.hermes.client import HermesError, HermesUnavailable
+from app.hermes.fingerprint import prompt_fingerprint
+from app.hermes.guard import SOURCE_DIR
 from app.safety.policy import POLICY_VERSION
+
+PROMPT = prompt_fingerprint(SOURCE_DIR / "__init__.py")  # the guard's rules a saved session was started with
 
 
 async def test_old_policy_session_is_not_resumed(client_factory, make_settings, tmp_path):
@@ -139,7 +143,7 @@ async def test_session_resume_from_saved_id(client_factory, make_settings, tmp_p
     settings = make_settings()
     session_file = tmp_path / "session.json"
     session_file.write_text(json.dumps({"session_id": "known-session", "workspace": str(settings.hermes.workspace),
-                                        "policy_version": POLICY_VERSION}))
+                                        "policy_version": POLICY_VERSION, "prompt": PROMPT}))
     client = client_factory(session_file=session_file)
     await client.start()
     assert client.session_id == "known-session"
@@ -153,7 +157,7 @@ async def test_session_lost_after_resume_is_recovered_transparently(client_facto
     settings = make_settings()
     session_file = tmp_path / "session.json"
     session_file.write_text(json.dumps({"session_id": "forgotten-session", "workspace": str(settings.hermes.workspace),
-                                        "policy_version": POLICY_VERSION}))
+                                        "policy_version": POLICY_VERSION, "prompt": PROMPT}))
     client = client_factory(session_file=session_file)
     await client.start()
     assert client.session_id == "forgotten-session"

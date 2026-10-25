@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>local.xenio.orb</string>
+  <key>CFBundleName</key><string>XENIO</string>
+  <key>CFBundleDisplayName</key><string>XENIO</string>
+  <key>CFBundleIconFile</key><string>XENIO</string>
+  <key>CFBundleExecutable</key><string>XenioOrb</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>3.0</string>
+  <key>CFBundleVersion</key><string>3</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSLocationWhenInUseUsageDescription</key><string>XENIO uses your location for weather, local time and "near me" answers, only when you switch it on in XENIO's Settings.</string>
+  <key>NSLocationUsageDescription</key><string>XENIO uses your location for weather, local time and "near me" answers, only when you switch it on in XENIO's Settings.</string>
+  <key>NSMicrophoneUsageDescription</key><string>XENIO's quick chat and Mission Control record your voice only when you press the microphone button and XENIO's own microphone is not in use.</string>
+  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+</dict>
+</plist>

@@ -24,7 +24,7 @@ import numpy as np
 from app.config import Settings
 from app.logging_setup import event
 from app.orchestrator import MSG_HERMES_UNAVAILABLE, Orchestrator, claims_outcome, describe_actions
-from app.safety.permissions import NO_CLEAR_ANSWER, PermissionGate, PermissionRequest, interpret_answer
+from app.safety.permissions import NO_CLEAR_ANSWER, PermissionGate, PermissionRequest, interpret_answer, is_new_request
 from app.sources import describe_sources
 from app.voice.audio import (
     SAMPLE_RATE,
@@ -39,7 +39,7 @@ from app.voice.audio import (
     encode_wav,
     rms,
     speech_threshold,
-    tone,
+    wake_chime,
 )
 from app.voice.speech_text import (
     normalize_spoken_filenames,
@@ -152,6 +152,7 @@ class VoiceAssistant:
         self._asked = False
         self.busy_stop: WakeWordDetector | None = None  # V5.5: bare "stop"/"abort"/"cancel" while working silently
         self._unspeakable_warned = False
+        self.held_request: str | None = None  # said in answer to a yes/no question, handled after this turn
 
     # ---- state & frame routing ----------------------------------------------
 
@@ -435,7 +436,7 @@ class VoiceAssistant:
 
     async def _earcon(self) -> None:
         try:
-            await self.speaker.play(tone(), 24_000)
+            await self.speaker.play(wake_chime(), 24_000)
         except AudioError:
             pass
 
@@ -453,6 +454,10 @@ class VoiceAssistant:
             self.set_state(State.SPEAKING)
             await self.say(MSG_STT_FAILED)
             return True
+        return await self.handle_heard(heard, follow_up=follow_up)
+
+    async def handle_heard(self, heard: str, *, follow_up: bool = False) -> bool:
+        """One exchange from the words heard (also a request said while XENIO was asking a yes/no question)."""
         if any(ch.isalnum() for ch in heard) and not strip_wake_words(heard, self.settings.name):
             self.out(f"\nYou: {heard}")
             return True  # only the wake word: the request is still to come, keep listening
@@ -633,16 +638,36 @@ class VoiceAssistant:
             await self.orchestrator.close()
             return 1
 
-        listener = asyncio.ensure_future(self._listen_loop())
         background = (asyncio.ensure_future(self.proactive.run_forever(deliver=self.announce_notifications))
                       if self.proactive is not None else None)
+        how = "Press Enter to talk" if self._read_line else f"Say \"{self.settings.voice.wake_phrase}\""
+        stop_hint = f" Say \"{self.settings.voice.stop_phrases[0]}\" to interrupt." if self._stop and self.settings.voice.stop_phrases else ""
+        self.out(f"{self.name} is listening. {how}.{stop_hint} Ctrl+C quits.")
+        try:
+            return await self.converse()
+        except MicrophoneUnavailable as exc:
+            self.out(f"{self.name}: the microphone stopped working ({exc}).")
+            return 1
+        finally:
+            if background is not None:
+                background.cancel()
+            self.speaker.stop()
+            if hasattr(self.speaker, "close"):
+                self.speaker.close()
+            await self.mic.stop()
+            await self.stt.aclose()
+            if self.tts is not None:
+                await self.tts.aclose()
+            await self.orchestrator.close()
+
+    async def converse(self) -> int:
+        """The conversation on an already started microphone: wait for the wake word (or Enter), record, answer,
+        keep listening for a follow-up. Returns 0 when the user quits; a lost microphone raises."""
+        listener = asyncio.ensure_future(self._listen_loop())
         warming = asyncio.ensure_future(self.fillers.warm()) if self.fillers is not None else None
         if hasattr(self.speaker, "warm"):
             self.speaker.warm()  # open the persistent output now: the first reply starts without delay
         self._warm_up()
-        how = "Press Enter to talk" if self._read_line else f"Say \"{self.settings.voice.wake_phrase}\""
-        stop_hint = f" Say \"{self.settings.voice.stop_phrases[0]}\" to interrupt." if self._stop and self.settings.voice.stop_phrases else ""
-        self.out(f"{self.name} is listening. {how}.{stop_hint} Ctrl+C quits.")
         follow_up_s = self.settings.voice.follow_up_seconds if self._read_line is None else 0.0
         in_conversation = False
         try:
@@ -673,27 +698,18 @@ class VoiceAssistant:
                         self.out("(I didn't hear anything.)")
                         continue
                 keep_talking = await self.handle_utterance(audio, follow_up=follow_up)
+                while keep_talking and self.held_request:
+                    held, self.held_request = self.held_request, None
+                    self.interrupted = False
+                    keep_talking = await self.handle_heard(held, follow_up=True)
                 in_conversation = follow_up_s > 0 and keep_talking
                 if not keep_talking and follow_up_s > 0:
                     self.out(f"(Say \"{self.settings.voice.wake_phrase}\" when you need me.)")
             return 0
-        except MicrophoneUnavailable as exc:
-            self.out(f"{self.name}: the microphone stopped working ({exc}).")
-            return 1
         finally:
             listener.cancel()
-            if background is not None:
-                background.cancel()
             if warming is not None:
                 warming.cancel()
-            self.speaker.stop()
-            if hasattr(self.speaker, "close"):
-                self.speaker.close()
-            await self.mic.stop()
-            await self.stt.aclose()
-            if self.tts is not None:
-                await self.tts.aclose()
-            await self.orchestrator.close()
 
 
 class VoiceConfirmer:
@@ -734,8 +750,13 @@ class VoiceConfirmer:
             except STTError as exc:
                 a.out(f"   (could not understand the answer: {exc})")
                 continue
-            verdict = interpret_answer(strip_wake_words(answer, a.settings.name), strict=strict)
+            words = strip_wake_words(answer, a.settings.name)
+            verdict = interpret_answer(words, strict=strict)
             a.out(f"   You: {answer}")
+            if verdict != "yes" and is_new_request(words):
+                a.held_request = words
+                a.out("   -> cancelled; taken as your next request")
+                return False if verdict == "no" else NO_CLEAR_ANSWER
             if verdict == "yes":
                 a.out("   -> continuing")
                 return True
@@ -837,19 +858,24 @@ async def run_barge_in_test(settings: Settings) -> int:
     return 1
 
 
-async def run_voice_mode(settings: Settings, orchestrator: Orchestrator, gate: PermissionGate, push_to_talk: bool,
-                         notifications=None, proactive=None) -> int:
-    name = settings.name.upper()
+async def create_voice_stt(settings: Settings, announce: Callable[[str], None] = print) -> STTProvider | None:
+    """The speech recognition voice conversations use: on-device first when configured, the hosted one as its backup."""
     cloud = create_stt(settings.stt)
     local = None
     if settings.voice.stt_engine == "local":
-        print("Preparing on-device speech recognition...")
+        announce("Preparing on-device speech recognition...")
         local = await asyncio.to_thread(create_local_stt, settings.models_dir)
-    if local is None and cloud is None:
+    return HybridSTT(local, cloud) if local is not None else cloud
+
+
+async def run_voice_mode(settings: Settings, orchestrator: Orchestrator, gate: PermissionGate, push_to_talk: bool,
+                         notifications=None, proactive=None) -> int:
+    name = settings.name.upper()
+    stt = await create_voice_stt(settings, announce=print)
+    if stt is None:
         print(f"{name}: speech recognition is not configured.")
         print("MANUAL STEP REQUIRED: set STT_API_KEY and STT_API_URL in .env (see docs/SETUP.md).")
         return 2
-    stt = HybridSTT(local, cloud) if local is not None else cloud
     tts = create_tts(settings.tts)
     if tts is None:
         print("TTS is not configured (TTS_API_KEY / TTS_API_URL); replies will be printed only.")

@@ -26,7 +26,7 @@ from enum import IntEnum
 from pathlib import Path, PurePath
 from urllib.parse import unquote, urlsplit
 
-POLICY_VERSION = "8"
+POLICY_VERSION = "9"
 
 
 class RiskLevel(IntEnum):
@@ -47,10 +47,20 @@ class Decision:
     # deleting a folder, deleting it or anything inside it again (another command, a retry) is
     # covered for a short time instead of asking repeatedly.
     scopes: tuple[str, ...] = ()
+    # Every resolved path the action writes, creates, moves or deletes, and the folder an install or a project run
+    # happens in: what decides whether it stays inside XENIO's workspace (see PathPolicy.confined).
+    touches: tuple[str, ...] = ()
 
     @property
     def needs_confirmation(self) -> bool:
         return not self.blocked and self.level >= RiskLevel.CONFIRM_REQUIRED
+
+
+# What a task approval can cover (when every target is inside the workspace): file changes and deletions there, and
+# installing packages / running the project from there. Never git pushes, messages, settings or anything high-risk.
+CONFINABLE_ACTIONS = frozenset({"filesystem.create", "filesystem.modify", "filesystem.write", "filesystem.delete",
+                                "filesystem.move", "terminal.install_package", "terminal.run_project",
+                                "terminal.run_program"})  # a script file inside the workspace, run from there
 
 
 def scope_covers(approved: str, requested: str) -> bool:
@@ -86,7 +96,10 @@ def combine(decisions: Iterable[Decision], fallback: Decision) -> Decision:
         if others:
             chosen = replace(chosen, summary="; ".join([chosen.summary, *others]))
     scopes = tuple(dict.fromkeys(s for d in items for s in d.scopes))
-    return replace(chosen, scopes=scopes) if scopes != chosen.scopes else chosen
+    touches = tuple(dict.fromkeys(t for d in items for t in d.touches))
+    if scopes != chosen.scopes or touches != chosen.touches:
+        chosen = replace(chosen, scopes=scopes, touches=touches)
+    return chosen
 
 
 # =============================================================================
@@ -317,6 +330,33 @@ class PathPolicy:
             path = self.resolve(raw, cwd)
         except ValueError as exc:
             return blocked(f"filesystem.{op}", f"use the path {raw!r}", f"invalid path: {exc}")
+        decision = self._judge(path, op, recursive=recursive, permanent=permanent)
+        if op not in ("read", "list") and not decision.blocked:
+            decision = replace(decision, touches=(str(path),))
+        return decision
+
+    def confined(self, decision: Decision) -> bool:
+        """True when everything the action writes stays inside XENIO's workspace: what the user's "allow for this
+        task" may cover. Only confirmable file changes and installs/project runs started in the workspace qualify;
+        never a high-risk or blocked action, and never one with a single target outside the workspace."""
+        if self.workspace is None or decision.blocked or decision.level != RiskLevel.CONFIRM_REQUIRED:
+            return False
+        if decision.action not in CONFINABLE_ACTIONS or not decision.touches:
+            return False
+        for raw in decision.touches:
+            if raw.startswith("<") or not os.path.isabs(os.path.expanduser(raw)):
+                return False  # unknown or relative: never assumed to be inside
+            try:
+                target = self._abs(Path(raw))
+            except (OSError, ValueError):
+                return False
+            if not self._within(target, self.workspace):
+                return False
+            if target == self.workspace and decision.action in ("filesystem.delete", "filesystem.move"):
+                return False  # the workspace itself is never "inside" it
+        return True
+
+    def _judge(self, path: Path, op: str, *, recursive: bool, permanent: bool) -> Decision:
         cat = self.category(path)
         where = self.describe(path)
         action = f"filesystem.{op}"
@@ -671,6 +711,8 @@ def _classify_segment(seg: list[str], ctx: _Ctx, piped_from: list[str] | None) -
     prog, args = _program(words[0]), words[1:]
     text = " ".join(seg)
     decision = _classify_program(prog, args, ctx, text, piped_from)
+    if decision.action in ("terminal.install_package", "terminal.run_project", "terminal.run_program"):
+        decision = replace(decision, touches=decision.touches + (ctx.cwd,))  # where it really runs (after any cd)
     if prog in ("cd", "pushd") and args:
         try:
             ctx.cwd = str(ctx.paths.resolve(args[0], ctx.cwd))
@@ -1051,7 +1093,15 @@ def _classify_interpreter(prog: str, args: list[str], ctx: _Ctx, text: str) -> D
         return Decision(RiskLevel.CONFIRM_REQUIRED, "terminal.node_eval", f"run JavaScript code: {args[1][:120]}")
     if prog in ("python", "py") and args[:1] in (["-VV"],):
         return read("terminal.version", f"check the {prog} version")
-    return Decision(RiskLevel.CONFIRM_REQUIRED, "terminal.run_program", f"run a program: {text}")
+    script = next((a for a in args if not a.startswith("-")), None)
+    touches: tuple[str, ...] = ()
+    if script is not None and re.search(r"\.(py|js|mjs|cjs|ts|rb|pl|php|lua|jl|r)$", script, re.I):
+        try:  # the script file it runs (a task approval covers it only inside the workspace)
+            touches = (str(ctx.paths.resolve(script, ctx.cwd)),)
+        except ValueError:
+            pass
+    return Decision(RiskLevel.CONFIRM_REQUIRED, "terminal.run_program", f"run a program: {text}",
+                    touches=touches or ("<unknown program>",))
 
 
 def _classify_shell(prog: str, args: list[str], ctx: _Ctx, text: str) -> Decision:
@@ -1610,13 +1660,29 @@ def contains_personal_secret(text: str) -> bool:
     return False
 
 
+_SCRIPT_FILE = re.compile(r"(^|/)scripts/|\.(sh|bash|zsh|py|js|mjs|ts|rb|pl|php|ps1|bat|cmd|command|applescript|scpt)$",
+                          re.IGNORECASE)
+
+
 def classify_memory_write(tool: str, a: dict) -> Decision:
-    """Hermes memory / skills: useful context may be saved, secrets never."""
+    """Hermes memory / skills: useful context may be saved, secrets never. A skill never gains power silently (V3):
+    adding a script to a skill (it could run later) or deleting a skill asks first; editing a skill's instructions is
+    a safe write, recorded by name in the audit log and shown in Mission Control."""
     strict = tool == "memory"
     for text in _strings(a):
         if contains_secret(text, strict=strict) or (strict and contains_personal_secret(text)):
             return blocked(f"{tool}.secret", "save an API key, token or password", "secrets are never stored in memory or skills")
-    return Decision(RiskLevel.SAFE_WRITE, f"tool.{tool}", "update XENIO's memory" if strict else "update a Hermes skill")
+    if strict:
+        return Decision(RiskLevel.SAFE_WRITE, "tool.memory", "update XENIO's memory")
+    action = str(a.get("action") or "update").lower()
+    name = " ".join(str(a.get("name") or "").split())[:60] or "a skill"
+    file_path = str(a.get("file_path") or "")
+    if action == "delete":
+        return Decision(RiskLevel.CONFIRM_REQUIRED, "tool.skill_manage", f"delete the Hermes skill {name}")
+    if action == "write_file" and _SCRIPT_FILE.search(file_path):
+        return Decision(RiskLevel.CONFIRM_REQUIRED, "tool.skill_manage",
+                        f"add the script {file_path[:80]} to the Hermes skill {name} (it could run on your Mac later)")
+    return Decision(RiskLevel.SAFE_WRITE, "tool.skill_manage", f"{action} the Hermes skill {name}")
 
 
 # ---- memory value (V4): keep concise lasting facts, drop chatter --------------------------------------
@@ -1690,9 +1756,9 @@ def assess_memory_write(a: dict, existing: Iterable[str] = (), explicit: bool = 
 
 PERSONAL_TOOLS = {"xenio_calendar_events", "xenio_calendar_create_event", "xenio_email_search", "xenio_email_read",
                   "xenio_github", "xenio_tasks", "xenio_project", "xenio_daily_briefing", "xenio_schedule",
-                  "xenio_notifications", "xenio_integrations"}
+                  "xenio_notifications", "xenio_integrations", "xenio_location", "xenio_resume"}
 _PERSONAL_READ = {"xenio_calendar_events", "xenio_email_search", "xenio_email_read", "xenio_github",
-                  "xenio_daily_briefing", "xenio_integrations"}
+                  "xenio_daily_briefing", "xenio_integrations", "xenio_location", "xenio_resume"}
 
 
 def classify_personal_tool(tool: str, a: dict) -> Decision:
@@ -1700,7 +1766,9 @@ def classify_personal_tool(tool: str, a: dict) -> Decision:
     if tool in _PERSONAL_READ:
         what = {"xenio_calendar_events": "read your calendar", "xenio_email_search": "search your email",
                 "xenio_email_read": "read an email", "xenio_github": "read GitHub",
-                "xenio_daily_briefing": "prepare your daily briefing", "xenio_integrations": "check connected services"}
+                "xenio_daily_briefing": "prepare your daily briefing", "xenio_integrations": "check connected services",
+                "xenio_location": "check where you are and your local time",
+                "xenio_resume": "look up where the ongoing work stands"}
         return read(f"personal.{tool[6:]}", what[tool])
     # Everything below writes something: secrets are never stored in tasks, projects, events or schedules.
     if any(contains_personal_secret(t) for t in _strings(a)):
@@ -1725,8 +1793,19 @@ def classify_personal_tool(tool: str, a: dict) -> Decision:
         return Decision(RiskLevel.CONFIRM_REQUIRED, "personal.calendar_create",
                         f"add '{title}' to your Google Calendar from {a.get('start')} to {a.get('end')}")
     if tool == "xenio_schedule":
+        # the same reading as app.tools.personal.schedule_action: a time + text without an action is a reminder
+        action = action.replace(" ", "_")
+        if action in ("reminder", "remind_me", "set_reminder", "add_reminder", "add") or (
+                not action and (a.get("when") or a.get("schedule")) and (a.get("text") or a.get("task"))):
+            action = "remind"
+        if action in ("delete", "cancel", "clear", "stop"):
+            action = "remove"
         if action in ("", "list"):
-            return read("personal.schedule", "list your scheduled checks")
+            return read("personal.schedule", "list your reminders and scheduled checks")
+        if action == "remind":  # XENIO writes a one-line script that prints the text; no model, nothing else runs
+            text = " ".join(str(a.get("text") or a.get("task") or "").split())[:160]
+            when = " ".join(str(a.get("when") or a.get("schedule") or "").split())[:60]
+            return Decision(RiskLevel.SAFE_WRITE, "personal.reminder_create", f"set a reminder ({when}): {text}")
         if action == "create":
             task = " ".join(str(a.get("task") or "").split())[:160]
             when = " ".join(str(a.get("schedule") or "").split())[:60]
@@ -1734,8 +1813,9 @@ def classify_personal_tool(tool: str, a: dict) -> Decision:
             return Decision(RiskLevel.CONFIRM_REQUIRED, "personal.schedule_create",
                             f"schedule a {'one-time' if once else 'RECURRING'} read-only check '{a.get('name')}' "
                             f"({when}): {task}")
-        if action == "remove":
-            return Decision(RiskLevel.CONFIRM_REQUIRED, "personal.schedule_remove", f"remove the scheduled check '{a.get('name')}'")
+        if action == "remove":  # only XENIO's own reminders and checks can be removed
+            target = a.get("id") or a.get("name") or a.get("text") or a.get("task")
+            return Decision(RiskLevel.SAFE_WRITE, "personal.schedule_remove", f"remove the reminder or check '{target}'")
     return Decision(RiskLevel.CONFIRM_REQUIRED, f"personal.{tool[6:]}", f"use {tool} ({action or 'unknown action'})")
 
 
@@ -1745,7 +1825,10 @@ UNTRUSTED_SOURCE_TOOLS = {"web_extract", "web_search", "browser_exec", "browser_
                           "browser_vision", "read_file", "xenio_email_search", "xenio_email_read", "xenio_calendar_events",
                           "xenio_github", "xenio_daily_briefing", "session_search", "terminal",
                           "xenio_look_at_screen", "vision_analyze", "video_analyze",  # V5: text seen in images
-                          "xenio_find_ui"}  # V5.5: names of on-screen controls (chat text, page text)
+                          "xenio_find_ui",  # V5.5: names of on-screen controls (chat text, page text)
+                          "xenio_gui",  # V3: text copied off the screen (a page, an editor)
+                          "xenio_open_app",  # a command's output in the user's Terminal window
+                          "xenio_media"}  # track names
 _INJECTION = re.compile(
     r"(ignore|disregard|forget|override)\s+(all\s+|any\s+|the\s+|your\s+)?(previous|prior|above|earlier|system|safety)?\s*"
     r"(instructions|rules|prompts?|guidelines|policies)"
@@ -1809,6 +1892,19 @@ def asked_about_screen(user_message: str) -> bool:
     return bool(_SCREEN_REQUEST.search(_XENIO_NOTES.sub(" ", user_message or "")))
 
 
+# "solve this problem on my screen", "write the code in the editor", "do the code there on the browser" (V3)
+_SCREEN_CODE = re.compile(
+    r"\b(?:solve|code|write|type|do|complete|finish|implement|fill)\b.{0,60}?\b(?:problem|question|code|solution|program"
+    r"|editor|leetcode|geeksforgeeks|gfg|hackerrank|codeforces|codechef|dsa)\b"
+    r"|\b(?:solve|code|write|type|paste)\b.{0,40}?\b(?:on|in|into)\s+(?:my|the|this|that)\s+(?:screen|editor|browser)\b",
+    re.IGNORECASE | re.DOTALL)
+
+
+def wants_screen_code(user_message: str) -> bool:
+    """True when the user's own words ask XENIO to solve or write code where they can see it (an editor on screen)."""
+    return bool(_SCREEN_CODE.search(_XENIO_NOTES.sub(" ", user_message or "")))
+
+
 def classify_screen_look(a: dict) -> Decision:
     target = str(a.get("target") or "screen").strip().lower()
     if target not in SCREEN_TARGETS:
@@ -1819,7 +1915,7 @@ def classify_screen_look(a: dict) -> Decision:
 
 
 def screen_capture_consent(decision: Decision, user_message: str, session_id: str = "",
-                           recently_looked: bool = False) -> Decision:
+                           recently_looked: bool = False, what: str | None = None) -> Decision:
     """Explicit capture only. Scheduled/unattended runs never look; a look the user's words did not ask for (and that
     does not follow a look moments ago) needs their yes - e.g. a model that decides on its own, or a page that asks."""
     if decision.blocked:
@@ -1830,7 +1926,7 @@ def screen_capture_consent(decision: Decision, user_message: str, session_id: st
     if asked_about_screen(user_message) or recently_looked:
         return decision
     return Decision(RiskLevel.CONFIRM_REQUIRED, decision.action,
-                    f"{decision.summary} (a screenshot goes to the vision model and is then discarded)")
+                    decision.summary + (what or " (a screenshot goes to the vision model and is then discarded)"))
 
 
 def classify_image_source(tool: str, source: object, paths: PathPolicy, cwd) -> Decision:
@@ -1948,6 +2044,54 @@ def classify_window_action(action: str, name: str) -> Decision:
     return Decision(RiskLevel.SAFE_WRITE, f"desktop.window_{act}", what.format(str(name)[:60]))
 
 
+# A window whose title says it is a live test where outside help is not allowed (V3): a proctored exam, a hiring
+# assessment, an interview, a contest while it runs. XENIO does not read its questions or write answers there. Practice
+# is not matched: problem pages, "Top Interview 150", mock tests and mock interviews, test series, quizzes, practice
+# exams, virtual or past contests.
+_ASSESSMENT = re.compile(
+    r"\b(?:contest|assessment|exam|examination|proctor(?:ed|ing)?|online\s+test|coding\s+(?:test|round|assessment)"
+    r"|hiring\s+(?:test|challenge)|interview\s+(?:round|test|assessment)|live\s+interview|screening\s+test"
+    r"|olympiad|codility|codesignal|mettl|coderbyte|testgorilla|hackerrank\s+for\s+work)\b",
+    re.IGNORECASE)
+_PRACTICE_TITLE = re.compile(
+    r"\b(?:mock|practice|sample|demo)\s+(?:test|tests|exam|exams|interview|interviews|assessment|contest|round)\b"
+    r"|\b(?:virtual|past|previous|old)\s+contests?\b|\bupsolv\w*|\btest\s+series\b|\bprevious\s+year\b",
+    re.IGNORECASE)
+
+
+def live_test(title: str) -> bool:
+    """A window titled as a live test, contest, hiring assessment or interview round (practice formats excluded)."""
+    return bool(_ASSESSMENT.search(title or "")) and not _PRACTICE_TITLE.search(title or "")
+
+
+def _text_into_field(action: str, text: str, a: dict, info: dict, kinds: set, app: str, where: str) -> Decision:
+    """type / paste: what lands in the focused field, judged the same way however it gets there."""
+    focused = info.get("focused") or {}
+    verb = "paste" if action == "paste" else "type"
+    if contains_secret(text, strict=True) or contains_personal_secret(text):
+        return blocked(f"desktop.{verb}_secret", f"{verb} into {app}",
+                       "XENIO never types API keys, passwords, tokens or other secrets, even when asked")
+    if focused.get("is_password") or _SENSITIVE_FIELD.search(str(focused.get("name") or "")):
+        return blocked("desktop.type_password", f"{verb} into a password field{where}",
+                       "XENIO does not enter passwords or codes into login fields")
+    if (a.get("code") is True or action == "paste" or "\n" in text) and live_test(str(info.get("title") or "")):
+        return blocked("desktop.assessment", f"write an answer into {str(info.get('title'))[:60]!r}",
+                       "this window looks like a test, contest, assessment or interview: XENIO does not write answers "
+                       "where outside help is not allowed. Offer to explain the topic instead, after the test")
+    field = str(focused.get("name") or focused.get("type") or "the focused field")[:50]
+    if "terminal" in kinds:
+        return Decision(RiskLevel.CONFIRM_REQUIRED, "desktop.type_terminal",
+                        f"{verb} {_preview(text)} into a terminal{where} (that runs commands; the terminal tool is safer)")
+    if "security" in kinds:
+        return Decision(RiskLevel.HIGH_RISK, "desktop.security_settings", f"{verb} into security settings{where}")
+    if "messaging" in kinds and "\n" in text:
+        return Decision(RiskLevel.CONFIRM_REQUIRED, "desktop.send", f"{verb} {_preview(text)}{where} - the line break can send it")
+    how = "replace everything in" if a.get("select_all") is True else ("type code into" if a.get("code") is True else
+                                                                       f"{verb} {_preview(text)} into")
+    return Decision(RiskLevel.SAFE_WRITE, f"desktop.{verb}", f"{how} {field}{where}" + (
+        f" with {_preview(text)}" if a.get("select_all") is True or a.get("code") is True else ""))
+
+
 def classify_gui_action(args: dict, info: dict | None = None) -> Decision:
     """A mouse/keyboard action, judged by its consequence. ``info`` (from the plugin's probe): the app in front
     (``app``, ``title``), the element a click would hit (``element`` with UI Automation name, type, parents,
@@ -1987,25 +2131,33 @@ def classify_gui_action(args: dict, info: dict | None = None) -> Decision:
         if "security" in kinds:
             return Decision(RiskLevel.HIGH_RISK, "desktop.security_settings", f"click {label[:60]!r} in security settings")
         return Decision(RiskLevel.SAFE_WRITE, "desktop.click", f"click {label[:60]!r}{where}")
-    if action == "type":
+    if action in ("type", "paste"):
         text = a.get("text")
         if not isinstance(text, str) or not text:
-            return blocked("desktop.type", "type", "nothing to type")
-        if contains_secret(text, strict=True) or contains_personal_secret(text):
-            return blocked("desktop.type_secret", f"type into {app}",
-                           "XENIO never types API keys, passwords, tokens or other secrets, even when asked")
-        if focused.get("is_password") or _SENSITIVE_FIELD.search(str(focused.get("name") or "")):
-            return blocked("desktop.type_password", f"type into a password field{where}",
-                           "XENIO does not enter passwords or codes into login fields")
-        field = str(focused.get("name") or focused.get("type") or "the focused field")[:50]
-        if "terminal" in kinds:
-            return Decision(RiskLevel.CONFIRM_REQUIRED, "desktop.type_terminal",
-                            f"type {_preview(text)} into a terminal{where} (that runs commands; the terminal tool is safer)")
-        if "security" in kinds:
-            return Decision(RiskLevel.HIGH_RISK, "desktop.security_settings", f"type into security settings{where}")
-        if "messaging" in kinds and "\n" in text:
-            return Decision(RiskLevel.CONFIRM_REQUIRED, "desktop.send", f"type {_preview(text)}{where} - the line break can send it")
-        return Decision(RiskLevel.SAFE_WRITE, "desktop.type", f"type {_preview(text)} into {field}{where}")
+            return blocked(f"desktop.{action}", action, f"nothing to {action}")
+        return _text_into_field(action, text, a, info, kinds, app, where)
+    if action == "copy":
+        if focused.get("is_password"):
+            return blocked("desktop.copy", f"copy from a password field{where}", "XENIO never reads password fields")
+        if live_test(str(info.get("title") or "")):
+            return blocked("desktop.assessment", f"read {str(info.get('title'))[:60]!r}",
+                           "this window looks like a test, contest, assessment or interview: XENIO does not read its "
+                           "questions to answer them")
+        return read("desktop.copy", f"read the {'whole ' if a.get('select_all') is True else 'selected '}text{where} "
+                                    "(copied, then your clipboard is put back)")
+    if action == "read":  # V3: the window's text through accessibility (password fields are never part of it)
+        if live_test(str(info.get("title") or "")):
+            return blocked("desktop.assessment", f"read {str(info.get('title'))[:60]!r}",
+                           "this window looks like a test, contest, assessment or interview: XENIO does not read its "
+                           "questions to answer them")
+        return read("desktop.read", f"read the text of the window{where}")
+    if action == "run":  # V3: the page's Run / Compile & Run button, found by its exact name - never Submit
+        if live_test(str(info.get("title") or "")):
+            return blocked("desktop.assessment", f"run code in {str(info.get('title'))[:60]!r}",
+                           "this window looks like a test, contest, assessment or interview: XENIO does not work on its "
+                           "answers")
+        return Decision(RiskLevel.SAFE_WRITE, "desktop.run_code", f"run the code{where} (its Run / Compile & Run button, "
+                                                                   "never Submit)")
     if action == "key":
         try:
             from app.desktop.input import normalize_combo  # stdlib-only, imported lazily (policy stays importable)
@@ -2056,7 +2208,15 @@ def classify_desktop_tool(tool: str, args: dict, info: dict | None = None) -> De
     if tool in DESKTOP_READ_TOOLS:
         return read(f"desktop.{tool[6:]}", "look up apps" if tool == "xenio_list_apps" else "read the controls of a window")
     if tool == "xenio_open_app":
-        return classify_app_launch(str(a.get("name") or ""), (info or {}).get("app_entry"))
+        launch = classify_app_launch(str(a.get("name") or ""), (info or {}).get("app_entry"))
+        command = str(a.get("command") or "").strip()
+        if not command or launch.blocked:
+            return launch
+        # "Open Terminal and run X": X runs in the user's real shell, so it gets exactly the terminal tool's rules
+        judged = (info or {}).get("command_decision")
+        if not isinstance(judged, Decision):
+            return blocked("desktop.terminal_command", f"run in Terminal: {command[:80]}", "the command could not be checked")
+        return combine([launch, replace(judged, summary=f"open a Terminal window and {judged.summary}")], launch)
     if tool == "xenio_window":
         return classify_window_action(str(a.get("action") or ""), str(a.get("name") or ""))
     return classify_gui_action(a, info)
@@ -2069,21 +2229,38 @@ def unattended_desktop(decision: Decision, tool: str, session_id: str = "") -> D
     return decision
 
 
-MEDIA_ACTIONS = {"play", "pause", "next", "previous", "volume", "play_track", "time"}
+MEDIA_ACTIONS = {"play", "pause", "next", "previous", "volume", "play_track", "time", "now_playing"}
 
 
 def classify_media_action(action: str, detail: str = "") -> Decision:
-    """XENIO's fast path (speed): playing music, pausing, skipping, the volume and the time. They change only what
-    is playing and how loud: SAFE_WRITE; the time is READ. Unknown media actions are blocked, never guessed."""
+    """XENIO's fast path (speed) and the xenio_media tool: playing music, pausing, skipping, the volume and the time.
+    They change only what is playing and how loud: SAFE_WRITE; the time and what is playing are READ. Unknown media
+    actions are blocked, never guessed."""
     act = str(action or "").lower()
     if act not in MEDIA_ACTIONS:
         return blocked("media.action", f"{act or 'an unknown'} media action", "unknown media action")
     if act == "time":
         return read("media.time", "tell the time")
+    if act == "now_playing":
+        return read("media.now_playing", "check what is playing")
     words = {"play": "resume playback", "pause": "pause playback", "next": "skip to the next track",
              "previous": "go back to the previous track", "volume": f"set the volume ({detail})",
              "play_track": f"play {detail}"}
     return Decision(RiskLevel.SAFE_WRITE, f"media.{act}", words[act])
+
+
+def classify_media_tool(a: dict) -> Decision:
+    """The xenio_media tool: the same rules as the fast path's media actions (a song from YouTube opens one browser
+    tab, which xenio_open_url's rules allow for http(s) pages)."""
+    action = str(a.get("action") or "").lower()
+    if action == "play_song":
+        query = str(a.get("query") or "").strip()
+        if not query:
+            return blocked("media.play_track", "play a song", "which song? the 'query' is missing")
+        return classify_media_action("play_track", query[:80])
+    if action == "volume":
+        return classify_media_action("volume", str(a.get("level") or "")[:20])
+    return classify_media_action(action)
 
 
 # ---- engineering sessions (V6): a role's tools, its task's files, its terminal --------------------------------------
@@ -2370,9 +2547,12 @@ def classify_engineering_tool(a: dict) -> Decision:
     if action in ("status", "list", "plan", "report"):
         return read(f"engineering.{action}", f"show the engineering team's {action}{run}")
     if action == "start":
-        request = " ".join(str(a.get("request") or "").split())[:100]
+        mode = str(a.get("mode") or "").lower()
+        request = " ".join(str(a.get("request") or "").split())[:100] or (f"{mode} the repository" if mode in
+                                                                             ("explain", "review", "test") else "")
         if not request:
-            return blocked("engineering.start", "start engineering work", "say what the team should do")
+            return blocked("engineering.start", "start engineering work",
+                           "the 'request' argument is missing: call it again with what the team should do")
         return Decision(RiskLevel.SAFE_WRITE, "engineering.start",
                         f"start engineering work on {a.get('project') or a.get('path') or 'the current project'}: {request}")
     if action in ("approve", "cancel"):
@@ -2386,8 +2566,12 @@ def classify_engineering_tool(a: dict) -> Decision:
 def _classify_xenio_tool(tool: str, a: dict, paths: PathPolicy, cwd) -> Decision:
     if tool == "xenio_engineering":
         return classify_engineering_tool(a)
+    if tool == "xenio_media":
+        return classify_media_tool(a)
     if tool in DESKTOP_TOOLS:  # without the plugin's live probe: text-only rules (secret typing stays blocked)
-        return classify_desktop_tool(tool, a, None)
+        command = str(a.get("command") or "").strip() if tool == "xenio_open_app" else ""
+        return classify_desktop_tool(tool, a, {"command_decision": classify_command(command, paths, str(paths.home))}
+                                     if command else None)
     if tool == "xenio_look_at_screen":
         return classify_screen_look(a)  # the plugin adds screen_capture_consent (it knows the user's words)
     if tool in ("xenio_list_directory", "xenio_inspect_path"):
@@ -2434,12 +2618,15 @@ def _classify_xenio_tool(tool: str, a: dict, paths: PathPolicy, cwd) -> Decision
 _ESCALATION_HEADER = re.compile(r"^XENIO\[(?P<level>[A-Z_]+)\]\s*(?P<summary>.*)$")
 
 
-def escalation_message(decision: Decision, key: str = "") -> str:
-    """``XENIO[LEVEL] summary`` + optional ``key: ...`` (dedupe) + ``scope: ...`` lines (approval coverage)."""
+def escalation_message(decision: Decision, key: str = "", confined: bool = False) -> str:
+    """``XENIO[LEVEL] summary`` + optional ``key: ...`` (dedupe) + ``scope: ...`` lines (approval coverage) +
+    ``confined: workspace`` when everything it writes stays in XENIO's workspace (a task approval may cover it)."""
     lines = [f"XENIO[{decision.level.name}] {' / '.join(decision.summary.splitlines())}"]
     if key:
         lines.append(f"key: {' '.join(key.splitlines())}")
     lines.extend(f"scope: {s}" for s in decision.scopes)
+    if confined:
+        lines.append("confined: workspace")
     return "\n".join(lines)
 
 
@@ -2458,6 +2645,11 @@ def parse_escalation(message: str) -> tuple[RiskLevel, str, str] | None:
     m, rest = parts
     key = next((line[len("key: "):].strip() for line in rest if line.startswith("key: ")), "")
     return RiskLevel[m.group("level")], m.group("summary").strip(), key
+
+
+def parse_escalation_confined(message: str) -> bool:
+    parts = _escalation_parts(message)
+    return bool(parts) and "confined: workspace" in (line.strip() for line in parts[1])
 
 
 def parse_escalation_scopes(message: str) -> tuple[str, ...]:

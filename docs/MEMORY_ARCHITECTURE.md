@@ -81,9 +81,22 @@ A brand-new session (`/new`, or after a model change) loads everything from disk
 
 ## 5. What the user can see and change
 
+* **Mission Control > Memory (V3):** every entry, searchable, with Hermes' real usage ("514 of 1,375 characters");
+  **correct**, **delete** or **add** an entry. XENIO writes Hermes' files exactly as Hermes' memory tool does
+  (`app/memory/files.py`: an exclusive lock on `<file>.lock`, a re-read under that lock, an atomic replace, `§`
+  between entries, owner-only permissions), so a save by Hermes and an edit here never lose each other's entries.
+  The memory policy holds for these edits too (no secrets even when typed by the user, at most 400 characters,
+  within the size limit). Entries are addressed by a hash of their text: an entry Hermes changed meanwhile is
+  refused ("reload") instead of overwritten. Activity records "memory changed", never the text.
+* A conversation that is already running keeps the memory block it started with (Hermes freezes it). The guard plugin
+  therefore lists, on the next turn, the entries removed or corrected since it started ("do not rely on them").
 * `/memory [words]` in text mode lists the stored entries (`app/memory/manager.py`, read-only, no model call).
 * "Forget that ..." makes the model call `memory remove`.
-* The files are plain text: `%LOCALAPPDATA%\hermes\memories\`.
+* The files are plain text: `~/.hermes/memories/` (macOS) or `%LOCALAPPDATA%\hermes\memories\` (Windows).
+
+What is **not** memory, and where it is: projects and tasks (`personal.db`, looked up by tools and by the V3 context
+engine, `app/context.py`); conversations (Hermes' session history); what XENIO did (Mission Control's Activity, kept
+as long as Settings says, never with what the user typed or said); the screen (never kept).
 * Before V4, `USER.md` held three near-identical auto-saved entries (1,287 of 1,375 characters). They were
   merged into three distinct entries (514 characters); the original is backed up in
   `%LOCALAPPDATA%\xenio\backups\USER.md.before-v4-*`.

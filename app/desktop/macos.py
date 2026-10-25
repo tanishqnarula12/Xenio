@@ -54,10 +54,52 @@ class MacError(Exception):
     pass
 
 
+def host_app(pid: int | None = None) -> str:
+    """The app XENIO was started from (Terminal, iTerm, an IDE...): macOS grants Accessibility, Screen Recording and
+    Automation to that app, not to Python. XENIO passes it on to Hermes (XENIO_HOST_APP): a detached Hermes gateway
+    can no longer see its parents. "" when unknown."""
+    if pid is None and os.environ.get("XENIO_HOST_APP"):
+        return os.environ["XENIO_HOST_APP"]
+    pid = pid or os.getpid()
+    for _ in range(12):
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        ppid, _, comm = out.stdout.strip().partition(" ")
+        if ".app/" in comm:
+            return os.path.basename(comm[:comm.index(".app/")])  # the outermost bundle, not its "Helper" app
+        if not ppid.strip().isdigit() or int(ppid) <= 1:
+            return ""
+        pid = int(ppid)
+    return ""
+
+
+_PRIVACY_PANES = {"accessibility": "Privacy_Accessibility", "screen": "Privacy_ScreenCapture",
+                  "automation": "Privacy_Automation"}
+_opened_panes: dict[str, float] = {}
+
+
+def open_privacy_settings(kind: str, runner=subprocess.run, clock=time.monotonic) -> bool:
+    """Show System Settings > Privacy & Security at the page the user must switch on (accessibility | screen |
+    automation): only the page - granting is the user's own click, XENIO never changes a permission. At most once per
+    5 minutes per page, so repeated failures do not keep pulling the window up."""
+    if sys.platform != "darwin" or kind not in _PRIVACY_PANES or clock() - _opened_panes.get(kind, -1e9) < 300:
+        return False
+    _opened_panes[kind] = clock()
+    url = f"x-apple.systempreferences:com.apple.preference.security?{_PRIVACY_PANES[kind]}"
+    try:
+        return runner(["/usr/bin/open", url], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+_HOST = host_app() if sys.platform == "darwin" else ""
+_HOST_WORDS = f"the app XENIO runs in ({_HOST})" if _HOST else "the app XENIO runs in (Terminal, iTerm or your IDE)"
 ACCESSIBILITY_STEP = ("macOS has not given XENIO Accessibility access. Open System Settings > Privacy & Security > "
-                      "Accessibility and switch on the app XENIO runs in (Terminal, iTerm or VS Code), then restart XENIO.")
+                      f"Accessibility and switch on {_HOST_WORDS}, then restart XENIO.")
 SCREEN_STEP = ("macOS has not given XENIO screen access. Open System Settings > Privacy & Security > Screen & System "
-               "Audio Recording and switch on the app XENIO runs in (Terminal, iTerm or VS Code), then restart XENIO.")
+               f"Audio Recording and switch on {_HOST_WORDS}, then restart XENIO.")
 
 
 class _Lib:
@@ -84,6 +126,7 @@ class _Lib:
         # CoreFoundation
         sig(cf, "CFRelease", None, _P)
         sig(cf, "CFRetain", _P, _P)
+        sig(cf, "CFEqual", ctypes.c_bool, _P, _P)
         sig(cf, "CFGetTypeID", ctypes.c_ulong, _P)
         for name in ("CFStringGetTypeID", "CFNumberGetTypeID", "CFBooleanGetTypeID", "CFArrayGetTypeID",
                      "CFDictionaryGetTypeID"):
@@ -373,6 +416,24 @@ def double_click_interval() -> float:
 # ---- the window server's list (in-process, no permission needed except for titles) -----------------------------
 
 _LIST_ALL, _LIST_ON_SCREEN, _EXCLUDE_DESKTOP = 0, 1, 16
+
+
+_APP_KIND: dict[int, bool] = {}
+
+
+def regular_app(pid: int) -> bool:
+    """A normal app with a Dock icon, which can have the keyboard - not a menu-bar or overlay (UIElement) app or a
+    background process. Asked of LaunchServices once per process (lsappinfo); unknown counts as regular."""
+    if pid not in _APP_KIND:
+        try:
+            asn = subprocess.run(["/usr/bin/lsappinfo", "find", f"pid={pid}"], capture_output=True, text=True,
+                                 timeout=3).stdout.strip()
+            kind = subprocess.run(["/usr/bin/lsappinfo", "info", "-only", "ApplicationType", asn], capture_output=True,
+                                  text=True, timeout=3).stdout if asn else ""
+            _APP_KIND[pid] = not ('"UIElement"' in kind or '"BackgroundOnly"' in kind)
+        except (OSError, subprocess.SubprocessError):
+            return True
+    return _APP_KIND[pid]
 
 
 def cg_windows(on_screen_only: bool = False) -> list[dict]:
@@ -668,6 +729,9 @@ _FIELD_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
 _NODE_ATTRS = ("AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXValue", "AXPlaceholderValue", "AXPosition",
                "AXSize", "AXEnabled", "AXFocused", "AXChildren", "AXIdentifier")
 _WINDOW_ATTRS = ("AXTitle", "AXPosition", "AXSize", "AXMinimized", "AXMain", "AXSubrole", "AXFullScreen")
+# a window's text (app.desktop.pagetext): web content names its CSS classes, which is how code editors are recognised
+_SNAP_ATTRS = ("AXRole", "AXSubrole", "AXValue", "AXTitle", "AXDescription", "AXPosition", "AXSize", "AXFocused",
+               "AXDOMClassList", "AXChildren")
 # Chromium/Electron apps (Chrome, Discord, Slack, VS Code, WhatsApp...) build their full accessibility tree only
 # when an assistive app asks for it, like VoiceOver does.
 _CHROMIUM = ("com.google.chrome", "com.microsoft.edgemac", "com.brave.browser", "company.thebrowser.browser",
@@ -686,6 +750,7 @@ class AX:
         self._frames: dict[int, tuple] = {}  # window id -> frame before XENIO maximized it (for "restore")
         self._names = self.L.cf_array([self.L.cfstr(a) for a in _NODE_ATTRS])
         self._window_names = self.L.cf_array([self.L.cfstr(a) for a in _WINDOW_ATTRS])
+        self._snap_names = self.L.cf_array([self.L.cfstr(a) for a in _SNAP_ATTRS])
 
     def require(self) -> None:
         if not self.L.ax.AXIsProcessTrusted():
@@ -759,18 +824,30 @@ class AX:
 
     def frontmost(self) -> tuple[int, int]:
         """(pid, window id) of the app and window the user is working in."""
-        app = self.copy(self.system, "AXFocusedApplication")
-        if not app:
-            return 0, 0
-        try:
-            pid = self.pid_of(app)
-            window = self.copy(app, "AXFocusedWindow") or self.copy(app, "AXMainWindow")
+        focused = self.copy(self.system, "AXFocusedApplication")
+        pid = 0
+        if focused:
             try:
-                return pid, (self.window_id(window) if window else 0)
+                pid = self.pid_of(focused)
             finally:
-                self.L.release(window)
+                self.L.release(focused)
+        if not pid:
+            # measured on macOS 26: the system-wide AXFocusedApplication answers nothing to a background process (XENIO
+            # inside Hermes), so every "is it in front now?" check failed. The window server's front-to-back order
+            # does answer: the first normal window on screen belongs to the active app.
+            # ...skipping windows of menu-bar and overlay apps (measured: a "Dynamic Island" notch app's window came
+            # first while Safari kept the keyboard, and stopped XENIO's typing as if another app had taken over)
+            front = next((w for w in cg_windows(on_screen_only=True) if w["layer"] == 0 and regular_app(int(w["pid"]))),
+                         None)
+            if front is None:
+                return 0, 0
+            pid = int(front["pid"])
+        app = self.app(pid)  # cached, not released here
+        window = self.copy(app, "AXFocusedWindow") or self.copy(app, "AXMainWindow")
+        try:
+            return pid, (self.window_id(window) if window else 0)
         finally:
-            self.L.release(app)
+            self.L.release(window)
 
     def app_windows(self, pid: int) -> list[tuple[int, dict]]:
         """[(retained AX window, facts)] for one app's standard windows and dialogs."""
@@ -906,6 +983,62 @@ class AX:
         self.set(app, "AXHidden", False)
         return _poll(lambda: not self.get(app, "AXHidden"))
 
+    def fullscreen(self, wid: int, pid: int = 0, set_to: bool | None = None, timeout: float = 3.0) -> dict:
+        """Whether the window is in full screen: the system's own full screen (its own Space), or a page's full screen
+        that covers a whole display. ``set_to`` enters or leaves the system's full screen and waits for it.
+        Measured in Safari: an Esc the page does not use (no completion list open) ends full screen."""
+        pid, el = self._find_window(wid, pid)
+        try:
+            def state() -> bool:
+                if self.get(el, "AXFullScreen"):
+                    return True
+                if not self.get(el, "AXTitle"):
+                    return False  # Finder's desktop also covers the display (measured): a page is a titled window
+                x1, y1, x2, y2 = self._rect(el)
+                return any(abs(x1 - dx) <= 2 and abs(y1 - dy) <= 2 and abs(x2 - (dx + dw)) <= 2 and abs(y2 - (dy + dh)) <= 2
+                           for dx, dy, dw, dh in displays())
+
+            if set_to is not None and state() != set_to:
+                self.set(el, "AXFullScreen", bool(set_to))
+                if _poll(lambda: state() == set_to, timeout):
+                    time.sleep(0.8)  # the Space animation: keys sent during it are lost
+            system = bool(self.get(el, "AXFullScreen"))
+            return {"fullscreen": state(), "kind": "system" if system else "page" if state() else None}
+        finally:
+            self.L.release(el)
+
+    def press(self, wid: int, name: str, max_nodes: int = 4000, budget: float = 3.0) -> dict:
+        """Press the enabled button named exactly ``name`` the way VoiceOver does (AXPress): it works wherever the
+        button is - scrolled out of view, or under the Dock when the window is not in full screen (measured: Compile &
+        Run sat at y=933 of a 956-point screen)."""
+        want = " ".join(str(name or "").lower().split())
+        pid, root = self._find_window(wid)
+        queue, seen = [root], 0
+        deadline = time.monotonic() + budget
+        try:
+            while queue and seen < max_nodes and time.monotonic() < deadline:
+                el = queue.pop(0)
+                seen += 1
+                f = self.get_many(el, self._names, _NODE_ATTRS, keep_elements=True)
+                children = f.pop("AXChildren", None) or []
+                info = self.describe(f)
+                if info["type"] == "button" and info["enabled"] and " ".join(info["name"].lower().split()) == want:
+                    pressed = self.act(el, "AXPress")
+                    self.L.release(el)
+                    for child in children:
+                        self.L.release(child)
+                    return {"found": True, "pressed": pressed, "name": info["name"]}
+                self.L.release(el)
+                for child in children:
+                    if child and len(queue) < max_nodes:
+                        queue.append(child)
+                    else:
+                        self.L.release(child)
+        finally:
+            for el in queue:
+                self.L.release(el)
+        return {"found": False, "pressed": False}
+
     def _window_ids(self, pid: int) -> set[int]:
         ids = set()
         for el, f in self.app_windows(pid):
@@ -1031,6 +1164,103 @@ class AX:
         finally:
             self.L.release(el)
 
+    # ---- a window's text and its code editor (app.desktop.pagetext) ---------------------------------------------
+
+    def snapshot(self, wid: int, max_nodes: int = 8000, budget: float = 3.0, keep_inputs: bool = False):
+        """The window's tree as nested dicts (depth first, document order). ``keep_inputs``: text inputs keep their
+        element as ``ref`` (retained; release with ``release_refs``). Returns (tree, nodes read, complete, pid)."""
+        pid, root = self._find_window(wid)
+        self._enhance(pid)
+        deadline = time.monotonic() + budget
+        state = {"count": 0, "complete": True}
+
+        def visit(el, depth: int) -> dict:
+            state["count"] += 1
+            f = self.get_many(el, self._snap_names, _SNAP_ATTRS, keep_elements=True)
+            kids = f.pop("AXChildren", None) or []
+            pos, size = f.get("AXPosition"), f.get("AXSize")
+            value, classes = f.get("AXValue"), f.get("AXDOMClassList")
+            node = {"role": str(f.get("AXRole") or ""), "sub": str(f.get("AXSubrole") or ""),
+                    "text": value if isinstance(value, str) else None,
+                    "name": str(f.get("AXTitle") or f.get("AXDescription") or ""),
+                    "rect": [pos[0], pos[1], size[0], size[1]] if pos and size else None,
+                    "cls": [str(c) for c in classes] if isinstance(classes, list) else [],
+                    "focused": bool(f.get("AXFocused")), "kids": []}
+            if node["sub"] == "AXSecureTextField":
+                node["text"] = None  # never read
+            if keep_inputs and node["role"] in ("AXTextArea", "AXTextField"):
+                node["ref"] = self.L.cf.CFRetain(el)
+            for kid in kids:
+                if state["count"] < max_nodes and depth < 120 and time.monotonic() < deadline:
+                    node["kids"].append(visit(kid, depth + 1))
+                else:
+                    state["complete"] = False
+                self.L.release(kid)
+            return node
+
+        try:
+            tree = visit(root, 0)
+        finally:
+            self.L.release(root)
+        return tree, state["count"], state["complete"], pid
+
+    def release_refs(self, node: dict) -> None:
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n.get("ref"):
+                self.L.release(n.pop("ref"))
+            stack.extend(n.get("kids") or [])
+
+    @staticmethod
+    def _public_editor(e: dict) -> dict:
+        return {k: e[k] for k in ("kind", "focused", "rect", "click", "lines", "text")}
+
+    def read_text(self, wid: int, max_chars: int = 60000, max_nodes: int = 8000, budget: float = 3.0) -> dict:
+        from app.desktop import pagetext
+
+        started = time.monotonic()
+        tree, count, complete, _ = self.snapshot(wid, max_nodes, budget)
+        page = pagetext.document(tree)
+        text = pagetext.render(page)
+        found = [self._public_editor(e) for e in pagetext.editors(page)]
+        return {"text": text[:max_chars], "chars": len(text), "truncated": len(text) > max_chars, "complete": complete,
+                "nodes": count, "web_page": page is not tree, "editors": found[:3],
+                "ms": int((time.monotonic() - started) * 1000)}
+
+    def _is_focused(self, el, pid: int) -> bool:
+        if self.get(el, "AXFocused") is True:  # the page's own focus (true even while the app is behind others)
+            return True
+        current = self.copy(self.app(pid), "AXFocusedUIElement")
+        if not current:
+            return False
+        try:
+            return bool(self.L.cf.CFEqual(current, el))
+        finally:
+            self.L.release(current)
+
+    def editor(self, wid: int, focus: bool = True) -> dict:
+        """The window's code editor; with ``focus`` the keyboard focus is put into it through accessibility (no
+        click). ``focused`` false then means the caller should click ``click``."""
+        from app.desktop import pagetext
+
+        tree, _, _, pid = self.snapshot(wid, keep_inputs=True)
+        try:
+            page = pagetext.document(tree)
+            found = pagetext.editors(page)
+            if not found:
+                return {"found": False}
+            best = found[0]
+            el = best["node"].get("ref")
+            if focus and el and not self._is_focused(el, pid):
+                self.set(el, "AXFocused", True)
+                best["focused"] = _poll(lambda: self._is_focused(el, pid), 1.0)
+            elif el:
+                best["focused"] = self._is_focused(el, pid)
+            return {"found": True, **self._public_editor(best), "others": len(found) - 1}
+        finally:
+            self.release_refs(tree)
+
 
 def _poll(condition, timeout: float = 2.0) -> bool:
     deadline = time.monotonic() + timeout
@@ -1084,6 +1314,11 @@ def _handle(ax: AX, cmd: str, a: dict):
         return getattr(ax, cmd)(int(a["id"]), int(a.get("pid") or 0))
     if cmd == "unhide":
         return ax.unhide(int(a["pid"]))
+    if cmd == "fullscreen":
+        value = a.get("set")
+        return ax.fullscreen(int(a["id"]), int(a.get("pid") or 0), None if value is None else bool(value))
+    if cmd == "press":
+        return ax.press(int(a["id"]), str(a.get("name") or ""))
     if cmd == "find":
         return ax.find(int(a["id"]), str(a.get("query") or ""), int(a.get("limit") or 8), int(a.get("max_nodes") or 2500),
                        float(a.get("budget") or 2.5))
@@ -1091,6 +1326,10 @@ def _handle(ax: AX, cmd: str, a: dict):
         return ax.at(float(a["x"]), float(a["y"]))
     if cmd == "focused":
         return ax.focused(bool(a.get("with_value")))
+    if cmd == "text":
+        return ax.read_text(int(a["id"]), int(a.get("max_chars") or 60000))
+    if cmd == "editor":
+        return ax.editor(int(a["id"]), bool(a.get("focus", True)))
     raise MacError(f"unknown command {cmd!r}")
 
 

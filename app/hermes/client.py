@@ -34,6 +34,7 @@ class ToolActivity:
     kind: str = ""
     status: str = ""  # pending | in_progress | completed | failed
     detail: str = ""  # Hermes' own error text when the call failed (shown so failures are explained)
+    result: str = ""  # the start of Hermes' report of a finished call (a code write's outcome: what really happened)
 
 
 @dataclass

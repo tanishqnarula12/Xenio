@@ -229,25 +229,74 @@ def daily_briefing(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 # ---- scheduled checks (Hermes cron) --------------------------------------------------------------------
 
+def _reminders():
+    """Reminders in this process's Hermes home: Hermes' cron API inside Hermes, its CLI elsewhere."""
+    from app.config import default_hermes_home
+    from app.reminders import Reminders
+
+    try:
+        cron = _make("schedules")._cron()
+    except ImportError:
+        cron = None
+    return Reminders(default_hermes_home(), cron=cron)
+
+
+_REMOVE_WORDS = ("remove", "delete", "cancel", "clear", "stop")
+
+
+def schedule_action(args: dict[str, Any]) -> str:
+    """What was asked. A time plus something to remember, with no action, is a reminder - never silently a list
+    (that once answered "0 scheduled checks" and the model then said the reminder was set)."""
+    action = str(args.get("action") or "").lower().strip().replace(" ", "_")
+    if action in ("reminder", "remind_me", "set_reminder", "add_reminder", "add"):
+        return "remind"
+    if action in _REMOVE_WORDS:
+        return "remove"
+    if not action:
+        return "remind" if (args.get("when") or args.get("schedule")) and (args.get("text") or args.get("task")) else "list"
+    return action
+
+
 def schedule(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    action = (args.get("action") or "list").lower()
+    action = schedule_action(args)
 
     def run():
+        from app.reminders import parse_when
+
+        if action == "remind":
+            text = str(args.get("text") or args.get("task") or "").strip()
+            when_raw = str(args.get("when") or args.get("schedule") or "").strip()
+            if not text or not when_raw:
+                raise IntegrationError("a reminder needs 'text' (what to remind) and 'when' (e.g. 'at 3 pm', 'in 20 "
+                                       "minutes', 'tomorrow at 9', 'every day at 8 am' or 2026-10-23T15:00)")
+            when = parse_when(when_raw)
+            if when is None:
+                raise IntegrationError(f"I could not understand the time {when_raw!r}; ask the user for an exact time")
+            made = _reminders().create(text, when)
+            return ToolResult.ok("schedule.remind", f"Reminder set {when.display}: {made['text']}", reminder=made)
         sched = _make("schedules")
         if action == "list":
-            items = sched.list_schedules()
-            return ToolResult.ok("schedule.list", f"{len(items)} scheduled check(s)", checks=items)
+            checks = sched.list_schedules()
+            reminders = _reminders().list()
+            return ToolResult.ok("schedule.list", f"{len(reminders)} reminder(s), {len(checks)} scheduled check(s)",
+                                 reminders=reminders, checks=checks)
         if action == "create":
-            for key in ("name", "schedule", "task"):
+            for key in ("schedule", "task"):
                 if not args.get(key):
                     raise IntegrationError(f"'{key}' is required to create a scheduled check")
-            job = sched.create_schedule(args["name"], args["schedule"], args["task"], args.get("repeat"))
+            name = args.get("name") or " ".join(str(args["task"]).split()[:6])
+            job = sched.create_schedule(name, args["schedule"], args["task"], args.get("repeat"))
             return ToolResult.ok("schedule.create", f"Scheduled check '{job['name']}' created", check=job)
         if action == "remove":
-            if not args.get("name"):
-                raise IntegrationError("'name' is required to remove a scheduled check")
-            return ToolResult.ok("schedule.remove", "Scheduled check removed", check=sched.remove_schedule(args["name"]))
-        raise IntegrationError(f"Unknown schedule action {action!r}; use list, create or remove")
+            target = str(args.get("id") or args.get("name") or args.get("text") or args.get("task") or "").strip()
+            if not target:
+                raise IntegrationError("say which reminder or check to remove (its id, name or words from it)")
+            try:
+                gone = _reminders().remove(target)
+                return ToolResult.ok("schedule.remove", f"Reminder removed: {gone['text']}", reminder=gone)
+            except IntegrationError:
+                return ToolResult.ok("schedule.remove", "Scheduled check removed", check=sched.remove_schedule(target))
+        raise IntegrationError(f"Unknown schedule action {action!r}; use remind, list, create or remove")
 
     try:
         return _guard(f"schedule.{action}", run)
@@ -266,6 +315,27 @@ def notifications(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     return ToolResult.ok("notifications.list", f"{len(items)} notification(s)",
                          notifications=[{"title": n.title, "message": n.message, "priority": n.priority, "source": n.source,
                                          "created": n.created, "read": bool(n.delivered)} for n in items])
+
+
+def location(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    from app.location import describe
+
+    data = describe()
+    return ToolResult.ok("location.current", f"location: {data.get('place') or 'not set'}", **data)
+
+
+def resume(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    """V3 context engine: XENIO's own records of ongoing work (app/context.py), read in milliseconds, no model."""
+    from pathlib import Path
+
+    from app.context import ContextEngine
+    from app.integrations.base import data_dir
+
+    workspace = getattr(ctx.paths, "workspace", None)
+    engine = ContextEngine(Path(workspace) / "engineering" if workspace else None,
+                           activity_log=data_dir() / "ui" / "activity.jsonl")
+    brief = engine.brief(str(args.get("about") or ""))
+    return ToolResult.ok("context.resume", ContextEngine.render(brief), **_untrusted(brief))
 
 
 def integrations_status(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -312,8 +382,10 @@ TOOLS: list[Tool] = [
          "test results). 'repo' = owner/name or just name for the user's own; default = the current project's repository.",
          _obj({"action": _S, "repo": _S, "state": _S, "limit": _I}), RiskLevel.READ, "xenio", "xenio_github", github),
     Tool("tasks.manage",
-         "The user's task list. action: list (status open|done|all, project), add (title, description, priority low|normal|"
-         "high, due today|tomorrow|YYYY-MM-DD, project), update (id + fields), complete (id), delete (id; confirmed first).",
+         "The USER's own to-do list, shown on XENIO's Tasks page (todo_list is only your private scratchpad: never use it "
+         "for the user's tasks). action: list (status open|done|all, project), add (title, description, priority low|"
+         "normal|high, due today|tomorrow|YYYY-MM-DD, project), update (id + fields), complete (id), delete (id; "
+         "confirmed first). For a reminder at a time, use xenio_schedule action remind.",
          _obj({"action": _S, "id": _I, "title": _S, "description": _S, "status": _S, "priority": _S, "due": _S,
                "project": _S, "limit": _I}), RiskLevel.SAFE_WRITE, "xenio", "xenio_tasks", tasks),
     Tool("project.manage",
@@ -330,12 +402,15 @@ TOOLS: list[Tool] = [
          "scheduled checks. Each part says if it is unavailable. 'summary' is a ready spoken summary built from the data.",
          _obj({}), RiskLevel.READ, "xenio", "xenio_daily_briefing", daily_briefing),
     Tool("schedule.manage",
-         "Scheduled checks that run unattended on Hermes' scheduler and notify the user (read-only: they can never send, "
-         "change or delete anything). action: list; create (name; schedule: ONCE = 'in 1m' / 'in 2h' or an ISO time "
-         "2026-10-05T08:00, RECURRING = 'every 2h', 'every monday 9am' or cron '0 8 * * *' - a bare '30m' also repeats, "
-         "and recurring checks run at most every 15 minutes; task = what to check and when to notify; XENIO confirms "
-         "with the user first); remove (name).",
-         _obj({"action": _S, "name": _S, "schedule": _S, "task": _S, "repeat": _I}), RiskLevel.CONFIRM_REQUIRED, "xenio",
+         "Reminders and scheduled checks. REMINDERS (\"remind me at 3 to call mom\"): action remind, text = what to "
+         "remind, when = 'at 3 pm' / 'in 20 minutes' / 'tomorrow at 9' / 'every day at 8 am' / ISO 2026-10-23T15:00; "
+         "it pops up on the Mac and is spoken at that time, no model involved. Use THIS for reminders, never todo_list. "
+         "CHECKS (\"tell me every morning what's on my calendar\"): action create, task = what to check, schedule = "
+         "'in 2h' / ISO time (once) or 'every 2h' / cron '0 8 * * *' (recurring, at most every 15 minutes); they run "
+         "unattended with read-only tools and the user confirms first. action list shows both; action remove (id, or "
+         "words from the reminder/check). Only say a reminder is set when this tool returned it.",
+         _obj({"action": _S, "text": _S, "when": _S, "name": _S, "schedule": _S, "task": _S, "id": _S, "repeat": _I}),
+         RiskLevel.CONFIRM_REQUIRED, "xenio",
          "xenio_schedule", schedule),
     Tool("notifications.list",
          "XENIO's notifications (results of scheduled checks). action: list (unread, default), recent, clear (mark read).",
@@ -343,6 +418,18 @@ TOOLS: list[Tool] = [
     Tool("integrations.status",
          "Which personal services are connected (calendar, email, GitHub, tasks, scheduler) and the exact setup step for "
          "those that are not.", _obj({}), RiskLevel.READ, "xenio", "xenio_integrations", integrations_status),
+    Tool("context.resume",
+         "What XENIO's records say about ongoing work: the project in focus, the engineering team's latest runs (status, "
+         "tests XENIO ran, what was verified, applied or pushed, the next step), what is left to fix (failed tasks, "
+         "failing tests, reviewer and security findings) and open tasks. Call it FIRST when the user asks to continue, "
+         "resume or pick up earlier work, asks what is next or what to fix next, or asks how far the work got. about = "
+         "the project or work they named, if any. If it says several pieces of work could be meant, ask which one. Only "
+         "what it returns counts as progress.",
+         _obj({"about": _S}), RiskLevel.READ, "xenio", "xenio_resume", resume),
+    Tool("location.current",
+         "Where the user is (place, coordinates when known) and their local time and time zone. Use it for weather, "
+         "local time, sunrise, 'near me' or travel questions. If it is not set, ask the user where they are.",
+         _obj({}), RiskLevel.READ, "xenio", "xenio_location", location),
 ]
 
 
