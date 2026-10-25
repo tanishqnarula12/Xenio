@@ -1,283 +1,124 @@
-# XENIO — personal AI operating system (powered by Hermes)
+<p align="center">
+  <img src="docs/assets/xenio-banner.svg?v=4" alt="XENIO — a voice-first control layer for Hermes Agent" width="100%">
+</p>
 
-XENIO is the voice, interface, safety and orchestration layer around an installed
-[Hermes Agent](https://github.com/NousResearch/hermes-agent). Hermes does all the thinking —
-memory, skills, tools, subagents, web, terminal, files. XENIO gives it a terminal and a
-hands-free voice interface, and makes sure dangerous actions are confirmed by you first.
+<p align="center">
+  <strong>Your assistant, with a voice — and your approval in the loop.</strong><br>
+  XENIO gives <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> a hands-free voice interface, a desktop UI, and a safety layer for the tools it can use.
+</p>
 
+<p align="center">
+  <a href="https://github.com/tanishqnarula12/Xenio/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/tanishqnarula12/Xenio?style=flat&color=8b9cff&label=stars"></a>
+  <a href="https://github.com/tanishqnarula12/Xenio/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/tanishqnarula12/Xenio?style=flat&color=76dfcb"></a>
+  <img alt="Python" src="https://img.shields.io/badge/Python-voice%20%26%20orchestration-3776AB?style=flat&logo=python&logoColor=white">
+  <img alt="React and TypeScript" src="https://img.shields.io/badge/React%20%2B%20TypeScript-desktop%20UI-3178C6?style=flat&logo=react&logoColor=white">
+</p>
+
+<p align="center">
+  <a href="#get-started">Get started</a> ·
+  <a href="#what-it-does">What it does</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/SECURITY_MODEL.md">Safety model</a> ·
+  <a href="docs/SETUP.md">Full setup guide</a>
+</p>
+
+---
+
+## The idea
+
+Talk naturally. XENIO handles the voice, desktop controls, approvals, and interface; Hermes remains the assistant that reasons and uses tools. Actions that need your consent pause for an explicit approval before they run.
+
+```text
+  your voice ──► wake word & speech ──► XENIO ──► Hermes Agent
+                                           │           │
+                                           │           ├── tools & skills
+                                           │           └── answer
+                                           ▼
+                                  safety checks + approvals
+                                           │
+                                           └──► spoken reply
 ```
-microphone → local wake word → STT → XENIO → Hermes (ACP) → reply → TTS → speaker
-```
 
-Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · how Hermes is reached:
-[docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md) · setup: [docs/SETUP.md](docs/SETUP.md) ·
-web/browser/GitHub: [docs/WEB_CAPABILITIES.md](docs/WEB_CAPABILITIES.md) · permissions:
-[docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) · V4: [memory](docs/MEMORY_ARCHITECTURE.md) ·
-[personal integrations](docs/PERSONAL_INTEGRATIONS.md) · [proactive agent](docs/PROACTIVE_AGENT.md) ·
-[prompt-injection security](docs/PROMPT_INJECTION_SECURITY.md)
+## What it does
 
-## Quick start
+|  |  |
+|---|---|
+| **Talk, then keep talking**<br>Wake-word voice, interruption, follow-up listening, and replies spoken as they arrive. | **A real desktop companion**<br>Open and control apps, work with files, manage music, and see what XENIO is doing. |
+| **Approvals where they matter**<br>Permission checks sit in front of tool actions; risky actions need a clear yes, and some are blocked. | **Mission Control UI**<br>Conversation, voice orb, tasks, projects, schedules, tools, activity, and pending approvals in one place. |
+| **Useful without a model round-trip**<br>Common commands like app launch, volume, music, and time use a fast path. | **A team for engineering work**<br>Specialist agents work in isolated checkouts; applying changes, pushing, and opening PRs each need your approval. |
 
-macOS (this Mac):
+XENIO also supports screen questions when you ask, personal context integrations, and scheduled briefings. See the [capabilities guide](docs/ARCHITECTURE.md) and the [UI guide](docs/UI.md).
+
+## Get started
+
+### You’ll need
+
+- Python and Node.js/npm
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed and configured
+- Speech service credentials for the voice features you enable
+
+### Install
 
 ```bash
-cd ~/Desktop/Xenio/"Xenio Personal Ai"
-.venv/bin/python -m app.main --health           # system check (names any missing macOS permission)
-.venv/bin/python -m app.main                    # text mode
-.venv/bin/python -m app.main --voice            # voice mode: say "Hey Xenio", then your request
-.venv/bin/python -m app.main --ui               # Mission Control in its own window (--ui-browser: in the browser)
-                                                 # (also listens for "Hey Xenio" and talks back, like --voice, and
-                                                 # puts a floating orb over your apps: triple-press Space for the quick
-                                                 # chat or voice; see docs/V2_EVERYWHERE.md)
+git clone https://github.com/tanishqnarula12/Xenio.git
+cd Xenio
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+cp .env.example .env             # Windows PowerShell: Copy-Item .env.example .env
 ```
 
-The interface needs one build first: `cd ui && npm install && npm run build`. What it shows and how it is secured:
-[docs/UI.md](docs/UI.md). V3's Mission Control (memory you can correct and delete, "continue where we left off", the
-tool-call audit, approvals that explain themselves, skills on/off): [docs/V3_MISSION_CONTROL.md](docs/V3_MISSION_CONTROL.md).
+Add the credentials for the features you want to use to `.env`, then check the setup:
 
-Windows:
-
-```powershell
-.\.venv\Scripts\Activate.ps1          # or prefix commands with .\.venv\Scripts\python.exe
-python -m app.main --health           # system check (add --live to call Hermes/STT/TTS for real)
-python -m app.main                    # text mode
-python -m app.main --voice            # voice mode: say "Hey Xenio", then your request
-python -m app.main --connect-google   # one-time: Calendar + read-only Gmail (your own Google OAuth client)
-python -m app.main --briefing         # the daily briefing, printed (no model call)
+```bash
+python -m app.main --health
+python -m app.main
 ```
 
-First-time setup on a new machine: see [docs/SETUP.md](docs/SETUP.md).
+Launch the interface with `python -m app.main --ui`. Build it once first:
 
-## Instant commands (fast path)
-
-Simple commands never wait for the model: XENIO does them itself and answers in well under a second (measured on
-the MacBook Air: the time 0-2 ms, volume 0.13 s, opening an app with its window verified 0.8 s, quitting one 0.08 s,
-finding a song 0.9 s and opening exactly one tab).
-
-* "Open Spotify" · "switch to Safari" · "minimize Discord" · "close Calculator" · "open YouTube"
-* "Play Kesariya" · "Tum Hi Ho chalao" · "play Believer on Spotify" · "pause" · "agla gaana" · "previous song"
-* "Volume up" · "awaaz kam karo" · "volume 40" · "mute" · "what time is it" · "kitne baje hain"
-
-The same safety policy decides first; anything that needs your yes, or that is more than such a command, goes to
-Hermes as before (and Hermes is told what XENIO just did, so "close it" works). Songs open on YouTube in one tab;
-with `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` in `.env` they play in the Spotify app. `XENIO_FAST_PATH=false`
-turns it off.
-
-## Text mode
-
-```
-XENIO > hello
-
-XENIO:
-Hello! I'm XENIO. How can I help you today?
+```bash
+cd ui
+npm install
+npm run build
+cd ..
+python -m app.main --ui
 ```
 
-Commands: `/new` (fresh conversation), `/memory [words]` (what Hermes remembers), `/help`,
-`/exit`. **Ctrl+C** while XENIO is answering stops the answer; at the prompt it quits. The
-conversation continues across restarts (`--new-session` starts over).
+The [setup guide](docs/SETUP.md) covers Hermes, OS permissions, voice providers, Google integrations, and troubleshooting. Run `python -m app.main --help` for the available options. For the floating orb and quick chat, see [V2](docs/V2_EVERYWHERE.md); for Mission Control workflows, see [V3](docs/V3_MISSION_CONTROL.md).
 
-## Voice mode
+## Safety, by design
 
-* Say **"Hey Xenio"** (or just "Xenio") and your request — in one breath or after the beep. Replies
-  are printed and spoken.
-* **XENIO waits for you to finish, like a person.** It starts transcribing at your first pause; once
-  your words form a finished sentence your turn ends right away, but if they trail off ("open the…",
-  "search for, um…") it waits up to 2 s for the rest instead of cutting you off. Silero voice-activity
-  detection runs on the device and ignores fans and background noise.
-* **Speech recognition**: nabh.cloud's Whisper large-v3-turbo (set to English in `.env`), about
-  1.3–2 s per request. The connection is kept open and pre-warmed the moment you start talking.
-  (On-device Moonshine is still available with `XENIO_STT_ENGINE=local`, but it misheard most real
-  requests, e.g. "Stop Xenio" became "Stubbs's Inyo".)
-* **Ending a conversation**: "thanks", "that's all", "stop", "never mind", "bye" get an instant reply
-  ("Anytime.", "Okay.") and XENIO goes back to sleep — Hermes is not asked. "Okay" / "no" right after
-  XENIO asked you something count as your answer. Background sounds that are not words are ignored.
-* **Real time**: XENIO starts speaking the first sentence of the answer while Hermes is still writing the
-  rest. If the answer takes a moment it says so right away ("One moment.") and tells you what it is doing
-  ("Checking your calendar.", "Searching the web."). A sentence that claims a result ("Done!") is only
-  spoken after the tool results confirm it. One audio stream stays open, so speech starts in milliseconds.
-  Every part can be switched off in `.env` (see `.env.example`).
-* **Conversation mode**: after each answer XENIO keeps listening for 8 s, so just keep talking —
-  no wake word needed. Stay quiet and it goes back to sleep until "Hey Xenio".
-* Spoken answers are short (1–3 sentences) unless you ask for detail.
-* **Interrupt any time** by saying **"Xenio"** (or "Xenio, stop" / "Hey Xenio") while it thinks or
-  talks: it goes quiet within a fraction of a second and listens to what you say next
-  ("Xenio — actually, what about tomorrow?"). When XENIO's own voice does not reach the mic
-  (headphones, or this laptop's built-in echo cancellation) you can interrupt by **just talking**:
-  XENIO measures its echo while it speaks and enables this automatically; it reacts only to speech
-  (not to a cough or music), and the words you said while interrupting are kept. Check it with
-  `python -m app.main --barge-in-test`.
-* `--no-wake` = push-to-talk (press Enter, then speak).
-* Wake-word and voice-activity detection run locally. Only the audio of your request (never anything
-  before the wake word, and nothing while XENIO is idle) is sent to the speech-recognition API.
+XENIO checks tool requests against its permission policy before execution. Destructive, external, or otherwise sensitive actions require approval; high-risk actions require a stronger confirmation, and secrets are blocked. The UI is bound to localhost and uses a per-run token. See the [security model](docs/SECURITY_MODEL.md), [prompt-injection defenses](docs/PROMPT_INJECTION_SECURITY.md), and [UI security notes](docs/UI.md#security-boundaries).
 
-## What XENIO can do on your computer
+## Under the hood
 
-Just say it — no tool names needed. Hermes picks the tool, XENIO checks it, then it runs:
+- **Core:** Python · Hermes Agent ACP · permission gate and `xenio-guard` plugin
+- **Voice:** wake-word detection · voice activity detection · speech recognition · streaming speech output
+- **Interface:** React · TypeScript · GSAP · local HTTP API and server-sent events
+- **Platforms:** macOS and Windows desktop support
 
-* "Create a folder called Projects on my Desktop" · "List the files in Downloads"
-* "Create notes.txt in that folder containing …" · "Rename report.docx to final.docx"
-* "Delete the old folder" (asks first; goes to the Trash / Recycle Bin) · "What's my Python version?"
-* "Run the tests" · "What's the git status of this project?"
-* "Open Spotify" · "Open VS Code" (opened only when its window really appears; an app that isn't installed is said
-  to be not installed) · "Open Terminal and print Hello World" (a new, visible Terminal window runs it, with the same
-  command rules as XENIO's hidden terminal)
-* "What's playing on Spotify?" · "Pause the music" · "Next song" (the player that really plays; unconfirmed results
-  are reported as unconfirmed)
-* "In WhatsApp, open my chat with Rahul and write …" (needs the Accessibility permission; sending always asks first)
+## Project map
 
-## Web, browser and GitHub
-
-* "Search the official Hermes documentation" · "Research how MCP works" · "Find the cause of this error"
-  — Hermes searches (`web_search`), reads the best 1–3 sources (`web_extract`) and answers from them.
-* "Research whether I should use PostgreSQL or MongoDB for this project" — looks at the project
-  first, then compares sourced facts and keeps them apart from its own conclusion.
-* "Open GeeksforGeeks" / "show me the Strava API docs on my laptop" — opens the page in **your**
-  browser (`xenio_open_url`). Hermes' own browser (for reading dynamic pages, clicking, typing) is
-  invisible unless you set `XENIO_SHOW_BROWSER=true`.
-* "Download the PDF from …" — saved to Downloads, never over an existing file, never opened or run.
-* "Create a branch", "commit these changes", "push the branch", "show me open issues" — git through
-  Hermes' terminal; GitHub through `gh` when installed (otherwise public GitHub data via the web).
-
-Under every reply XENIO prints what actually ran and how it ended (`[done]` / `[FAILED] – reason` /
-`[declined]`), straight from Hermes' tool results, and the **sources** a web answer used (title,
-link) — XENIO never reports something as done that the tool didn't confirm, and never shows a
-source that was not actually searched or read.
-
-## Personal context (V4)
-
-* "What do I have tomorrow?" · "What's my next meeting?" · "How busy is my calendar today?" (Google Calendar)
-* "Do I have any important emails?" · "Find the email from the dean about exams" (read-only; XENIO cannot send email)
-* "What issues are open in my repository?" · "Did the tests pass on final-crm?" (GitHub)
-* "Add a task: finish the CRM report by Friday" · "What tasks are pending?" · "Mark it done"
-* "I'm working on the CRM analytics feature" → later "check the backend" means that project; "What was the
-  last decision on this project?"
-* "Remember that the CRM backend uses PostgreSQL." Lasting facts only, never secrets; see
-  [docs/MEMORY_ARCHITECTURE.md](docs/MEMORY_ARCHITECTURE.md).
-* "Give me my daily briefing." Calendar, important email, tasks, project and GitHub, with unavailable parts named.
-* "Every morning at 8, summarize my calendar." A read-only scheduled check on Hermes' scheduler (asks first;
-  recurring at most every 15 minutes). Results arrive as notifications, printed or spoken when XENIO is idle.
-
-Not connected yet? XENIO says so and gives the setup step; it never invents events, emails or tasks.
-`--health` shows what is connected. Emails, web pages, issues and documents are treated as **data**: text in
-them that tries to give orders is flagged, and XENIO then asks before doing anything but reading
-([docs/PROMPT_INJECTION_SECURITY.md](docs/PROMPT_INJECTION_SECURITY.md)).
-
-## Screen awareness (V5)
-
-* "Hey Xenio, look at my screen." · "What's wrong here?" · "Read the text on my screen." · "What app is open?"
-  · "Explain this graph." · "Summarize this page." Then follow-ups like "What line was that on?"
-* XENIO takes one screenshot of your main display when you ask, has your main model (gpt-6-luna, same
-  subscription, no extra cost) describe it, and Hermes answers. The voice says "Taking a look at your screen."
-  right away; the answer typically takes 10-20 s.
-* Private by design: the screenshot stays in memory and is discarded at once (never saved, never logged),
-  only a text description reaches Hermes, passwords and API keys on screen are not read out, and text on the
-  screen can never give XENIO orders. XENIO looks only when you refer to your screen (otherwise it asks), never
-  in scheduled checks, and it cannot click or type on the screen.
-* Details: [docs/VISION_CAPABILITIES.md](docs/VISION_CAPABILITIES.md) · [docs/VISION_ARCHITECTURE.md](docs/VISION_ARCHITECTURE.md)
-  · [docs/VISION_SECURITY.md](docs/VISION_SECURITY.md).
-
-## Engineering team (V6)
-
-* "Inspect my project and explain its architecture." · "Plan how to add a settings page." · "Add password reset to
-  my CRM." · "Write tests for this module." · "Review my changes for security problems." · "Run the test suite and
-  explain the failures." · "What are you working on?" · "Cancel the engineering task."
-* XENIO plans, hands tasks to specialist agents (planner, frontend, backend, database, tester, security reviewer,
-  code reviewer, docs) that run as Hermes sessions in isolated git worktrees, tests the result itself, reviews it and
-  reports with evidence. Small changes use one engineer, not a team. A team plan waits for your "go ahead".
-* Your checkout and uncommitted work are never touched by a run; applying the result to your files, pushing and
-  opening a pull request each ask for your confirmation. Agents cannot push, install packages, use the network,
-  deploy or touch real databases, and each one may change only its task's files (enforced by the guard).
-* Terminal: `.venv/bin/python -m app.main --engineer "Add password reset" --repo ~/code/crm`.
-* Details: [docs/ENGINEERING_TEAM.md](docs/ENGINEERING_TEAM.md) · [roles](docs/AGENT_ROLES.md) ·
-  [workflows](docs/ENGINEERING_WORKFLOWS.md) · [security](docs/ENGINEERING_SECURITY.md) · [audit](docs/V6_BASELINE.md).
-
-## Safety
-
-Every tool call Hermes makes is checked first by XENIO's permission engine
-(`app/safety/policy.py`, enforced inside Hermes by the `xenio-guard` plugin — install/update with
-`python -m app.main --install-guard`). Details: [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
-
-| Level | Examples | What happens |
-|---|---|---|
-| READ | list/read files, `git status`, `python --version`, web search, reading pages, opening a page in your browser, `gh pr list`, reading calendar/email/GitHub/tasks, the briefing, looking at your screen when you ask | runs |
-| SAFE_WRITE | create folders/files in your folders, `git add/commit`, creating a branch, typing/clicking ordinary things on a page, searching on a site, downloading a document, adding/completing tasks, project notes, memory | runs |
-| CONFIRM_REQUIRED | delete or move files, `git push/merge`, deleting a branch, submitting forms, posting/sending/uploading, `gh issue/pr create`, `gh pr merge`, downloading a program, creating a calendar event, deleting a task, creating a scheduled check, unknown commands; anything but reading right after outside content tried to give instructions | XENIO asks: *"This will … Do you want me to continue?"* — say **yes** or **no** |
-| HIGH_RISK | payments/purchases, password/2FA/account changes, force-push, `git branch -D`, releases, repo settings, deleting outside your folders | you must say **confirm** |
-| blocked | `.env`/SSH keys/OAuth tokens/saved browser passwords, cookies and site storage, printing API keys/tokens (`gh auth token`), putting a secret into a web page, memory, task or project, sending email (V4), deleting system or top-level folders | never runs; Hermes is told why |
-
-Unclear answers get *"Please confirm yes or no."*; silence, unrelated sentences, timeouts and errors
-always mean **no**. A "no" cancels only that action: if you ask again later, XENIO asks again.
-API keys/tokens that appear in any tool output are redacted before Hermes sees them.
-Extra trusted folders (e.g. `D:\Projects`): `XENIO_ALLOWED_DIRS` in `.env`.
-
-## Configuration
-
-All settings are in `.env` (copy `.env.example`). Required: `STT_API_KEY`, `TTS_API_KEY`.
-Everything else has defaults — see the comments in [.env.example](.env.example). Hermes needs
-nothing from XENIO; it keeps using its own configuration (including its model — see
-[docs/SETUP.md](docs/SETUP.md#model-reliability) for stronger models; XENIO never changes it).
-
-Logs: `%LOCALAPPDATA%\xenio\logs\xenio.log` (keys and tokens are redacted). Add `-v` to see INFO
-logs in the console.
-
-## Tests
-
-```powershell
-python -m pytest -q
+```text
+app/                 assistant, orchestration, safety, voice, tools, integrations
+app/ui/              local API, events, approvals, and UI controller
+ui/                  React + TypeScript interface
+hermes_plugin/       xenio-guard policy enforcement inside Hermes
+tests/                Python and UI test suites
+docs/                architecture, setup, security, and capability guides
 ```
 
-No test calls a real API: the Hermes bridge is tested against a fake ACP agent over real stdio,
-STT/TTS against mocked HTTP, downloads against a local test web server.
+## Docs
 
-## Troubleshooting
+- [Setup and troubleshooting](docs/SETUP.md)
+- [Architecture](docs/ARCHITECTURE.md) · [Hermes integration](docs/HERMES_INTEGRATION.md)
+- [UI and local API](docs/UI.md)
+- [Security model](docs/SECURITY_MODEL.md) · [Engineering security](docs/ENGINEERING_SECURITY.md)
+- [Engineering team and workflows](docs/ENGINEERING_TEAM.md) · [Agent roles](docs/AGENT_ROLES.md)
+- [Personal integrations](docs/PERSONAL_INTEGRATIONS.md) · [Memory](docs/MEMORY_ARCHITECTURE.md)
+- [Voice](docs/ARCHITECTURE.md#voice-mode) · [Screen awareness](docs/VISION_CAPABILITIES.md)
 
-| Symptom | Fix |
-|---|---|
-| "I can't reach my reasoning engine right now." | `hermes status`; `hermes acp --check`; check the model/provider works with `hermes -z "hi"` |
-| Voice mode keeps saying "I didn't hear anything" | `python -m app.main --mic-test` shows what XENIO hears; `-v` logs the levels of every recording. Unmute / raise input volume, pick a device (`python -m sounddevice` → `XENIO_INPUT_DEVICE`), or set `XENIO_SPEECH_THRESHOLD` |
-| Can't interrupt XENIO while it talks | `python -m app.main --barge-in-test` tells you whether your voice reaches the mic during playback; if not, use headphones or lower the speaker volume |
-| Wake word never triggers | speak clearly "Hey Xenio" / "Xenio"; raise sensitivity `XENIO_WAKE_SENSITIVITY=0.7`; or use `--no-wake` |
-| Wakes by itself | lower `XENIO_WAKE_SENSITIVITY=0.3`, or `XENIO_WAKE_NAME_ONLY=false` |
-| "Sorry, I didn't catch that." every time | check `STT_API_KEY`; `python -m app.main --health --live` |
-| XENIO cuts you off mid-sentence | raise `XENIO_TURN_PATIENCE_SECONDS` (default 2) in `.env` |
-| Replies printed but not spoken | check `TTS_API_KEY`; the log file has the TTS error |
-| Health: `Safety … not active` or "XENIO's tools are not enabled" | `python -m app.main --install-guard` |
-| XENIO says a tool doesn't exist (`xenio_…`) | run `--install-guard`, then restart XENIO |
-| A spoken file/folder name comes out wrong ("Xenio test" vs "XenioTest") | say it again or spell it; XENIO feeds recently used names to speech recognition, so it improves after the first use |
-| Something was blocked that you want allowed | if it's a folder you trust, add it to `XENIO_ALLOWED_DIRS`; secrets and system folders stay blocked by design |
-| First start is slow | Hermes cold start is ~30 s; later starts take a few seconds |
-| "Open X" works but nothing appears | XENIO opens pages in your default browser (`xenio_open_url`); if the model used Hermes' hidden browser instead, ask "open it in my browser" |
-| A page "could not be read" | the actual reason is printed after `[FAILED]`; some sites block automated reading — ask XENIO to open it in your browser |
-| GitHub issues/PRs of private repos | install the GitHub CLI (`winget install GitHub.cli`) and run `gh auth login` yourself |
-| Answers ignore instructions / pick the wrong tool | check which model answered (`--health` shows the chain; a free fallback is weaker) — see [docs/SETUP.md](docs/SETUP.md#model-reliability) |
-| "Google is not connected" | [docs/PERSONAL_INTEGRATIONS.md](docs/PERSONAL_INTEGRATIONS.md#google-calendar--gmail-one-sign-in-minimal-permissions), then `--connect-google` |
-| Google sign-in stopped working after a week | your OAuth app is in "Testing" (7-day tokens): publish it, then `--connect-google` again |
-| Scheduled checks never report | XENIO must be running (or a Hermes gateway); `python -m app.main --tick` runs what is due now; `hermes cron list` |
-| "openai-codex cannot look at images right now" | `hermes auth reset openai-codex` (a cooldown on another model blocks it; `--health` shows it), then ask again |
-| XENIO describes an old screen | say "look again"; a capture is only taken when asked |
-| The screen capture comes back black | the screen is locked, or the window blocks screenshots (protected video, some banking/password apps) |
+---
 
-## Project layout
-
-```
-app/        main.py · config.py · orchestrator.py · health.py · logging_setup.py · sources.py
-            notifications.py · proactive.py · briefing.py
-  hermes/   client.py (interface) · bridge.py (ACP transport) · adapter.py (sessions) · guard.py · model_info.py
-  voice/    audio.py · stt.py · tts.py · wakeword.py · speech_text.py · assistant.py
-  safety/   policy.py (permission engine) · permissions.py (confirmations)
-  tools/    base.py · registry.py · filesystem.py · terminal.py · web.py · github.py · personal.py · vision.py
-  vision/   capture.py (screen capture) · providers.py (vision models) · service.py (look, mask, discard)
-  desktop/  common.py · service.py · apps.py · input.py · stop.py · Windows: windows.py win32.py uia.py ·
-            macOS: macos.py (ctypes + accessibility helper) mac_windows.py ax.py
-  engineering/  V6: service.py · orchestrator.py · agents.py · graph.py · roles.py · repo.py · verify.py ·
-            security.py · prompts.py
-  fastpath.py · media.py   simple commands without the model (apps, music, volume, time)
-  integrations/  base.py · google.py · calendar.py · email.py · github.py
-  personal/ store.py (personal.db) · tasks.py · projects.py
-  memory/   manager.py          interface/ console.py
-hermes_plugin/xenio-guard/      Hermes plugin enforcing XENIO's policy
-tests/      pytest suite + fake ACP agent
-docs/       ARCHITECTURE.md · HERMES_INTEGRATION.md · HERMES_CAPABILITIES.md · WEB_CAPABILITIES.md
-            SECURITY_MODEL.md · SETUP.md · MEMORY_ARCHITECTURE.md · PERSONAL_INTEGRATIONS.md
-            PROACTIVE_AGENT.md · PROMPT_INJECTION_SECURITY.md
-```
+<p align="center"><sub>Built to make a capable assistant feel natural to use — while keeping you in control.</sub></p>

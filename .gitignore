@@ -32,5 +32,8 @@ google_token.json
 ui/node_modules/
 ui/dist/
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Built native helpers (from native/*/build.sh)
 native/build/

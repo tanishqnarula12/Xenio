@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="44" y1="24" x2="1134" y2="312" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101B36"/><stop offset=".55" stop-color="#171A35"/><stop offset="1" stop-color="#301A46"/>
+    </linearGradient>
+    <linearGradient id="orb" x1="896" y1="72" x2="1063" y2="247" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#86F7E5"/><stop offset=".48" stop-color="#8A9CFF"/><stop offset="1" stop-color="#D895FF"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="matrix(170 0 0 148 997 157)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8A9CFF" stop-opacity=".36"/><stop offset="1" stop-color="#8A9CFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orb-core" cx="0" cy="0" r="1" gradientTransform="matrix(76 0 0 78 969 124)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E6FFFF"/><stop offset=".18" stop-color="#A9FFF2"/><stop offset=".48" stop-color="#7A9BFF"/><stop offset=".78" stop-color="#A17CFF"/><stop offset="1" stop-color="#E28FFF" stop-opacity=".8"/>
+    </radialGradient>
+    <radialGradient id="orb-highlight" cx="0" cy="0" r="1" gradientTransform="matrix(38 0 0 32 966 125)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity=".58"/><stop offset="1" stop-color="white" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="814" y="7" width="330" height="310" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse"><feGaussianBlur stdDeviation="24"/></filter>
+    <filter id="core-glow" x="884" y="46" width="222" height="224" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="320" rx="28" fill="url(#bg)"/>
+  <path d="M0 254c191-43 300-28 462 12 149 37 254 17 398-26 144-43 225-51 340-11v91H0v-66Z" fill="#0B1328" fill-opacity=".55"/>
+  <circle cx="995" cy="158" r="118" fill="url(#glow)" filter="url(#blur)"/>
+  <circle cx="995" cy="158" r="81" fill="none" stroke="url(#orb)" stroke-opacity=".28" stroke-width="1" stroke-dasharray="2 8">
+    <animateTransform attributeName="transform" type="rotate" from="0 995 158" to="360 995 158" dur="52s" repeatCount="indefinite"/>
+  </circle>
+  <ellipse cx="995" cy="158" rx="94" ry="34" transform="rotate(-32 995 158)" stroke="url(#orb)" stroke-opacity=".68" stroke-width="1.5" stroke-dasharray="80 520">
+    <animate attributeName="stroke-dashoffset" values="600;0" dur="9s" repeatCount="indefinite"/>
+  </ellipse>
+  <circle cx="995" cy="158" r="66" fill="#8A9CFF" opacity=".28" filter="url(#core-glow)">
+    <animate attributeName="r" values="62;79;62" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values=".2;.42;.2" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.2s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="995" cy="158" r="54" fill="#788CFF" stroke="url(#orb)" stroke-width="1.5" stroke-opacity=".8">
+    <animate attributeName="r" values="51;57;51" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.2s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="995" cy="158" r="54" fill="url(#orb-core)" opacity=".92">
+    <animate attributeName="r" values="51;57;51" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.2s" repeatCount="indefinite"/>
+  </circle>
+  <ellipse cx="976" cy="132" rx="27" ry="17" fill="url(#orb-highlight)" opacity=".74">
+    <animate attributeName="rx" values="23;28;23" dur="4.2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values=".55;.85;.55" dur="4.2s" repeatCount="indefinite"/>
+  </ellipse>
+  <path d="M948 154c23-19 66-24 94-6" stroke="#F2FFFF" stroke-opacity=".75" stroke-width="2" stroke-linecap="round" stroke-dasharray="64 120">
+    <animate attributeName="stroke-dashoffset" values="184;0" dur="6s" repeatCount="indefinite"/>
+  </path>
+  <path d="M950 173c23 22 62 26 90 10" stroke="#E5D8FF" stroke-opacity=".6" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="44 150">
+    <animate attributeName="stroke-dashoffset" values="194;0" dur="7s" repeatCount="indefinite"/>
+  </path>
+  <circle cx="995" cy="158" r="61" fill="none" stroke="#D8F9FF" stroke-opacity=".48" stroke-width="1.2">
+    <animate attributeName="r" values="61;69;61" keyTimes="0;.5;1" keySplines=".42 0 .58 1;.42 0 .58 1" calcMode="spline" dur="4.8s" repeatCount="indefinite"/>
+    <animate attributeName="stroke-opacity" values=".5;.08;.5" dur="4.8s" repeatCount="indefinite"/>
+  </circle>
+  <path d="M995 69v-17m0 212v-17M906 158h-17m212 0h-17m-151-63-12-12m150 150-12-12m0-126 12-12m-150 150 12-12" stroke="#A9B7FF" stroke-opacity=".65" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="884" cy="105" r="3" fill="#86F7E5"><animate attributeName="opacity" values=".3;1;.3" dur="3.8s" repeatCount="indefinite"/></circle>
+  <circle cx="1098" cy="215" r="4" fill="#D895FF"><animate attributeName="opacity" values="1;.35;1" dur="4.6s" repeatCount="indefinite"/></circle>
+  <circle cx="1070" cy="77" r="2.5" fill="#86F7E5"><animate attributeName="cy" values="77;72;77" dur="5s" repeatCount="indefinite"/></circle>
+  <text x="76" y="105" fill="#A6F7E8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" letter-spacing="4">VOICE · TOOLS · SAFETY</text>
+  <text x="72" y="190" fill="#F6F8FF" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="76" font-weight="750" letter-spacing="-3">XENIO</text>
+  <text x="78" y="232" fill="#C7D0EA" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="21">A voice-first control layer for Hermes Agent</text>
+  <rect x="78" y="263" width="150" height="1" fill="#536385"/>
+  <text x="78" y="289" fill="#9AA8C8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" letter-spacing="1.2">YOUR ASSISTANT. YOUR APPROVAL.</text>
+</svg>
