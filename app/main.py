@@ -55,6 +55,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     mode.add_argument("--disconnect-google", action="store_true", help="revoke and delete XENIO's Google sign-in")
     mode.add_argument("--briefing", action="store_true", help="print the daily briefing from the connected services")
     mode.add_argument("--tick", action="store_true", help="run due scheduled checks once (guarded) and print notifications")
+    mode.add_argument("--desktop-stats", action="store_true",
+                      help="what seeing and acting on the desktop really cost (measured: latency per stage, failures)")
     parser.add_argument("--client-file", help="with --connect-google: path of the downloaded client_secret*.json")
     parser.add_argument("--live", action="store_true", help="with --health: also make real Hermes/STT/TTS calls")
     parser.add_argument("--no-wake", action="store_true", help="with --voice: press Enter to talk instead of a wake word")
@@ -92,6 +94,10 @@ def build_orchestrator(settings: Settings, gate: PermissionGate) -> Orchestrator
     restarted = restart_stale_gateway(settings.data_dir, settings.hermes.command)
     hermes = create_hermes_client(settings.hermes, settings.data_dir)
     paths = build_path_policy(settings)
+    if settings.hermes.nabh is not None:
+        from app.integrations import nabh
+
+        nabh.configure(settings.hermes.nabh.env())
     orchestrator = Orchestrator(hermes, gate, paths, sources_file=settings.data_dir / "sources.jsonl",
                                 fast_path=build_fast_path(settings, paths))
     orchestrator.gateway_restarted = restarted  # the UI records it in Activity
@@ -423,6 +429,13 @@ async def _run_briefing(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _run_desktop_stats(settings: Settings, args: argparse.Namespace) -> int:
+    from app.desktop import metrics
+
+    print(metrics.describe(metrics.summary(settings.data_dir)))
+    return 0
+
+
 async def _run_tick(settings: Settings, args: argparse.Namespace) -> int:
     notifications, engine = build_proactive(settings)
     if engine is None:
@@ -501,6 +514,7 @@ def main(argv: list[str] | None = None) -> int:
         "disconnect-google": _run_disconnect_google,
         "briefing": _run_briefing,
         "tick": _run_tick,
+        "desktop-stats": _run_desktop_stats,
         "engineer": _run_engineer,
         "voice": _run_voice,
         "ui": _run_ui,
@@ -510,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
         (m for m, on in (("health", args.health), ("install-guard", args.install_guard),
                          ("mic-test", args.mic_test), ("barge-in-test", args.barge_in_test),
                          ("connect-google", args.connect_google), ("disconnect-google", args.disconnect_google),
-                         ("briefing", args.briefing), ("tick", args.tick), ("engineer", args.engineer),
+                         ("briefing", args.briefing), ("tick", args.tick), ("desktop-stats", args.desktop_stats), ("engineer", args.engineer),
                          ("voice", args.voice), ("ui", args.ui)) if on),
         "text",
     )

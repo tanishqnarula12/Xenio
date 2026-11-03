@@ -40,7 +40,8 @@ _MODE_ORDER = ("none", "read", "test", "write")
 FORBIDDEN_TOOLS = frozenset({"delegate_task", "memory", "cronjob", "cronjob_manage", "send_message", "computer_use",
                              "manage_connections", "skill_manage", "browser_exec", "browser_cdp", "browser_type",
                              "browser_click", "browser_vault", "xenio_gui", "xenio_open_app", "xenio_window",
-                             "xenio_delete_path", "xenio_download_file", "xenio_schedule", "xenio_open_url"})
+                             "xenio_delete_path", "xenio_download_file", "xenio_schedule", "xenio_open_url",
+                             "xenio_profile", "xenio_form", "xenio_browser", "xenio_teach", "xenio_image"})
 FREE_PROVIDERS = {"openai-codex", "copilot", "lmstudio", "ollama", "custom"}  # subscription or local: no credits
 
 

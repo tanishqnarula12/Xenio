@@ -140,6 +140,7 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         web = WKWebView(frame: content.bounds, configuration: config)
         web.autoresizingMask = [.width, .height]
         web.navigationDelegate = self
+        web.uiDelegate = self
         web.underPageBackgroundColor = graphite
         content.addSubview(web)
         panel.contentView = content
@@ -205,6 +206,19 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         let h = (body["height"] as? Double) ?? Double(size.height)
         let room = (panel.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
         return NSSize(width: max(48, min(560, w, room.width - 16)), height: max(48, min(760, h, room.height - 16)))
+    }
+
+    // MARK: choosing files (the chat's paperclip)
+
+    /// A web view shows no file chooser unless its app does this. Runs for Mission Control and the quick chat alike.
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping ([URL]?) -> Void) {
+        let chooser = NSOpenPanel()
+        chooser.allowsMultipleSelection = parameters.allowsMultipleSelection
+        chooser.canChooseDirectories = false
+        chooser.canChooseFiles = true
+        NSApp.activate(ignoringOtherApps: true)
+        chooser.begin { response in completionHandler(response == .OK ? chooser.urls : nil) }
     }
 
     // MARK: the quick chat (in the orb's own panel)

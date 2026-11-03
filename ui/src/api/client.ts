@@ -1,8 +1,9 @@
 // The typed client for XENIO's local API (/api/v1). The page holds no secrets: only the per-start session token XENIO
 // printed (it arrives in the URL fragment, which browsers never send to a server, and lives in this tab only).
 
+import type { CodeRun, ImageJob } from "./types";
 import type {
-  Agent, Approval, ContextBrief, HealthCheck, MemoryChange, MemoryList, PersonalTask, Project, Reminder, RunDetail, RunDiff,
+  Agent, Approval, ContextBrief, DesktopStats, HealthCheck, LearningOverview, LearningTopic, Lesson, MemoryChange, MemoryList, PersonalTask, UploadedFile, ProfileChange, ProfileData, Project, Reminder, RunDetail, RunDiff,
   RunSummary, ScheduledJob, SkillInfo, Snapshot, ToolCall, ToolInfo, UiSettings, UserLocation, WorkspaceProject, XenioEvent,
 } from "./types";
 
@@ -45,10 +46,20 @@ export interface Unavailable {
   reason?: string;
 }
 
+export interface LearningResult { ok?: boolean; result?: CodeRun; lesson?: number; [key: string]: unknown }
+
 export interface XenioApi {
   readonly demo: boolean;
   snapshot(signal?: AbortSignal): Promise<Snapshot>;
-  chat(text: string, via: "text" | "voice", quiet?: boolean): Promise<{ turn: string }>;
+  chat(text: string, via: "text" | "voice", quiet?: boolean, files?: string[]): Promise<{ turn: string }>;
+  upload(file: File): Promise<UploadedFile>;
+  image(id: string, signal?: AbortSignal): Promise<ImageJob>;
+  imageFile(id: string, signal?: AbortSignal): Promise<ArrayBuffer>;
+  changeImage(id: string, change: Record<string, unknown>): Promise<ImageJob & { jobs?: ImageJob[]; saved?: string }>;
+  learning(signal?: AbortSignal): Promise<LearningOverview>;
+  learningTopic(id: number, signal?: AbortSignal): Promise<LearningTopic>;
+  lesson(id: number, signal?: AbortSignal): Promise<Lesson>;
+  changeLearning(change: Record<string, unknown>): Promise<LearningResult>;
   cancel(): Promise<{ cancelled: boolean }>;
   newConversation(): Promise<{ ok: boolean }>;
   setPaused(paused: boolean): Promise<unknown>;
@@ -75,9 +86,12 @@ export interface XenioApi {
   schedules(signal?: AbortSignal): Promise<{ available: boolean; jobs: ScheduledJob[]; reminders?: Reminder[]; ticking?: boolean; timezone?: string; note?: string }>;
   memory(query: string, signal?: AbortSignal): Promise<MemoryList>;
   changeMemory(change: MemoryChange): Promise<{ ok: boolean; store: string; action: string }>;
+  profile(signal?: AbortSignal): Promise<ProfileData>;
+  changeProfile(change: ProfileChange): Promise<{ ok: boolean; value?: string; deleted?: boolean }>;
   context(query?: string, signal?: AbortSignal): Promise<ContextBrief>;
   activity(limit?: number, signal?: AbortSignal, offset?: number, kind?: ActivityKind): Promise<ActivityPage>;
   audit(limit?: number, signal?: AbortSignal): Promise<{ calls: ToolCall[] }>;
+  desktopStats(signal?: AbortSignal): Promise<DesktopStats>;
   setSkill(name: string, enabled: boolean): Promise<{ name: string; enabled: boolean }>;
   runDiff(id: string, signal?: AbortSignal): Promise<RunDiff>;
   startRun(request: RunRequest): Promise<{ status: string; note?: string; project?: string }>;
@@ -132,8 +146,8 @@ export class HttpApi implements XenioApi {
   }
 
   private async request<T>(method: string, path: string, options: { body?: unknown; raw?: BodyInit; type?: string;
-    signal?: AbortSignal; timeout?: number; binary?: boolean } = {}): Promise<T> {
-    const headers: Record<string, string> = { Authorization: `Bearer ${this.token}` };
+    signal?: AbortSignal; timeout?: number; binary?: boolean; headers?: Record<string, string> } = {}): Promise<T> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, ...options.headers };
     let body: BodyInit | undefined;
     if (options.raw !== undefined) {
       body = options.raw;
@@ -167,8 +181,21 @@ export class HttpApi implements XenioApi {
   }
 
   snapshot(signal?: AbortSignal) { return this.request<Snapshot>("GET", "/snapshot", { signal }); }
-  chat(text: string, via: "text" | "voice", quiet = false) {
-    return this.request<{ turn: string }>("POST", "/chat", { body: quiet ? { text, via, quiet } : { text, via } });
+  chat(text: string, via: "text" | "voice", quiet = false, files: string[] = []) {
+    return this.request<{ turn: string }>("POST", "/chat", { body: { text, via, ...(quiet ? { quiet } : {}), ...(files.length ? { files } : {}) } });
+  }
+  upload(file: File) {
+    return this.request<UploadedFile>("POST", "/uploads", { raw: file, type: "application/octet-stream", timeout: 180_000, headers: { "X-File-Name": encodeURIComponent(file.name) } });
+  }
+  image(id: string, signal?: AbortSignal) { return this.request<ImageJob>("GET", `/images/${id}`, { signal }); }
+  imageFile(id: string, signal?: AbortSignal) { return this.request<ArrayBuffer>("GET", `/images/${id}/file`, { signal, binary: true, timeout: 60_000 }); }
+  changeImage(id: string, change: Record<string, unknown>) { return this.request<ImageJob & { jobs?: ImageJob[]; saved?: string }>("POST", `/images/${id}`, { body: change, timeout: 30_000 }); }
+  learning(signal?: AbortSignal) { return this.request<LearningOverview>("GET", "/learning", { signal }); }
+  learningTopic(id: number, signal?: AbortSignal) { return this.request<LearningTopic>("GET", `/learning/topics/${id}`, { signal }); }
+  lesson(id: number, signal?: AbortSignal) { return this.request<Lesson>("GET", `/learning/lessons/${id}`, { signal }); }
+  changeLearning(change: Record<string, unknown>) {
+    // writing a lesson, and running or marking code, take longer than an ordinary request
+    return this.request<LearningResult>("POST", "/learning", { body: change, timeout: change.action === "compose" || change.action === "add_material" ? 400_000 : 90_000 });
   }
   cancel() { return this.request<{ cancelled: boolean }>("POST", "/chat/cancel", { body: {} }); }
   newConversation() { return this.request<{ ok: boolean }>("POST", "/chat/new", { body: {}, timeout: 70_000 }); }
@@ -222,6 +249,12 @@ export class HttpApi implements XenioApi {
   memory(query: string, signal?: AbortSignal) {
     return this.request<MemoryList>("GET", `/memory?q=${encodeURIComponent(query)}`, { signal });
   }
+  profile(signal?: AbortSignal) {
+    return this.request<ProfileData>("GET", "/profile", { signal });
+  }
+  changeProfile(change: ProfileChange) {
+    return this.request<{ ok: boolean; value?: string; deleted?: boolean }>("POST", "/profile", { body: change });
+  }
   changeMemory(change: MemoryChange) {
     return this.request<{ ok: boolean; store: string; action: string }>("POST", "/memory", { body: change });
   }
@@ -230,6 +263,7 @@ export class HttpApi implements XenioApi {
     return this.request<ActivityPage>("GET", `/activity?limit=${limit}&offset=${offset}&kind=${kind}`, { signal });
   }
   audit(limit = 200, signal?: AbortSignal) { return this.request<{ calls: ToolCall[] }>("GET", `/audit?limit=${limit}`, { signal }); }
+  desktopStats(signal?: AbortSignal) { return this.request<DesktopStats>("GET", "/desktop-stats", { signal }); }
   setSkill(name: string, enabled: boolean) {
     return this.request<{ name: string; enabled: boolean }>("PUT", `/skills/${encodeURIComponent(name)}`, { body: { enabled }, timeout: 60_000 });
   }
@@ -267,6 +301,8 @@ export class HttpApi implements XenioApi {
 }
 
 /** Server-Sent Events over fetch (so the token stays in a header, never in a URL), with replay and backoff. */
+const STREAM_SILENT_MS = 40_000;
+
 export class EventStream {
   private controller: AbortController | null = null;
   private stopped = false;
@@ -307,6 +343,7 @@ export class EventStream {
     if (this.stopped) return;
     this.onStatus(this.attempt === 0 ? "connecting" : "retrying");
     this.controller = new AbortController();
+    let stall: ReturnType<typeof setInterval> | undefined;
     try {
       const response = await fetch(`${this.url}?since=${this.lastSeq}`, {
         headers: { Authorization: `Bearer ${this.token}`, Accept: "text/event-stream" },
@@ -321,9 +358,14 @@ export class EventStream {
       this.onStatus("open");
       const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
       let buffer = "";
+      // the server says something at least every 15 s. A connection that went silent (after the Mac slept, say) would leave the orb on its last
+      // state for good and never reports an error by itself: it is dropped and picked up again, replaying what was missed
+      let heard = Date.now();
+      stall = setInterval(() => { if (Date.now() - heard > STREAM_SILENT_MS) this.controller?.abort(); }, 5_000);
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
+        heard = Date.now();
         buffer += value;
         let cut: number;
         while ((cut = buffer.indexOf("\n\n")) >= 0) {
@@ -346,6 +388,8 @@ export class EventStream {
       this.onStatus("retrying");
       const wait = Math.min(10_000, 500 * 2 ** Math.min(this.attempt, 5));
       this.timer = setTimeout(() => void this.connect(), wait);
+    } finally {
+      clearInterval(stall);
     }
   }
 }

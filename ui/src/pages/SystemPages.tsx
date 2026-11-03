@@ -65,6 +65,47 @@ export function IntegrationsPage() {
   );
 }
 
+const STAGE_WORDS: Record<string, string> = {
+  capture: "Screen capture", perception: "Reading a window", model: "Vision model", action: "Action", verification: "Checking the result",
+  task: "Whole request",
+};
+
+function seconds(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+/** What seeing and acting on the desktop really cost: measured, nothing estimated. */
+function DesktopEngine() {
+  const { app } = useApp();
+  const stats = useResource((s) => app.api.desktopStats(s), ["activity"], []);
+  return (
+    <Section title="Desktop engine" id="sys-desktop">
+      <Loaded resource={stats} what="desktop measurements">
+        {(data) => Object.keys(data.stages).length === 0
+          ? <Empty>Nothing measured yet. This fills in as XENIO reads the screen and acts on it.</Empty>
+          : (
+            <>
+              <table className="table">
+                <caption className="sr-only">What each step of seeing and acting really cost</caption>
+                <thead><tr><th scope="col">Step</th><th scope="col">Times</th><th scope="col">Median</th><th scope="col">Slowest 10%</th></tr></thead>
+                <tbody>
+                  {Object.entries(data.stages).map(([stage, s]) => (
+                    <tr key={stage}><td>{STAGE_WORDS[stage] ?? stage}</td><td>{s.n}</td><td>{seconds(s.median_ms)}</td><td>{seconds(s.p90_ms)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="meta">
+                {data.answered_without_a_model} of {data.looks} looks needed no model call; {data.vision_answers_reused} vision answers were reused.
+                {" "}Actions: {data.actions.total}, of which {data.actions.failed} failed and {data.actions.recovered} recovered.
+                {" "}Checks: {data.actions.verified} confirmed, {data.actions.not_as_expected} not as expected, {data.actions.unverified} could not tell.
+              </p>
+            </>
+          )}
+      </Loaded>
+    </Section>
+  );
+}
+
 export function SystemPage() {
   const { app } = useApp();
   const [force, setForce] = useState(0);
@@ -87,6 +128,7 @@ export function SystemPage() {
           <dt>CPU, memory, uptime</dt><dd className="meta">Not measured by XENIO</dd>
         </dl>
       </Section>
+      <DesktopEngine />
       <Section title="Checks" id="sys-checks">
         <Loaded resource={health} what="system checks">
           {(data) => data.checks.length ? (

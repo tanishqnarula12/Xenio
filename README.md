@@ -45,7 +45,7 @@ Talk naturally. XENIO handles the voice, desktop controls, approvals, and interf
 |---|---|
 | **Talk, then keep talking**<br>Wake-word voice, interruption, follow-up listening, and replies spoken as they arrive. | **A real desktop companion**<br>Open and control apps, work with files, manage music, and see what XENIO is doing. |
 | **Approvals where they matter**<br>Permission checks sit in front of tool actions; risky actions need a clear yes, and some are blocked. | **Mission Control UI**<br>Conversation, voice orb, tasks, projects, schedules, tools, activity, and pending approvals in one place. |
-| **Useful without a model round-trip**<br>Common commands like app launch, volume, music, and time use a fast path. | **A team for engineering work**<br>Specialist agents work in isolated checkouts; applying changes, pushing, and opening PRs each need your approval. |
+| **Useful without a model round-trip**<br>Common commands like app launch, volume, music, time, and "click Run" use a fast path. | **A team for engineering work**<br>Specialist agents work in isolated checkouts; applying changes, pushing, and opening PRs each need your approval. |
 
 XENIO also supports screen questions when you ask, personal context integrations, and scheduled briefings. See the [capabilities guide](docs/ARCHITECTURE.md) and the [UI guide](docs/UI.md).
 
@@ -114,6 +114,10 @@ docs/                architecture, setup, security, and capability guides
 - [Setup and troubleshooting](docs/SETUP.md)
 - [Architecture](docs/ARCHITECTURE.md) · [Hermes integration](docs/HERMES_INTEGRATION.md)
 - [UI and local API](docs/UI.md)
+- [Real-time desktop engine](docs/REALTIME_DESKTOP.md)
+- [Profile vault, forms and browser work](docs/AUTOFILL.md)
+- [The Teacher](docs/TEACHER.md)
+- [Image Studio](docs/IMAGE_STUDIO.md)
 - [Security model](docs/SECURITY_MODEL.md) · [Engineering security](docs/ENGINEERING_SECURITY.md)
 - [Engineering team and workflows](docs/ENGINEERING_TEAM.md) · [Agent roles](docs/AGENT_ROLES.md)
 - [Personal integrations](docs/PERSONAL_INTEGRATIONS.md) · [Memory](docs/MEMORY_ARCHITECTURE.md)

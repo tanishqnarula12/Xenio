@@ -62,11 +62,12 @@ def test_registers_tools_hooks_and_prompt(monkeypatch, tmp_path):
                               # V5.5 desktop control
                               "xenio_open_app", "xenio_list_apps", "xenio_window", "xenio_find_ui", "xenio_gui",
                               # music and sound (the fast path's player)
-                              "xenio_media",
+                              "xenio_media", "xenio_profile", "xenio_form", "xenio_browser", "xenio_teach", "xenio_image",
                               # V6 engineering team
                               "xenio_engineering"}
     assert not any("send" in name for name in ctx.tools)  # V4: no tool can send email
-    assert set(ctx.tools["xenio_look_at_screen"][1]["parameters"]["properties"]) == {"question", "target"}  # V5: observes
+    # V5: it only observes, and the model cannot point it anywhere else (no file path, no screen region)
+    assert set(ctx.tools["xenio_look_at_screen"][1]["parameters"]["properties"]) == {"question", "target", "need_pixels", "fresh"}
     assert all(toolset == "xenio" for toolset, _s, _h in ctx.tools.values())
     prompt = ctx.sections["xenio-guard.environment"]()
     assert str(DESKTOP) in prompt and "ONLY if its result reports success" in prompt

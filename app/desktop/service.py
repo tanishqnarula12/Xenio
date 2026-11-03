@@ -19,6 +19,9 @@ said yes where needed) before any method here is called. This module makes the a
   keeps a program from being written twice, and an ``outcome`` that says exactly what was verified, compiled and passed;
 * **full screen kept**: code is typed without Esc (measured: an Esc the page does not use ends Safari's full screen),
   and the window's full screen is checked before and after every action - restored if XENIO's own keys ended it;
+* **checked against the UI, not assumed** (V4): an action's ``expect`` says what the window should show afterwards and it
+  is read back through accessibility (or on-device OCR); ``batch`` runs a short sequence, judging each step by the policy
+  right before it runs and stopping at the first surprise;
 * **short-lived context**: which apps were opened or focused recently (names only, nothing from the screen).
 """
 
@@ -26,15 +29,19 @@ from __future__ import annotations
 
 import collections
 import difflib
+import json
+import os
 import re
 import sys
 import threading
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.desktop import apps as apps_mod
-from app.desktop import mac_terminal
+from app.desktop import mac_terminal, metrics
+from app.desktop import ocr as ocr_mod
 from app.desktop.clipboard import Clipboard, ClipboardError
 from app.desktop.input import MAX_EVENT_UNITS, DesktopController, InputError, Stopped, normalize_combo, parse_keys, split_units
 from app.desktop.stop import EscWatcher, stop_requested_since
@@ -42,7 +49,7 @@ from app.desktop.task import EditorTask, TaskState, TransitionError, outcome
 from app.desktop.uia import UIAClient, UIAError
 
 GUI_ACTIONS = ("move", "click", "double_click", "right_click", "scroll", "drag", "type", "key", "paste", "copy", "read",
-               "run")
+               "run", "batch")
 # the buttons that run code on a problem page or in an online editor, best first - never Submit
 RUN_BUTTONS = ("compile & run", "compile and run", "run code", "run", "run tests", "run test", "test run", "execute")
 _BUSY = re.compile(r"\b(?:compiling|running|executing|judging|pending|evaluating|processing|in queue|queued|waiting)\b"
@@ -77,6 +84,12 @@ PASTE_REFUSED = frozenset({"geeksforgeeks"})
 COPY_REFUSED = frozenset({"geeksforgeeks"})
 OWN_BUNDLES = ("local.xenio.",)  # XENIO's own windows (the orb, its quick chat, Mission Control): app "XENIO"
 _WORDISH = re.compile(r"[\w=]")  # a piece of code typed at once must not end in these (see _type_code)
+MIN_WINDOW_TEXT = 40  # characters: fewer means the accessibility tree does not really show this window (Electron apps)
+MAX_LOOK_WINDOWS = 3  # windows a look at the whole screen reads, front to back
+PAGE_CACHE_SECONDS = 1.0  # the guard's check, then the look itself: one read of the window
+EXPECT_TIMEOUT, MAX_EXPECT_TIMEOUT = 3.0, 10.0  # seconds an action waits for the UI to show what it should
+STATE_FILE = "desktop_state.json"
+KEEP_AWAKE_SECONDS = 90
 
 
 class DesktopError(Exception):
@@ -110,9 +123,12 @@ def _norm_text(text: str) -> str:
 class DesktopService:
     def __init__(self, catalog: apps_mod.AppCatalog | None = None, uia: UIAClient | None = None, controller=None,
                  windows=None, data_dir: Path | None = None, clock=time.time, screen_digest=None, sleep=time.sleep,
-                 terminal=None, clipboard=None):
+                 terminal=None, clipboard=None, ocr_reader=None):
+        real_windows = windows is None
         self.catalog = catalog or apps_mod.AppCatalog(data_dir)
         self._terminal = terminal or mac_terminal.run_in_terminal
+        # the real screen only with the real windows: services built on fakes never capture anything
+        self._ocr = ocr_reader or (ocr_mod.read_window if windows is None and ocr_mod.available() else None)
         if uia is None or windows is None:
             platform_windows, platform_uia = _platform_backends()
             uia, windows = uia or platform_uia(), windows or platform_windows
@@ -135,6 +151,9 @@ class DesktopService:
         self._tasks: dict[str, EditorTask] = {}  # per session: the current request's coding task
         self._paste_refused, self._copy_refused = set(PASTE_REFUSED), set(COPY_REFUSED)
         self._copy_was_refused = False  # the last read-back's copy was refused by the page
+        self._pages: dict[int, tuple[float, dict]] = {}  # a window's text, for PAGE_CACHE_SECONDS
+        self._real_windows = real_windows
+        self._awake_until = 0.0
 
     # ---- context ------------------------------------------------------------------------------------------------
 
@@ -313,31 +332,72 @@ class DesktopService:
         return str(getattr(window, "process", "") or "").lower() == "xenio" or \
             str(getattr(window, "bundle_id", "") or "").startswith(OWN_BUNDLES)
 
-    @staticmethod
-    def _coding(args: dict) -> bool:
-        action = str(args.get("action") or "").lower()
-        return action in ("read", "run") or (args.get("editor") is True and action in ("type", "paste", "copy"))
-
     def pick_window(self, args: dict, session: str = ""):
-        """The window an action works in, changing nothing. Reading a page, running code and writing into an editor
-        never work in XENIO's own windows: the orb's quick chat holds the keyboard while it is open (measured: a
-        program meant for the GeeksforGeeks editor was pasted into the chat box and reported verified). They go to
-        the window the task works in, else the app window right behind XENIO's. The policy probes this same window."""
+        """The window an action works in, changing nothing. Unless one is named, never XENIO's own (the orb, its quick
+        chat, Mission Control): the quick chat holds the keyboard while it is open (measured: a program meant for the
+        GeeksforGeeks editor was pasted into the chat box, and "submit" was clicked in XENIO's window). They go to the
+        window the task works in, else the app window right behind XENIO's. The policy probes this same window."""
         name = str(args.get("window") or "")
         if name:
             return self._window(name)
         fg = self.windows.active_app_window()
-        if fg is not None and (not self._coding(args) or not self.is_own(fg)):
+        if fg is not None and not self.is_own(fg):
             return fg
-        if fg is None and not self._coding(args):
-            raise DesktopError("no active window")
         task = self._tasks.get(session)
-        candidates = [w for w in self.windows.list_windows() if not w.is_shell and not w.minimized and not self.is_own(w)]
-        chosen = next((w for w in candidates if task is not None and w.hwnd == task.window), None) or \
+        # only real windows: the Finder desktop is listed with window id 0 (measured, 2026-10-28) - it cannot be raised
+        # ("that window no longer exists") and an unset task window is 0 too, so it was picked over Safari
+        candidates = [w for w in self.windows.list_windows()
+                      if w.hwnd > 0 and not w.is_shell and not w.minimized and not self.is_own(w)]
+        chosen = next((w for w in candidates if task is not None and task.window and w.hwnd == task.window), None) or \
             (candidates[0] if candidates else None)
         if chosen is None:
-            raise DesktopError("only XENIO's own window is open: there is no page or editor to work in", "NOT_SUPPORTED")
+            raise DesktopError("no app window is open to work in" if fg is None else
+                               "only XENIO's own window is open: there is no page or editor to work in", "NOT_SUPPORTED")
         return chosen
+
+    def visible_windows(self, target: str = "screen", session: str = "") -> list:
+        """The windows a look would see, front to back: the active one, or (the whole screen) those not fully covered -
+        never XENIO's own, and only so many that a look stays fast."""
+        getter = getattr(self.windows, "visible_windows", None)
+        if target == "window" or getter is None:
+            return [self.pick_window({}, session)]
+        try:
+            windows = [w for w in getter() if not self.is_own(w) and not w.is_shell and w.hwnd > 0]
+        except Exception:  # noqa: BLE001 - the window server did not answer: the window in front is still known
+            windows = []
+        return windows[:MAX_LOOK_WINDOWS] or [self.pick_window({}, session)]
+
+    def page(self, window, fresh: bool = False) -> dict:
+        """A window's text through accessibility, kept for a moment: the guard's check and the look that follows it are
+        one read. Raises UIAError when it cannot be read, DesktopError where no reader exists."""
+        reader = getattr(self.uia, "read_text", None)
+        if reader is None:
+            raise DesktopError("reading a window's text works on macOS only here", "NOT_SUPPORTED")
+        now = time.monotonic()
+        cached = self._pages.get(window.hwnd)
+        if cached and not fresh and now - cached[0] < PAGE_CACHE_SECONDS:
+            return cached[1]
+        out = reader(window.hwnd)
+        self._pages = {k: v for k, v in self._pages.items() if now - v[0] < PAGE_CACHE_SECONDS}
+        self._pages[window.hwnd] = (now, out)
+        return out
+
+    def look_would_see(self, target: str = "screen", session: str = "") -> list[dict]:
+        """For the policy: what a look at the screen would see (``{"title", "live_page"}``): the guard's facts, no text."""
+        from app.safety.policy import live_test_page
+
+        seen = []
+        try:
+            windows = self.visible_windows(target, session)
+        except Exception:  # noqa: BLE001 - nothing to look at is the look's own failure to report
+            return seen
+        for window in windows:
+            title = str(getattr(window, "title", "") or "")[:200]
+            try:
+                seen.append({"title": title, "live_page": live_test_page(str(self.page(window).get("text") or ""), title)})
+            except Exception:  # noqa: BLE001 - the title check still applies
+                seen.append({"title": title, "live_page": False})
+        return seen
 
     def _fullscreen(self, window) -> bool | None:
         """Whether ``window`` is in full screen (None: cannot be told here)."""
@@ -355,19 +415,49 @@ class DesktopService:
         last = re.split(r"\s+[|\-–—]\s+", title)[-1] if title else ""
         return " ".join(last.lower().split())[:60]
 
-    def find_ui(self, query: str, window: str = "", limit: int = 8) -> dict:
-        target = self._target_window(window)
+    def find_ui(self, query: str, window: str = "", limit: int = 8, session: str = "") -> dict:
+        target = self._target_window(window) if window else self.pick_window({}, session)
+        started = time.monotonic()
         try:
             found = self.uia.find(target.hwnd, query or "", limit=limit)
         except UIAError as exc:
-            raise DesktopError(f"the window's controls could not be read ({exc})") from None
+            if not query:
+                raise DesktopError(f"the window's controls could not be read ({exc})") from None
+            found = {"elements": [], "complete": False}
         elements = [{k: e.get(k) for k in ("name", "type", "center", "rect", "enabled", "score")}
                     for e in found.get("elements", [])]
-        return {"window": target.public(), "elements": elements, "complete": found.get("complete", True)}
+        level = "accessibility"
+        if query and not any((e.get("score") or 0) >= 0.75 for e in elements):
+            shown = self._find_by_words(target, query, limit)  # an app that exposes no controls: find its visible words
+            if shown:
+                elements, level = shown, "ocr"
+        metrics.record("perception", (time.monotonic() - started) * 1000, self._data_dir, level=level, kind="find")
+        return {"window": target.public(), "elements": elements, "complete": found.get("complete", True), "level": level}
+
+    def _find_by_words(self, target, query: str, limit: int) -> list[dict]:
+        """Lines of text OCR sees in the window that match ``query``, with their place on screen."""
+        if self._ocr is None:
+            return []
+        from app.desktop.common import score_name
+
+        try:
+            lines = self._ocr(target.hwnd, target.rect)["lines"]
+        except Exception:  # noqa: BLE001 - no screen permission, or the window went away: simply nothing found
+            return []
+        words = len(query.split())
+
+        def score(line: str) -> float:  # a line is clicked at its middle: "run" inside a sentence is no control called Run
+            return min(score_name(query, line), 0.7) if len(line.split()) > words + 2 else score_name(query, line)
+
+        hits = sorted(((score(str(ln["text"])), ln) for ln in lines), key=lambda hit: -hit[0])
+        return [{"name": str(ln["text"])[:120], "type": "text", "center": ln["center"], "rect": None, "enabled": True,
+                 "score": round(value, 2), "read_by": "ocr"} for value, ln in hits[:limit] if value >= 0.6]
 
     def _resolve_element(self, name: str, window: str = "") -> dict:
         found = self.find_ui(name, window, limit=5)
-        elements = [e for e in found["elements"] if (e.get("score") or 0) >= 0.75 and e.get("enabled", True)]
+        # a line read by OCR is clicked at its middle: it must be the name itself, not a sentence that contains it
+        elements = [e for e in found["elements"] if (e.get("score") or 0) >= (0.85 if e.get("read_by") else 0.75)
+                    and e.get("enabled", True)]
         if not elements:
             raise DesktopError(f"No control named {name!r} was found in {found['window']['title']!r}. Use xenio_find_ui "
                                "to see what is there, or xenio_look_at_screen.")
@@ -419,6 +509,20 @@ class DesktopService:
                     info["focused"] = {k: focused.get(k) for k in ("name", "type", "is_password", "class")}
         except (UIAError, DesktopError) as exc:
             info["probe_error"] = str(exc)[:160]
+        text = args.get("text") if isinstance(args.get("text"), str) else ""
+        reads_or_writes_page = action in ("read", "run", "copy", "paste") or (action == "type" and (
+            args.get("code") is True or args.get("editor") is True or "\n" in text))
+        if reads_or_writes_page and info.get("title") is not None:
+            # a live test is told by its page too (its countdown, "Finish Contest"), not only by its title (2026-10-28: a
+            # contest page). Read here, judged here: the text itself goes nowhere
+            try:
+                from app.safety.policy import live_test_page
+
+                info["live_page"] = live_test_page(str(self.page(fg).get("text") or ""), str(info.get("title") or ""))
+            except DesktopError:
+                pass  # no reader on this system: the title check still applies
+            except Exception as exc:  # noqa: BLE001 - the title check still applies
+                info["probe_error"] = f"page not read: {exc}"[:160]
         if self.last_typed and info.get("app") and self.last_typed[0] == info["app"]:
             info["typed"] = self.last_typed[1]
         return info
@@ -440,7 +544,7 @@ class DesktopService:
             task.to(TaskState.INSPECTING)
         started = time.monotonic()
         try:
-            out = reader(target.hwnd)
+            out = self.page(target)  # the guard's check read it a moment ago
         except UIAError as exc:
             if inspecting:
                 task.end(TaskState.FAILED)
@@ -499,14 +603,58 @@ class DesktopService:
             raise DesktopError(f"BUSY: another desktop action ({what}, started {int(time.monotonic() - since)} s ago) is "
                                "still running, so nothing was done (two would mix their keystrokes). Wait for its "
                                "result; do not repeat it")
+        started = time.monotonic()
         try:
-            self._running = (action, time.monotonic())
-            return self._gui(action, args, session)
+            self._running = (action, started)
+            self.keep_awake()
+            self.publish("acting", action=action)
+            out = self._batch(args, session) if action == "batch" else self._gui(action, args, session)
+            self.publish("done", action=action, verified=out.get("verified"))
+            metrics.record("action", (time.monotonic() - started) * 1000, self._data_dir, action=action, ok=True,
+                           recovered=out.get("recovered") or 0, steps=out.get("steps_done"))
+            return out
+        except Exception as exc:
+            words = str(exc)
+            self.publish("failed", action=action)
+            metrics.record("action", (time.monotonic() - started) * 1000, self._data_dir, action=action, ok=False,
+                           cancelled=words.startswith(("STOPPED", "CANCELLED", "TIMED_OUT")))
+            raise
         finally:
             self._running = None
             self._input.release()
 
-    def _gui(self, action: str, args: dict, session: str) -> dict:
+    def keep_awake(self) -> None:
+        """While XENIO works: macOS shields every window while the display sleeps (measured: on battery after 2 idle minutes,
+        windows read as id 0 and the session as locked), which would end a longer job half way. Held only around actions, and
+        it runs out by itself: no process stays behind. Never wakes a display that is already off."""
+        if self._real_windows is False or sys.platform != "darwin":
+            return
+        now = time.monotonic()
+        if now < self._awake_until:
+            return
+        try:
+            subprocess.Popen(["/usr/bin/caffeinate", "-d", "-t", str(KEEP_AWAKE_SECONDS)], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            self._awake_until = now + KEEP_AWAKE_SECONDS - 20
+        except OSError:
+            pass
+
+    def publish(self, state: str, **facts) -> None:
+        """What XENIO's hands are doing, for the orb and Mission Control: this runs inside Hermes, which reports a tool
+        only when it starts and ends. Names and numbers only, one small file, read only while a tool runs."""
+        if self._data_dir is None:
+            return
+        try:
+            path = Path(self._data_dir) / STATE_FILE
+            tmp = path.with_name(STATE_FILE + ".tmp")
+            tmp.write_text(json.dumps({"state": state, "at": time.time(), **facts}), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def _gui(self, action: str, args: dict, session: str, quick: bool = False) -> dict:
+        """``quick``: a step of a batch, which checks the window's full screen around the whole batch."""
+        self._pages = {}  # the UI is about to change
         if args.get("editor") is True and action in ("type", "paste"):
             # the editor's whole content, always: measured, a model that wrote a program in parts (select_all false)
             # left it scrambled - pieces went wherever the caret was
@@ -515,8 +663,11 @@ class DesktopService:
         if not target.foreground and not self.windows.focus(target.hwnd):  # input goes to the window in front
             raise DesktopError(f"{target.title!r} could not be brought to the front, so nothing was typed or clicked")
         result: dict = {"action": action, "app": target.app}
-        before = self._digest() if action in ("click", "double_click", "right_click", "key", "drag") else None
-        full_before = self._fullscreen(target) if action != "move" else None
+        expect = args.get("expect") if isinstance(args.get("expect"), dict) and args.get("expect") else None
+        # an action with an expected result is checked against the UI itself: no screenshots before and after it
+        before = self._digest() if action in ("click", "double_click", "right_click", "key", "drag") \
+            and not expect and not quick else None
+        full_before = self._fullscreen(target) if action != "move" and not quick else None
         lost: dict = {}
         task = self.task(session)
         generation, deadline = self._generation.get(session, 0), time.monotonic() + ACTION_DEADLINE
@@ -632,7 +783,13 @@ class DesktopService:
                 raise
         if watcher.pressed:
             raise DesktopError("STOPPED: Esc was pressed during the action.")
-        self._sleep(0.35)
+        if expect:
+            check = self._expect(target, expect, ended)
+            if result.get("verified") is False:  # what the action itself found wrong stands
+                check = {k: v for k, v in check.items() if k != "verified"}
+            result.update(check)
+        elif not quick:
+            self._sleep(0.35)
         after_fg = self.windows.foreground_window()
         result["in_front_now"] = after_fg.public() if after_fg else None
         if full_before is not None:
@@ -644,6 +801,164 @@ class DesktopService:
                 result["note"] = ("nothing visibly changed on screen after the action: it may have had no effect. Check "
                                   "with xenio_look_at_screen before saying it worked.")
         self.remember(target.app)
+        return result
+
+    # ---- is the UI what it should be? and short sequences ----------------------------------------------------------
+
+    def window_text(self, window) -> tuple[str, str]:
+        """(a window's text now, how it was read): the accessibility tree, or on-device OCR where the tree shows nothing."""
+        text = ""
+        try:
+            text = str(self.page(window, fresh=True).get("text") or "")
+        except (UIAError, DesktopError):
+            pass
+        if len(text.strip()) >= MIN_WINDOW_TEXT or self._ocr is None:
+            return text, "accessibility"
+        try:
+            return str(self._ocr(window.hwnd, window.rect).get("text") or ""), "ocr"
+        except Exception:  # noqa: BLE001 - no screen permission, or the window went away
+            return text, "accessibility"
+
+    def _expect(self, target, expect: dict, ended=None) -> dict:
+        """Wait, briefly, for the UI to show what an action should have caused. ``expect``: ``text`` (the window shows
+        it), ``gone`` (it no longer does), ``element`` (a control of that name exists), ``title`` (the window in front is
+        called that), ``timeout`` (seconds). Says only whether it did: what the window holds stays here."""
+        conditions = {k: str(expect[k]) for k in ("text", "gone", "element", "title") if expect.get(k)}
+        if not conditions:
+            return {"verified": None, "verification": "nothing to check: expect needs text, gone, element or title"}
+        self.publish("verifying", action="check")
+        started = time.monotonic()
+        try:
+            limit = min(max(0.2, float(expect.get("timeout") or EXPECT_TIMEOUT)), MAX_EXPECT_TIMEOUT)
+        except (TypeError, ValueError):
+            limit = EXPECT_TIMEOUT
+        norm = lambda t: " ".join(str(t).lower().split())  # noqa: E731
+        wait, level, unmet = 0.05, "accessibility", list(conditions)
+        while True:
+            front = self.windows.foreground_window()
+            window = front if front is not None and not self.is_own(front) and front.hwnd > 0 else target
+            text = None
+            unmet = []
+            for key, want in conditions.items():
+                if key == "title":
+                    ok = norm(want) in norm(getattr(window, "title", ""))
+                elif key == "element":
+                    try:
+                        found = self.uia.find(window.hwnd, want, limit=3).get("elements", [])
+                    except UIAError:
+                        found = []
+                    ok = any((e.get("score") or 0) >= 0.75 for e in found)
+                else:
+                    if text is None:
+                        text, level = self.window_text(window)
+                    ok = (norm(want) in norm(text)) == (key == "text")
+                if not ok:
+                    unmet.append(key)
+            elapsed = time.monotonic() - started
+            if not unmet or elapsed >= limit or self.stopped() or (ended is not None and ended()):
+                break
+            self._sleep(wait)
+            wait = min(0.25, wait * 2)
+        ms = int((time.monotonic() - started) * 1000)
+        if unmet and (self.stopped() or (ended is not None and ended())):
+            metrics.record("verification", ms, self._data_dir, verified=None, level=level)
+            return {"verified": None, "stopped_waiting": True, "verify_ms": ms,
+                    "verification": "stopped while waiting for the UI: its result was not confirmed"}
+        verified = not unmet
+        metrics.record("verification", ms, self._data_dir, verified=verified, level=level)
+        if verified:
+            return {"verified": True, "verification": f"the UI shows what was expected ({', '.join(conditions)}, read by "
+                                                      f"{level}, after {ms} ms)", "verify_ms": ms}
+        return {"verified": False, "verify_ms": ms, "verification": "after the action the UI did NOT show what was expected: "
+                + "; ".join(f"{k} {conditions[k][:80]!r}" for k in unmet) + f" (waited {ms} ms, read by {level})"}
+
+    def _batch(self, args: dict, session: str) -> dict:
+        """A short sequence of ordinary actions in one call, for when the next screen is predictable: no model turn
+        between steps. Every step is judged by the policy right before it runs, on the UI as it is then; it stops before
+        anything that needs the user's yes and at the first surprise, and says what ran and what did not, so the model can
+        plan again from there. A control not found yet is looked for once more (the UI may still be settling)."""
+        from app.safety.policy import BATCH_ACTIONS, MAX_BATCH_STEPS, RiskLevel, classify_gui_action
+
+        steps = args.get("steps")
+        if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_BATCH_STEPS:
+            raise DesktopError(f"a batch needs 'steps': a list of 1 to {MAX_BATCH_STEPS} actions")
+        generation, deadline = self._generation.get(session, 0), time.monotonic() + ACTION_DEADLINE
+        ended = lambda: self._generation.get(session, 0) != generation or time.monotonic() > deadline  # noqa: E731
+        first = self.pick_window(args, session)
+        full_before = self._fullscreen(first)
+        done: list[dict] = []
+        stopped: dict | None = None
+        recovered = 0
+        for i, raw in enumerate(steps):
+            action = str(raw.get("action") or "").lower() if isinstance(raw, dict) else ""
+            if action not in BATCH_ACTIONS:
+                stopped = {"step": i + 1, "reason": "invalid", "why": f"a batch can only {', '.join(BATCH_ACTIONS)}"}
+                break
+            if self.stopped() or ended():
+                stopped = {"step": i + 1, "reason": "cancelled", "why": "stopped by the user or by a newer request"}
+                break
+            step = {**raw, "action": action}
+            if args.get("window") and not step.get("window"):
+                step["window"] = args["window"]
+            self.publish("acting", action=action, step=i + 1, total=len(steps))
+            entry: dict = {"step": i + 1, "action": action}
+            if action == "wait":
+                window = self.pick_window(step, session)
+                entry.update(self._expect(window, step.get("expect") if isinstance(step.get("expect"), dict) else {}, ended))
+            else:
+                info = self.probe(step, session)
+                if step.get("element") and str(info.get("probe_error") or "").startswith("No control named"):
+                    # not there yet (the UI may still be settling): looked for once more, before anything is judged
+                    self.publish("recovering", action=action, step=i + 1, total=len(steps))
+                    self._sleep(0.4)
+                    info = self.probe(step, session)
+                    if str(info.get("probe_error") or "").startswith("No control named"):
+                        stopped = {"step": i + 1, "reason": "failed", "why": info["probe_error"]}
+                        break
+                    entry["recovered"] = "the control was not there at first; found on a second look"
+                    recovered += 1
+                decision = classify_gui_action(step, info)
+                if decision.blocked:
+                    stopped = {"step": i + 1, "reason": "blocked", "why": decision.reason}
+                    break
+                if decision.level >= RiskLevel.CONFIRM_REQUIRED:
+                    stopped = {"step": i + 1, "reason": "needs_confirmation", "why": decision.summary,
+                               "how": "run this step by itself with xenio_gui: XENIO then asks the user"}
+                    break
+                try:
+                    out = self._gui(action, step, session, quick=True)
+                except DesktopError as exc:
+                    words = str(exc)
+                    cancelled = words.startswith(("STOPPED", "CANCELLED", "TIMED_OUT"))
+                    stopped = {"step": i + 1, "reason": "cancelled" if cancelled else "failed", "why": words[:300]}
+                    break
+                entry.update({k: out[k] for k in ("verified", "verification", "verify_ms", "stopped_waiting", "at", "keys",
+                                                  "typed_chars") if k in out})
+            done.append(entry)
+            if entry.get("stopped_waiting"):
+                stopped = {"step": i + 1, "reason": "cancelled", "why": "stopped by the user or by a newer request",
+                           "ran": True}
+                break
+            if entry.get("verified") is False:
+                stopped = {"step": i + 1, "reason": "not_as_expected", "why": entry.get("verification"), "ran": True}
+                break
+        ran = len(done) - (1 if stopped and stopped.get("ran") else 0)
+        checks = [e.get("verified") for e in done if "verified" in e]
+        verified = False if stopped and stopped["reason"] == "not_as_expected" else (
+            True if not stopped and checks and all(c is True for c in checks) else None)
+        result: dict = {"action": "batch", "app": first.app, "steps_total": len(steps), "steps_done": ran, "steps": done,
+                        "verified": verified, "recovered": recovered}
+        if verified is None and not stopped:
+            result["verification"] = "the steps ran, but nothing checked their result: add expect to the step that matters"
+        if stopped:
+            next_steps = stopped["step"] - (0 if stopped.get("ran") else 1)
+            result.update(stopped=stopped, remaining=steps[next_steps:])
+        front = self.windows.foreground_window()
+        result["in_front_now"] = front.public() if front else None
+        if full_before is not None:
+            clicks = any(isinstance(r, dict) and str(r.get("action")).lower() in ("click", "double_click") for r in steps)
+            result["fullscreen"] = self._keep_fullscreen(first, full_before, "click" if clicks else "key", {})
+        self.remember(first.app)
         return result
 
     # ---- writing and reading text through the clipboard, and typing code ------------------------------------------

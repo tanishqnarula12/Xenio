@@ -67,6 +67,7 @@ class HermesSettings:
     himalaya_account: str = ""  # Himalaya account name for email (empty = Himalaya's default)
     proactive: bool = True  # run due scheduled checks (Hermes cron) while XENIO is running
     vision: "VisionSettings | None" = None  # V5 screen vision (passed to Hermes' process)
+    nabh: "NabhSettings | None" = None  # V4 lessons, study material and pictures (passed to Hermes' process)
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,7 @@ class VisionSettings:
     def env(self) -> dict[str, str]:
         """What the xenio-guard plugin reads inside Hermes."""
         out = {"XENIO_VISION": "1" if self.enabled else "0", "XENIO_VISION_PROVIDER": self.provider,
+               "XENIO_PERCEPTION": os.environ.get("XENIO_PERCEPTION", "auto"),
                "XENIO_VISION_MAX_EDGE": str(self.max_edge)}
         if self.model:
             out["XENIO_VISION_MODEL"] = self.model
@@ -88,6 +90,29 @@ class VisionSettings:
             out["XENIO_VISION_API_URL"] = self.api_url
         if self.api_key.reveal():
             out["XENIO_VISION_API_KEY"] = self.api_key.reveal()
+        return out
+
+
+@dataclass(frozen=True)
+class NabhSettings:
+    """Nabh Cloud beyond speech: lessons, study material, reading scans, pictures (app/integrations/nabh.py)."""
+    api_key: Secret = Secret("")
+    base_url: str = "https://api.nabh.cloud/v1"
+    teacher_model: str = ""
+    review_model: str = ""
+    fast_model: str = ""
+    embedding_model: str = ""
+    ocr_model: str = ""
+    image_model: str = ""
+
+    def env(self) -> dict[str, str]:
+        """What XENIO's own code reads, in this process and inside Hermes."""
+        out = {"XENIO_NABH_BASE_URL": self.base_url}
+        if self.api_key.reveal():
+            out["XENIO_NABH_API_KEY"] = self.api_key.reveal()
+        for name, value in (("TEACHER", self.teacher_model), ("REVIEW", self.review_model), ("FAST", self.fast_model), ("EMBEDDING", self.embedding_model), ("OCR", self.ocr_model), ("IMAGE", self.image_model)):
+            if value:
+                out[f"XENIO_NABH_{name}_MODEL"] = value
         return out
 
 
@@ -330,6 +355,12 @@ def load_settings(env_file: Path | None = None, environ: Mapping[str, str] | Non
             max_edge=int(r.float("XENIO_VISION_MAX_EDGE", 1600, minimum=320, maximum=4096)),
             api_url=r.str("XENIO_VISION_API_URL"),
             api_key=Secret(r.str("XENIO_VISION_API_KEY")),
+        ),
+        nabh=NabhSettings(
+            # one Nabh account: the key already there for speech serves, unless NABH_API_KEY names another
+            api_key=Secret(r.str("NABH_API_KEY") or (r.str("STT_API_KEY") if "nabh.cloud" in r.str("STT_API_URL") else "")),
+            base_url=r.str("NABH_BASE_URL", "https://api.nabh.cloud/v1"), teacher_model=r.str("NABH_TEACHER_MODEL"), review_model=r.str("NABH_REVIEW_MODEL"), fast_model=r.str("NABH_FAST_MODEL"),
+            embedding_model=r.str("NABH_EMBEDDING_MODEL"), ocr_model=r.str("NABH_OCR_MODEL"), image_model=r.str("NABH_IMAGE_MODEL"),
         ),
     )
     stt = STTSettings(

@@ -40,6 +40,12 @@ When active it:
      exactly the terminal tool's command rules.
  13. registers xenio_media (play a song, pause/resume/next/previous, what is playing, volume) - the same player
      code and rules as XENIO's fast path.
+ 14. (V4 phase 2) registers xenio_profile, xenio_form and xenio_browser: the profile vault, forms and the user's own browser,
+     judged on what the page really holds. The model works with field names: values go straight from the vault into the
+     form, a sensitive detail never reaches the model, and one just filled is masked if a later read of the page holds it.
+ 15. (V4 phase 3) registers xenio_teach, the tutor, and adds one line per turn while a lesson is going on. An answer is recorded only
+     if the learner really said it: progress comes from nothing else.
+ 16. (V4 phase 4) registers xenio_image: real pictures from the configured provider, as background jobs that appear in the conversation.
 Decisions are appended to ``XENIO_DATA_DIR/logs/xenio-guard.log`` (JSON lines, redacted).
 
 Installed by ``python -m app.main --install-guard``; remove with ``hermes plugins disable xenio-guard``.
@@ -87,12 +93,13 @@ def _load():
         if not origin.startswith(root):
             raise ImportError(f"a different package named 'app' shadows XENIO ({origin})")
         from app.safety import policy
-        from app.tools import base, desktop, engineering, filesystem, media, personal, vision, web
+        from app.tools import autofill, base, desktop, engineering, filesystem, images, media, personal, teacher, vision, web
 
         base.AUDIT = lambda event, fields: _audit(event, **fields)
-        _state.update(policy=policy, base=base, desktop=desktop,
+        _state.update(policy=policy, base=base, desktop=desktop, autofill=autofill,
                       tools=[*filesystem.xenio_tools(), *web.xenio_tools(), *personal.xenio_tools(),
                              *vision.xenio_tools(), *(desktop.xenio_tools() if _DESKTOP_PLATFORM else []),
+                             *(autofill.xenio_tools() if sys.platform == "darwin" else []), *teacher.xenio_tools(), *images.xenio_tools(),
                              *media.xenio_tools(), *engineering.xenio_tools()],
                       paths=policy.default_path_policy(), secrets=policy.secret_env_values())
         _memory_at_start.update(_memory_entries())
@@ -156,6 +163,7 @@ def _turn(session_id):
 
 MAX_GUI_ACTIONS_PER_TURN = 40
 MAX_SAME_ACTION = 3
+MAX_BROWSER_ACTIONS_PER_TURN = 120  # browser work is many small steps, each judged; a real job fits, a loop does not
 
 
 def _loggable(summary):
@@ -189,7 +197,8 @@ def _desktop_decision(tool_name, args, session):
     gui = turn.setdefault("gui", {"count": 0, "last": None, "same": 0})
     signature = json.dumps({k: args.get(k) for k in sorted(args) if k != "target"}, sort_keys=True, default=str)
     gui["same"] = gui["same"] + 1 if signature == gui["last"] else 1
-    gui["last"], gui["count"] = signature, gui["count"] + 1
+    steps = args.get("steps") if isinstance(args.get("steps"), list) else ()  # a batch counts as what it does
+    gui["last"], gui["count"] = signature, gui["count"] + max(1, len(steps))
     if gui["count"] > MAX_GUI_ACTIONS_PER_TURN:
         _audit("GUI_LOOP_STOPPED", reason="too many actions", count=gui["count"])
         return policy.blocked("desktop.loop", decision.summary,
@@ -202,6 +211,40 @@ def _desktop_decision(tool_name, args, session):
         return policy.blocked("desktop.loop", decision.summary,
                               "the same desktop action was repeated several times without success: stopped. Tell the "
                               "user you could not safely complete it")
+    return decision
+
+
+def _work_decision(tool_name, args, session):
+    """The profile, forms and browser work (V4 phase 2): judged on the page's real state, stopped on "Xenio stop", no loops."""
+    policy, autofill = _state["policy"], _state["autofill"]
+    user_text = _turn(session).get("user", "")
+    if tool_name == "xenio_profile":
+        return policy.unattended_desktop(policy.classify_profile_tool(args, user_text), tool_name, session)
+    if tool_name == "xenio_form":
+        info = autofill.engine().probe(args, session)
+        decision = policy.unattended_desktop(policy.classify_form_tool(args, info), tool_name, session)
+        if decision.blocked:
+            return decision
+        # reading a form is reading the screen, with the same consent: the user asked about a form, or a task is under way
+        return policy.screen_capture_consent(decision, user_text, session, what=" (the form's field names go to the model)",
+                                             recently_looked=policy.wants_form(user_text) or _recently_looked(session)
+                                             or bool(_turn(session).get("acted")))
+    work = autofill.browser()
+    decision = policy.unattended_desktop(
+        policy.classify_browser_tool_work(args, work.probe(args, session), _state["paths"], _cwd(session)), tool_name, session)
+    if decision.blocked or str(args.get("action") or "page").lower() in ("page", "tabs"):
+        return decision
+    if _state["desktop"].service().stopped():
+        return policy.blocked("desktop.stopped", decision.summary, "the user said stop: no further desktop actions in this request")
+    turn = _turns.setdefault(session, {})
+    done = turn.setdefault("browser", {"count": 0, "last": None, "same": 0})
+    signature = json.dumps({k: args.get(k) for k in sorted(args)}, sort_keys=True, default=str)
+    done["same"] = done["same"] + 1 if signature == done["last"] else 1
+    done["last"], done["count"] = signature, done["count"] + 1
+    if done["count"] > MAX_BROWSER_ACTIONS_PER_TURN or done["same"] > MAX_SAME_ACTION:
+        _audit("GUI_LOOP_STOPPED", reason="browser actions", count=done["count"], same=done["same"])
+        return policy.blocked("browser.loop", decision.summary, "too many browser actions in one request, or the same one repeated "
+                                                                "without success: stopped. Tell the user how far it got and ask how to continue")
     return decision
 
 
@@ -311,6 +354,21 @@ def _pre_tool_call(tool_name="", args=None, **_kwargs):
         decision = policy.classify_tool_call(tool_name, args, _state["paths"], _cwd(session_id), page=_page)
         if tool_name in policy.DESKTOP_TOOLS:
             decision = _desktop_decision(tool_name, args, str(session_id or ""))
+        if tool_name in policy.WORK_TOOLS:
+            decision = _work_decision(tool_name, args, str(session_id or ""))
+        if tool_name == "xenio_image":
+            decision = policy.unattended_desktop(policy.classify_image_tool(args, _turn(session_id).get("user", "")), tool_name, str(session_id or ""))
+        if tool_name == "xenio_teach":
+            decision = policy.unattended_desktop(policy.classify_teach_tool(args, _turn(session_id).get("user", ""), _state["paths"], _cwd(session_id)), tool_name, str(session_id or ""))
+        if tool_name == "xenio_look_at_screen" and _state.get("desktop") is not None and _DESKTOP_PLATFORM:
+            # the same rule as reading a window: a screenshot would carry a running test's questions just the same
+            seen = _state["desktop"].service().look_would_see(str(args.get("target") or "screen").lower(),
+                                                              str(session_id or ""))
+            decision = policy.screen_look_on_live_test(decision, seen)
+        if tool_name == "xenio_find_ui" and _state.get("desktop") is not None and _DESKTOP_PLATFORM:
+            # a window's controls include its text: the questions could be read this way just as well
+            facts = _state["desktop"].service().probe({"action": "read", "window": args.get("window")}, str(session_id or ""))
+            decision = policy.screen_look_on_live_test(decision, [facts])
         copying = tool_name == "xenio_gui" and str(args.get("action") or "").lower() in ("copy", "read", "run")
         if tool_name == "xenio_look_at_screen" or copying:
             # checking the result of a desktop action the user asked for is part of that task (V5.5); copying or reading
@@ -435,10 +493,18 @@ def _outside_text(tool_name, result):
     """The part of a result that came from outside. A desktop result mixes the page's text with XENIO's own words (its
     status and next step); those must never pass for an injected order (observed: XENIO's own "do not tell the user it
     works" was flagged, and the warning stopped the model from fixing its program)."""
-    parsed = _json(result) if tool_name == "xenio_gui" else None
+    parsed = _json(result) if tool_name in ("xenio_gui", "xenio_browser", "xenio_form", "xenio_teach") else None
     data = parsed.get("data") if isinstance(parsed, dict) else None
     if not isinstance(data, dict):
         return result
+    if tool_name == "xenio_browser":
+        return "\n".join([str(data.get("text") or ""), *(str(x) for x in data.get("links") or []), *(str(x) for x in data.get("buttons") or []),
+                          *(str(f.get("label")) for f in data.get("fields") or [] if isinstance(f, dict))])
+    if tool_name == "xenio_teach":
+        return "\n".join(str(p.get("text")) for p in data.get("passages") or [] if isinstance(p, dict))
+    if tool_name == "xenio_form":
+        fields = [*(data.get("fields") or []), *(data.get("filled") or []), *(data.get("left") or []), *(data.get("not_filled") or [])]
+        return "\n".join(str(f.get("label")) for f in fields if isinstance(f, dict))
     run = data.get("run") if isinstance(data.get("run"), dict) else {}
     return "\n".join(v for v in (data.get("text"), data.get("output"), data.get("verification"), run.get("output"))
                      if isinstance(v, str))
@@ -470,6 +536,23 @@ def _transform_tool_result(tool_name="", args=None, result=None, **kwargs):
             _remember_page(tool_name, result)
         _record_sources(tool_name, args, result, kwargs)
         _note_look(tool_name, result, kwargs)
+        if tool_name in ("xenio_form", "xenio_browser"):  # counts only: never a value, a field's name or a page's text
+            data = _json(result) or {}
+            inner = data.get("data") or {}
+            session = str(kwargs.get("session_id") or "")
+            if data.get("success"):
+                # a task is under way, and what it read off a page is not saved to memory unless the user asks
+                _turns.setdefault(session, {}).update(acted=True, looked=True)
+                _looks[session] = time.monotonic()  # a follow-up within minutes is the same job: it is not asked about again
+            _audit("WORK_ACTION", tool=tool_name, action=args.get("action"), success=bool(data.get("success")),
+                   verified=inner.get("verified"), filled=len(inner.get("filled") or []), failed=len(inner.get("not_filled") or []),
+                   left=len(inner.get("left") or []), pages=inner.get("pages"), submitted=inner.get("submitted"),
+                   stopped=inner.get("stopped"), unchanged=inner.get("unchanged"), timing_ms=inner.get("timing_ms"))
+        if tool_name == "xenio_teach":  # what happened, never what was asked or answered
+            data = _json(result) or {}
+            inner = data.get("data") or {}
+            _audit("TEACH_ACTION", action=args.get("action"), success=bool(data.get("success")), recorded=inner.get("recorded"), credit=inner.get("credit"),
+                   lesson=inner.get("lesson"), timing_ms=inner.get("timing_ms"))
         if tool_name in _state["policy"].DESKTOP_TOOLS:  # structured GUI audit: never text, never screen content
             data = _json(result) or {}
             inner = data.get("data") or {}
@@ -491,6 +574,9 @@ def _transform_tool_result(tool_name="", args=None, result=None, **kwargs):
     except Exception as exc:  # bookkeeping must never break a tool result
         _audit("OBSERVE_FAILED", tool=tool_name, error=repr(exc))
     cleaned = _redact(result)
+    filled = sys.modules.get("app.autofill.engine")
+    if filled is not None:  # a sensitive detail XENIO just put in a form must not come back through a read of that page
+        cleaned = filled.mask_filled(cleaned)
     if cleaned != result:
         _audit("SECRET_REDACTED", tool=tool_name)
     try:
@@ -635,6 +721,12 @@ def _personal_note():
     return ("[XENIO context] " + "; ".join(parts) + ".") if parts else ""
 
 
+def _lesson_note():
+    """While a lesson is going on: where it stands, so a follow-up keeps its context."""
+    tool = sys.modules.get("app.tools.teacher")
+    return tool.teacher().note() if tool is not None else ""
+
+
 def _screen_note(session, message):
     """Visual context expires: an old screen description must not be passed off as what is on screen now (V5)."""
     at = _looks.get(session)
@@ -667,6 +759,9 @@ def _screen_page(session):
     title = str((out.get("window") or {}).get("title") or "")
     if str(out.get("app") or "").lower() == "xenio" or policy.live_test(title):
         return ""  # XENIO's own window; or a live test, whose questions XENIO does not read
+    if policy.live_test_page(str(out.get("text") or ""), title):
+        _audit("LIVE_TEST_PAGE", where="code_note")  # its countdown or "Finish Contest": nothing of it reaches the model
+        return ""
     text = str(out.get("text") or "")[:8000]
     if not text.strip():
         return ""
@@ -743,8 +838,11 @@ def _pre_llm_call(conversation_history=None, **_kwargs):
         return None
     session = str(_kwargs.get("session_id") or "")
     message = _kwargs.get("user_message")
-    _turns[session] = {"turn": str(_kwargs.get("turn_id") or ""), "injection": None,
-                       "user": message if isinstance(message, str) else _content_text({"content": message})}
+    raw_message = message if isinstance(message, str) else _content_text({"content": message})
+    policy = _state["policy"]
+    # the user's own words only: what an attached file says never counts as what they said, and orders in it are treated like orders on a page
+    _turns[session] = {"turn": str(_kwargs.get("turn_id") or ""), "injection": policy.find_injection(policy.file_words(raw_message)) if policy else None,
+                       "user": policy.own_words(raw_message) if policy else raw_message}
     if _state.get("desktop") is not None and _DESKTOP_PLATFORM:
         try:
             # a stop said during an earlier request no longer applies; a new task; this session's older action ends
@@ -755,6 +853,10 @@ def _pre_llm_call(conversation_history=None, **_kwargs):
     try:
         notes.append(_personal_note())
     except Exception as exc:  # context is a convenience; never break the turn
+        _audit("CONTEXT_NOTE_FAILED", error=repr(exc))
+    try:
+        notes.append(_lesson_note())
+    except Exception as exc:  # noqa: BLE001
         _audit("CONTEXT_NOTE_FAILED", error=repr(exc))
     try:
         notes.append(_resume_note(_turns[session]["user"]))
@@ -889,6 +991,13 @@ def _personal_prompt(_info=None):
     )
 
 
+def _work_prompt(_info=None):
+    if sys.platform != "darwin":
+        return ""
+    return ("FORMS, WEB JOBS: xenio_form, xenio_browser work in the user's signed-in browser; each call returns the page: never look "
+            "at the screen to check. LEARNING: xenio_teach. PICTURES: xenio_image.\n")
+
+
 def _make_handler(tool):
     def handler(params, **kwargs):
         ctx = _state["base"].ToolContext(paths=_state["paths"], cwd=_cwd(kwargs.get("session_id")),
@@ -909,12 +1018,13 @@ def register(ctx):
         ctx.register_tool(name=tool.hermes_name, toolset="xenio", schema=tool.hermes_schema(),
                           handler=_make_handler(tool), description=tool.description,
                           emoji="🌐" if tool.name.startswith("web.") else "👁" if tool.name.startswith("vision.")
-                          else "🖱" if tool.name.startswith("desktop.") else "🎵" if tool.name.startswith("media.")
+                          else "🖱" if tool.name.startswith(("desktop.", "autofill.")) else "🎵" if tool.name.startswith("media.")
                           else "🗂")
     ctx.register_system_prompt_section("xenio-guard.environment", _system_prompt, position="after_memory",
                                        max_chars=4000)
     ctx.register_system_prompt_section("xenio-guard.web", _web_prompt, position="after_memory", max_chars=4000)
     ctx.register_system_prompt_section("xenio-guard.personal", _personal_prompt, position="after_memory", max_chars=4000)
+    ctx.register_system_prompt_section("xenio-guard.work", _work_prompt, position="after_memory", max_chars=300)
     _audit("PLUGIN_LOADED", tools=[t.hermes_name for t in _state["tools"]])
     _mark_active()
 

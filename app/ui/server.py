@@ -23,7 +23,7 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import unquote, parse_qs, urlsplit
 
 from app.ui.approvals import ApprovalError
 from app.ui.controller import UiController, UiError, ui_dist
@@ -31,6 +31,7 @@ from app.ui.controller import UiController, UiError, ui_dist
 log = logging.getLogger("xenio.ui")
 
 MAX_JSON = 64_000
+UPLOAD_LIMIT = 80 * 1024 * 1024
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
        "media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; "
        "frame-ancestors 'none'; form-action 'self'")
@@ -144,6 +145,17 @@ def _handler_for(server: UiServer):
                 raise UiError("the request is too large", 413)
             return self.rfile.read(length) if length > 0 else b""
 
+        def _raw_body(self, limit: int) -> bytes:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise UiError("the request has no size", 411) from None
+            if length <= 0:
+                raise UiError("that file is empty", 422)
+            if length > limit:
+                raise UiError("that file is too large: at most 80 MB", 413)
+            return self.rfile.read(length)
+
         def _payload(self) -> dict:
             raw = self._body()
             if not raw:
@@ -226,7 +238,9 @@ def _handler_for(server: UiServer):
             if method == "POST" and route == "/chat":
                 p = self._payload()
                 return self._json(202, ctl.chat(str(p.get("text") or ""), "voice" if p.get("via") == "voice" else "text",
-                                                quiet=p.get("quiet") is True))
+                                                quiet=p.get("quiet") is True, files=p.get("files") if isinstance(p.get("files"), list) else None))
+            if method == "POST" and route == "/uploads":
+                return self._json(200, ctl.upload(unquote(self.headers.get("X-File-Name") or "file"), self._raw_body(UPLOAD_LIMIT)))
             if method == "POST" and route == "/chat/cancel":
                 return self._json(200, ctl.cancel())
             if method == "POST" and route == "/chat/new":
@@ -289,12 +303,37 @@ def _handler_for(server: UiServer):
                 return self._json(200, ctl.memory_entries(q("q")[:200]))
             if method == "POST" and route == "/memory":
                 return self._json(200, ctl.memory_change(self._payload()))
+            if method == "GET" and route == "/profile":
+                return self._json(200, ctl.profile())
+            if method == "POST" and route == "/profile":
+                return self._json(200, ctl.profile_change(self._payload()))
+            if method == "GET" and route == "/images":
+                return self._json(200, ctl.image_list())
+            if method == "POST" and route == "/images":
+                return self._json(202, ctl.image_make(self._payload()))
+            if method == "GET" and (hit := m(r"/images/(img_[0-9a-f]{16})/file", route)):
+                data, kind = ctl.image_file(hit.group(1))
+                return self._send(200, data, kind, {"Cache-Control": "no-store"})
+            if method == "GET" and (hit := m(r"/images/(img_[0-9a-f]{16})", route)):
+                return self._json(200, ctl.image(hit.group(1)))
+            if method == "POST" and (hit := m(r"/images/(img_[0-9a-f]{16})", route)):
+                return self._json(200, ctl.image_change(hit.group(1), self._payload()))
+            if method == "GET" and route == "/learning":
+                return self._json(200, ctl.learning())
+            if method == "POST" and route == "/learning":
+                return self._json(200, ctl.learning_change(self._payload()))
+            if method == "GET" and (hit := m(r"/learning/topics/(\d{1,9})", route)):
+                return self._json(200, ctl.learning_topic(int(hit.group(1))))
+            if method == "GET" and (hit := m(r"/learning/lessons/(\d{1,9})", route)):
+                return self._json(200, ctl.lesson(int(hit.group(1))))
             if method == "GET" and route == "/context":
                 return self._json(200, ctl.context_brief(q("q")[:200]))
             if method == "GET" and route == "/activity":
                 return self._json(200, ctl.activity(qi("limit", 200, 1, 500), qi("offset", 0, 0, 10**6), q("kind", "all")[:20]))
             if method == "GET" and route == "/audit":
                 return self._json(200, ctl.audit(qi("limit", 200, 1, 500)))
+            if method == "GET" and route == "/desktop-stats":
+                return self._json(200, ctl.desktop_stats())
             if method == "PUT" and (hit := m(r"/skills/([A-Za-z0-9][A-Za-z0-9._-]{0,80})", route)):
                 return self._json(200, ctl.skill_toggle(hit.group(1), self._payload().get("enabled") is True))
             if method == "GET" and route == "/health":

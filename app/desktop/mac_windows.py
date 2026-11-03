@@ -18,7 +18,8 @@ from app.desktop import macos
 from app.desktop.common import WindowError, WindowInfo, rank_windows
 
 __all__ = ["WindowError", "WindowInfo", "list_windows", "list_hidden_windows", "foreground_window", "active_app_window",
-           "find_windows", "focus", "show", "minimize", "maximize", "restore", "close", "session_locked", "fullscreen"]
+           "find_windows", "visible_windows", "focus", "show", "minimize", "maximize", "restore", "close", "session_locked",
+           "fullscreen"]
 
 
 def _call(cmd: str, **args):
@@ -91,6 +92,13 @@ def foreground_window() -> WindowInfo | None:
                       bundle_id=macos.app_bundle(int(front["pid"]))[1])
 
 
+def active_pid() -> int:
+    """The active app, by the window server's front-to-back order. Unlike ``foreground_window`` it is not moved by a panel that
+    holds the keyboard without activating its app (measured: XENIO's quick chat): that is what Accessibility reports as front."""
+    front = next((w for w in macos.cg_windows(on_screen_only=True) if w["layer"] == 0 and macos.regular_app(int(w["pid"]))), None)
+    return int(front["pid"]) if front else 0
+
+
 def active_app_window() -> WindowInfo | None:
     """The app window the user is working in: the one in front unless that is a system surface (Spotlight, Control
     Center...), then the topmost real app window."""
@@ -101,6 +109,33 @@ def active_app_window() -> WindowInfo | None:
         if not window.is_shell and not window.minimized:
             return window
     return fg
+
+
+def visible_windows(min_visible: float = 0.1) -> list[WindowInfo]:
+    """App windows really visible right now, front to back: on this Space, big enough, belonging to a regular app (no
+    overlays), and not (almost) fully covered by the windows above them. From the window server: about 2 ms."""
+    left, top, width, height = macos.desktop_bounds()
+    cols, rows = 48, 30
+    covered = [[False] * cols for _ in range(rows)]
+    out = []
+    for w in macos.cg_windows(on_screen_only=True):
+        x1, y1, x2, y2 = w["rect"]
+        if w["layer"] != 0 or w["alpha"] <= 0 or x2 - x1 < 40 or y2 - y1 < 40 or not macos.regular_app(int(w["pid"])):
+            continue
+        total = fresh = 0
+        for r in range(max(0, int((y1 - top) * rows / height)), min(rows, int((y2 - top) * rows / height) + 1)):
+            for c in range(max(0, int((x1 - left) * cols / width)), min(cols, int((x2 - left) * cols / width) + 1)):
+                total += 1
+                if not covered[r][c]:
+                    covered[r][c] = True
+                    fresh += 1
+        if not total or fresh / total < min_visible:
+            continue
+        info = WindowInfo(w["id"], w["title"], w["owner"] or "?", w["pid"], w["rect"], foreground=not out,
+                          bundle_id=macos.app_bundle(w["pid"])[1])
+        if not info.is_shell:
+            out.append(info)
+    return out
 
 
 def find_windows(query: str, windows: list[WindowInfo] | None = None) -> list[WindowInfo]:

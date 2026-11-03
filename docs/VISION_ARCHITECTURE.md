@@ -1,5 +1,7 @@
 # Vision architecture (V5)
 
+Since V4 the vision model is the last step of a look, not the only one: see [REALTIME_DESKTOP.md](REALTIME_DESKTOP.md).
+
 Vision is a sense of XENIO, not a second assistant. Hermes stays the only brain: it decides that it needs to
 see, calls one tool, gets text back and reasons with it next to everything else it knows.
 

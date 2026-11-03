@@ -25,6 +25,26 @@ export interface AssistantSnapshot {
   voice?: "listening" | "transcribing" | "speaking" | null;
   /** when that began (epoch ms): the floating orb measures how fast it appeared */
   voice_since?: number | null;
+  /** what XENIO's hands are really doing inside the running desktop tool */
+  action?: HandsAction | null;
+}
+
+export interface HandsAction {
+  state: "looking" | "acting" | "recovering" | "verifying" | "done" | "failed" | string;
+  action?: string | null;
+  step?: number | null;
+  total?: number | null;
+  verified?: boolean | null;
+}
+
+/** What seeing and acting on the desktop really cost (app/desktop/metrics.py): empty until something was measured */
+export interface DesktopStats {
+  stages: Record<string, { n: number; median_ms: number; p90_ms: number; max_ms: number }>;
+  perception_levels: Record<string, number>;
+  looks: number;
+  answered_without_a_model: number;
+  vision_answers_reused: number;
+  actions: { total: number; failed: number; verified: number; unverified: number; not_as_expected: number; recovered: number; cancelled: number };
 }
 
 export interface VoiceInfo {
@@ -50,6 +70,10 @@ export interface Message {
   error?: string | null;
   actions?: string[];
   sources?: { title: string; url: string }[];
+  /** cards made in this turn: a lesson, a picture */
+  attachments?: { kind: "lesson" | "image"; id: number | string }[];
+  /** files the user added to this message */
+  files?: { id: string; name: string; size: number; kind: string }[];
   at: string;
 }
 
@@ -58,6 +82,8 @@ export interface ToolActivity {
   id: string;
   title: string;
   status: "pending" | "in_progress" | "completed" | "failed" | string;
+  /** it ended without an error, but its result was not confirmed: never shown as done */
+  unconfirmed?: boolean;
   detail: string;
 }
 
@@ -334,6 +360,90 @@ export interface ScheduledJob {
   task: string;
   runs: { at: string; result: "message" | "silent" | "failed" | string; message: string }[];
 }
+
+export interface ImageJob { cropped_from?: string | null;
+  id: string; state: "preparing" | "sending" | "generating" | "receiving" | "complete" | "failed" | "cancelled"; prompt: string; size: string; kind?: string; parent?: string; seed?: number; model?: string;
+  error?: { kind: string; message: string; retry_after?: number | null } | null; created?: number; updated?: number; ms?: number; refined?: boolean; has_image?: boolean; saved?: string;
+}
+export interface UploadedFile { id: string; name: string; size: number; kind: string; mime: string }
+
+export interface LessonDiagram {
+  kind: string; title?: string; caption?: string; alt?: string; mermaid?: string; notes?: Record<string, string>;
+  events?: { when: string; what: string }[]; columns?: string[]; rows?: string[][];
+}
+export type Activity =
+  | { type: "graph"; title?: string; prompt?: string; functions: { expr: string; label: string }[]; params: { name: string; label: string; min: number; max: number; step: number; value: number }[];
+      x: { min: number; max: number; label?: string }; y: { min?: number | null; max?: number | null; label?: string }; points?: { x: number; y: number; label?: string }[] }
+  | { type: "calculator"; title?: string; prompt?: string; inputs: { name: string; label: string; value: number; unit?: string }[]; outputs: { label: string; expr: string; unit?: string; digits: number }[] }
+  | { type: "code"; title?: string; prompt?: string; language: string; code: string; stdin?: string; task?: string; checks?: { name?: string; stdin: string; expected: string }[]; solution?: string }
+  | { type: "chart"; title?: string; prompt?: string; chart: "bar" | "line"; labels: string[]; series: { name: string; values: number[] }[]; x_label?: string; y_label?: string }
+  | { type: "steps"; title?: string; prompt?: string; steps: { title?: string; body: string; code?: string; predict?: string }[] }
+  | { type: "frames"; title?: string; prompt?: string; frames: { cells: string[]; highlight?: number[]; dim?: number[]; pointers?: Record<string, number>; note?: string }[] }
+  | { type: "match"; title?: string; prompt?: string; pairs: string[][] }
+  | { type: "order"; title?: string; prompt?: string; items: string[] };
+export interface Flashcard { q: string; a: string }
+export interface LessonQuestion { id: number; kind: string; question: string; options: string[]; hints_used: number; hints_left: number; hints?: string[]; state: string; answer?: string; explanation?: string }
+export interface LessonPack {
+  title?: string; overview?: string; why_it_matters?: string; prerequisites?: string[]; sections?: { heading: string; body: string }[]; key_ideas?: { idea: string; detail: string }[]; analogy?: string;
+  worked_example?: { problem: string; steps: string[]; result: string } | null; diagrams: LessonDiagram[]; activities?: Activity[]; common_mistakes?: { mistake: string; why: string; fix: string }[];
+  flashcards: Flashcard[]; next_steps?: string[]; uncertain?: string[]; sources?: { tag: string; title: string; page: number; text: string }[]; single?: boolean; missing?: string[];
+  review?: { state: "checking" | "done" | "skipped"; found?: string[]; why?: string };
+}
+export interface Lesson { id: number; topic: string; topic_id: number; mode: string; created: string; model: string; pack: LessonPack; questions: LessonQuestion[] }
+export interface LearningConcept { id: number; name: string; prerequisites: string[]; state: string; score: number | null; attempts: number; right_alone: number; box: number; due: string | null; is_due: boolean }
+export interface LearningTopic {
+  id: number; name: string; goal: string; level: string; mode: string; concepts: LearningConcept[]; lessons: { id: number; mode: string; title: string; created: string }[];
+  attempts: { id: number; answer: string; credit: number; graded_by: string; feedback: string; misconception: string; hints_used: number; revealed: number; corrected: number; at: string; question: string; concept: string | null }[];
+  mistakes: { misconception: string; times: number; last: string; question: string }[]; materials: { id: number; title: string; kind: string; pages: number; unread_pages: number; ocr_pages: number; embedded: number }[];
+}
+export interface LearningOverview {
+  topics: { id: number; name: string; goal: string; level: string; mode: string; last_active: string; demonstrated: number; concepts: number; due: number; active: boolean }[];
+  modes: Record<string, string>; default_mode: string; writer: boolean; style: string; due: { topic: string; concept: string; state: string; due: string }[]; can_run?: Record<string, string>;
+}
+export interface CodeRun { ok: boolean; stdout: string; stderr: string; exit: number; timed_out: boolean; ms: number; phase: string }
+export interface ExerciseResult { passed: number; total: number; all_passed: boolean; results: { name: string; stdin: string; expected: string; got: string; error: string; timed_out: boolean; passed: boolean }[] }
+
+export interface ProfileEntry {
+  id: string;
+  category: string;
+  field: string;
+  label: string;
+  sensitive: boolean;
+  value?: string;
+  masked?: boolean;
+  source: string;
+  source_words: string;
+  created: string;
+  updated: string;
+  corrected: boolean;
+}
+
+export interface LastForm {
+  at: number;
+  window: string;
+  heading: string;
+  submitted: boolean | null;
+  stopped?: string;
+  timing_ms?: number;
+  pages?: number;
+  fields: { label: string; status: string; from?: string; why?: string; required?: boolean }[];
+}
+
+export interface ProfileData {
+  available: boolean;
+  reason?: string;
+  protected_by?: string;
+  categories: Record<string, string>;
+  suggestions: { field: string; label: string; category: string }[];
+  entries: ProfileEntry[];
+  last_form: LastForm | null;
+}
+
+export type ProfileChange =
+  | { action: "add"; category: string; label: string; value: string; field?: string; sensitive?: boolean }
+  | { action: "update"; id: string; label?: string; value?: string; sensitive?: boolean }
+  | { action: "delete"; id: string }
+  | { action: "reveal"; id: string };
 
 export interface MemoryEntry {
   /** stable while the entry is unchanged: what a correction or deletion names */

@@ -23,7 +23,7 @@ export const TRANSITIONS: Record<OrbState, readonly OrbState[]> = {
   CONNECTING: ["INITIALIZING", "IDLE", ...BACKGROUND],
   INITIALIZING: ["IDLE", ...BACKGROUND],
   IDLE: ["LISTENING", "PROCESSING", "SPEAKING", ...BACKGROUND],
-  LISTENING: ["PROCESSING", "IDLE", ...BACKGROUND],
+  LISTENING: ["PROCESSING", "IDLE", "SPEAKING", "COMPLETED", ...TURN, ...BACKGROUND], // a quick command's steps can reach the page all at once
   PROCESSING: [...TURN, "COMPLETED", "IDLE", "SPEAKING", "ORCHESTRATING"],
   THINKING: [...TURN, "COMPLETED", "IDLE", "SPEAKING", "ORCHESTRATING"],
   SEARCHING: [...TURN, "COMPLETED", "IDLE", "SPEAKING", "ORCHESTRATING"],
@@ -42,14 +42,14 @@ export function isAllowed(from: OrbState, to: OrbState): boolean {
 }
 
 /**
- * The state to show next. An allowed transition is taken. An unexpected one is a resync (the page reloaded or missed
- * events mid-turn) and shows the backend's truth - except the two states that must be earned: COMPLETED (only after
- * work) and SPEAKING (only while audio plays), which are refused and the current state is kept.
+ * The state to show next: always what is true now, because the old state may have nothing left to replace it. An allowed
+ * transition is taken, and an unexpected one is a resync (the page reloaded or missed events mid-turn). The one exception
+ * is COMPLETED, which must be earned: a "Done" this page never saw the start of shows as Ready instead. SPEAKING needs no
+ * such rule: it only ever comes from audio really playing (deriveOrbState and the backend's talk engine).
  */
 export function nextState(from: OrbState, to: OrbState): OrbState {
   if (isAllowed(from, to)) return to;
-  if (to === "COMPLETED" || to === "SPEAKING") return from;
-  return to;
+  return to === "COMPLETED" ? "IDLE" : to;
 }
 
 /** What the orb shows, from the live inputs. Priority: no backend > a human decision > what the page observes > XENIO. */
@@ -85,15 +85,36 @@ export function describe(state: OrbState, assistant: AssistantSnapshot | null): 
     case "LISTENING": return { label: "Listening", sentence: "Listening. Stop talking and XENIO takes it from there." };
     case "PROCESSING": return { label: "Working on it", sentence: "Working on your request." };
     case "THINKING": return { label: "Thinking", sentence: "Thinking it through." };
-    case "SEARCHING": return { label: "Looking it up", sentence: tool ? `Looking it up: ${tool}.` : "Looking it up." };
+    case "SEARCHING": return { label: hands(assistant)?.label ?? "Looking it up", sentence: hands(assistant)?.sentence ?? (tool ? `Looking it up: ${tool}.` : "Looking it up.") };
     case "PLANNING": return { label: "Planning", sentence: "Planning the work with the engineering team." };
     case "ORCHESTRATING": return { label: "Coordinating", sentence: `Coordinating ${agents} agents working in parallel.` };
-    case "EXECUTING": return { label: "Acting", sentence: tool ? `Acting: ${tool}.` : agents ? "An agent is working." : "Carrying it out." };
+    case "EXECUTING": return { label: hands(assistant)?.label ?? "Acting", sentence: hands(assistant)?.sentence ?? (tool ? `Acting: ${tool}.` : agents ? "An agent is working." : "Carrying it out.") };
     case "SPEAKING": return { label: "Speaking", sentence: "Speaking the answer." };
     case "WAITING_APPROVAL": return { label: "Needs your decision", sentence: "An action is waiting for your yes or no." };
     case "PAUSED": return { label: "Paused", sentence: "Paused. Nothing new starts until you resume." };
     case "COMPLETED": return { label: "Done", sentence: "Done." };
     case "ERROR": return { label: "Something went wrong", sentence: assistant?.error ?? "The last request failed." };
+  }
+}
+
+const ACTION_WORDS: Record<string, string> = {
+  fill: "filling the form", next: "going to the next page", submit: "submitting the form", form: "reading the form",
+  click: "clicking", double_click: "clicking", right_click: "clicking", type: "typing", paste: "writing", key: "pressing a key",
+  scroll: "scrolling", wait: "waiting for the page", run: "running the code", read: "reading the window", batch: "working through the steps",
+};
+
+/** The real step of a running desktop tool, when there is one to report. */
+function hands(assistant: AssistantSnapshot | null): StateCopy | null {
+  const a = assistant?.action;
+  if (!a) return null;
+  const steps = a.step && a.total ? ` (step ${a.step} of ${a.total})` : "";
+  const doing = a.action ? ACTION_WORDS[a.action] ?? "working" : "working";
+  switch (a.state) {
+    case "looking": return { label: "Reading the screen", sentence: "Reading what is on your screen." };
+    case "acting": return { label: "Acting", sentence: `Acting: ${doing}${steps}.` };
+    case "recovering": return { label: "Trying again", sentence: `That control was not there yet: looking once more${steps}.` };
+    case "verifying": return { label: "Checking", sentence: "Checking that it really happened." };
+    default: return null;
   }
 }
 
@@ -103,6 +124,7 @@ const TOOL_WORDS: Record<string, string> = {
   xenio_email_read: "reading an email", xenio_calendar_events: "checking your calendar", xenio_look_at_screen: "looking at your screen",
   xenio_find_ui: "reading the window", xenio_open_app: "opening an app", xenio_gui: "using the keyboard and mouse",
   xenio_media: "controlling music", terminal: "running a command", xenio_engineering: "the engineering team",
+  xenio_teach: "writing the lesson", xenio_image: "making a picture", xenio_form: "filling the form", xenio_browser: "working in the browser", xenio_profile: "checking your details",
   xenio_open_url: "opening a page", xenio_download_file: "downloading a file", patch: "editing a file", write_file: "writing a file",
 };
 

@@ -98,6 +98,12 @@ or "Hey XENIO" was switched), `grant.changed` (a task approval started, was used
 kept in `<data dir>/ui/activity.jsonl` (redacted; requests by size only; typed text quoted «…» by the policy is
 replaced by «…»).
 
+## Chat, or the orb
+
+**Home** is the orb: it has the page, with the latest exchange and the box under it, and steps back when a picture or a lesson is there. **Chat** in the menu is a normal
+conversation for when you are not talking: the whole conversation on one page, no orb, and typed replies stay on screen instead of being spoken. Its words above the box say what
+XENIO is doing while it does it. Both are the same conversation, so you can move between them at any time.
+
 ## The orb
 
 Sixteen states. The backend decides what XENIO is doing (`app/ui/assistant.py`), including what its talk engine is
@@ -123,8 +129,19 @@ its microphone recording (LISTENING), the recording being transcribed (PROCESSIN
 | COMPLETED | a request finished well (2.5 s) | ring and check |
 | ERROR | the last request failed (until the next one or a dismissal) | coral, slight unrest |
 
-Rules (`src/orb/machine.ts`): COMPLETED and SPEAKING can never appear without their cause (an impossible transition
-keeps the current state); anything else the backend reports after a reconnect is shown as it is; priority is
+**It never stays behind.** The orb may have no later event to correct it, so every rule here is about what happens when something is missed:
+
+* Tools are followed by call, not by name: one finishing under another title still ends, and with tools side by side the orb names one still running.
+* A page that gets a burst of steps at once (a quick spoken command) shows the newest. Only "Done" has to be earned: one this page never saw start shows as Ready.
+* A turn that ends without saying so, or is cancelled underneath, is cleared at once, and by the 1 s watcher if all else fails. It also frees the chat.
+* A stream silent for 40 s (the server speaks at least every 15 s; a Mac coming back from sleep can leave a dead connection that reports nothing) is dropped and picked up again,
+  replaying what was missed.
+
+Checked on the real page and the floating orb's page, read through their accessibility trees, against a scripted Hermes: every phase, tools side by side, bursts, a failure, an approval,
+pause, a turn killed underneath, and a reload straight after a turn. 44 of 44 ended on the right words, within about 100 ms of the server. Real audio and the real wake word were not part of that run.
+
+Rules (`src/orb/machine.ts`): COMPLETED can never appear without its cause (it shows as Ready instead), and SPEAKING only ever
+comes from audio really playing; anything else the backend reports after a reconnect is shown as it is; priority is
 no backend > a human decision > what the page observes > XENIO's state; background work (V6) is reported separately so
 "speaking while two agents work" is not a contradiction. The renderer (WebGL particles, GSAP-tweened transitions on
 GSAP's ticker) draws nothing off-screen or in a hidden tab, and one still frame per state with reduced motion. Without

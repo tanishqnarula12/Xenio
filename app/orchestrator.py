@@ -153,6 +153,26 @@ def _pending_reminders() -> int:
     return len(Reminders(default_hermes_home()).list())
 
 
+def not_confirmed(call) -> bool:
+    """A tool call that ended without an error but whose result was not confirmed (status UNVERIFIED in its report):
+    the page did not show what it should have, or nothing could check it. Never shown as done."""
+    return "**status:** UNVERIFIED" in str(getattr(call, "result", "") or "")
+
+
+_CARD = re.compile(r"\[xenio-card (lesson|image) ([\w-]{1,40})\]")
+
+
+def cards_of(tool_calls: list) -> list[dict]:
+    """The cards a turn's tools made, in order, each once: what a tool says it made, never what the model's words say."""
+    seen: list[dict] = []
+    for call in tool_calls:
+        for kind, card in _CARD.findall(str(getattr(call, "result", "") or "")):
+            item = {"kind": kind, "id": int(card) if kind == "lesson" and card.isdigit() else card}
+            if item not in seen:
+                seen.append(item)
+    return seen
+
+
 def describe_actions(tool_calls: list, declined: list[str] | None = None) -> list[str]:
     """Ground truth under each reply: what Hermes actually ran and how each tool call ended, plus the
     actions the user declined (Hermes reports no tool call for those)."""
@@ -160,6 +180,8 @@ def describe_actions(tool_calls: list, declined: list[str] | None = None) -> lis
     for call in tool_calls:
         title = " ".join((getattr(call, "title", "") or getattr(call, "tool_call_id", "")).split())
         status = _STATUS_LABEL.get(getattr(call, "status", ""), getattr(call, "status", "") or "?")
+        if not_confirmed(call):
+            status = "NOT CONFIRMED"
         detail = getattr(call, "detail", "") if getattr(call, "status", "") == "failed" else ""
         lines.append(f"   [{status}] {title[:110]}" + (f" - {detail[:140]}" if detail else ""))
     return (["   actions:"] + lines) if lines else []
@@ -175,6 +197,7 @@ class XenioResponse:
     tool_calls: list = field(default_factory=list)  # what Hermes actually did (ToolActivity), for display
     sources: list[Source] = field(default_factory=list)  # web pages this answer used (recorded by the plugin)
     declined: list[str] = field(default_factory=list)  # actions the user said no to (or did not confirm)
+    attachments: list[dict] = field(default_factory=list)  # cards shown with the reply: {"kind": "lesson" | "image", "id"}
 
     def action_lines(self) -> list[str]:
         return describe_actions(self.tool_calls, self.declined)
@@ -221,7 +244,7 @@ class Orchestrator:
 
     async def process_text(
         self, text: str, on_chunk: ChunkHandler | None = None, context: str | None = None,
-        on_tool: Callable[[object], None] | None = None,
+        on_tool: Callable[[object], None] | None = None, fast: bool = True,
     ) -> XenioResponse:
         """``context`` is an interface note for Hermes (e.g. "this is a spoken conversation"),
         appended after the user's words so Hermes can adapt its answer. ``on_tool`` sees every tool
@@ -241,19 +264,20 @@ class Orchestrator:
             return XenioResponse(MSG_DUPLICATE, ok=False, error="duplicate", command_id=command_id)
         self._in_flight[key] = command_id
         try:
-            response = await self._process(text, command_id, on_chunk, context, on_tool)
+            response = await self._process(text, command_id, on_chunk, context, on_tool, fast)
         finally:
             self._in_flight.pop(key, None)
         response.command_id = command_id
         return response
 
     async def _process(self, text: str, command_id: str, on_chunk: ChunkHandler | None, context: str | None,
-                       on_tool: Callable[[object], None] | None) -> XenioResponse:
+                       on_tool: Callable[[object], None] | None, allow_fast: bool = True) -> XenioResponse:
         async with self._busy:
             event(log, "User command received", chars=len(text), command_id=command_id)
             log.debug("User command text: %s", text)
             started = time.monotonic()
-            if self.fast is not None:
+            if self.fast is not None and allow_fast:
+                self.fast.progress, self.fast.on_tool = on_chunk, on_tool
                 fast = await self.fast.handle(text)
                 if fast is not None:  # done by XENIO itself, in well under a second
                     if fast.note:
@@ -261,7 +285,7 @@ class Orchestrator:
                     if on_chunk is not None:
                         on_chunk(fast.text)
                     # a failed step is a normal reply ("That didn't work: ..."), marked [FAILED] in the action list
-                    return XenioResponse(fast.text, ok=True, tool_calls=fast.actions)
+                    return XenioResponse(fast.text, ok=True, tool_calls=fast.actions, attachments=list(fast.attachments))
             # V5.5: the language this request was spoken in (reply in it) and its language-independent intents
             local, self._local_notes = "\n".join(self._local_notes), []
             notes = "\n".join(n for n in (context, local, language_note(text)) if n)
@@ -290,11 +314,17 @@ class Orchestrator:
                 tools=len(reply.tool_calls),
             )
             tools = list(reply.tool_calls)
+            if any(str(getattr(t, "title", "") or "").startswith(("xenio_gui", "xenio_look_at_screen", "xenio_find_ui"))
+                   for t in tools):
+                from app.desktop import metrics
+
+                metrics.record("task", (time.monotonic() - started) * 1000, self.stop_dir, tools=len(tools),
+                               ok=not reply.cancelled, cancelled=reply.cancelled)
             # read after the turn: Hermes may have moved to a new session during it (lost-session recovery)
             sources = self.sources.since(mark, getattr(self.hermes, "session_id", None))
             if sources:
                 event(log, "Web sources used", count=len(sources), sites=",".join(sorted({s.site for s in sources}))[:200])
-            extra = {"tool_calls": tools, "sources": sources, "declined": list(self._declined)}
+            extra = {"tool_calls": tools, "sources": sources, "declined": list(self._declined), "attachments": cards_of(tools)}
             if reply.cancelled:
                 return XenioResponse(reply.text, ok=True, cancelled=True, **extra)
             if not reply.text:

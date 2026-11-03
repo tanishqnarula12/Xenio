@@ -48,6 +48,7 @@ class CapturedImage:
     title: str = ""
     captured_at: float = field(default_factory=time.time)
     digest: str = ""
+    sketch: bytes = b""  # a tiny brightness map, to compare captures (macOS)
     capture_ms: int = 0
     encode_ms: int = 0
 
@@ -113,6 +114,27 @@ def _mac():
     return macos
 
 
+SKETCH_WIDTH, SKETCH_TOLERANCE = 160, 6
+
+
+def _mac_sketch(macos, image, skip_top: float, full_height: float) -> bytes:
+    """A tiny brightness map of a capture: enough to tell whether anything changed, too small to read anything. The menu
+    bar is left out (its clock changes every minute; 33 of 956 points on this Mac)."""
+    lib = macos.lib()
+    width, height = macos.image_size(image)
+    rows = max(1, height * SKETCH_WIDTH // max(1, width))
+    small, raw = macos.scale_image(image, SKETCH_WIDTH, rows)
+    lib.cg.CGImageRelease(small)
+    first = int(rows * skip_top / max(1.0, full_height)) + 1 if skip_top else 0
+    return bytes(raw[first * SKETCH_WIDTH * 4 + 1::4])  # the green channel
+
+
+def same_sketch(a: bytes, b: bytes, tolerance: int = SKETCH_TOLERANCE) -> bool:
+    """Two captures show the same thing. Strict on purpose: a wrongly reused answer is worse than one more model call,
+    so even a caret that blinked counts as a change."""
+    return bool(a) and len(a) == len(b) and all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
+
 def _mac_grab(x: float, y: float, width: float, height: float, source: str, max_edge: int,
               window_id: int = 0, title: str = "") -> CapturedImage:
     macos = _mac()
@@ -133,12 +155,13 @@ def _mac_grab(x: float, y: float, width: float, height: float, source: str, max_
         digest = hashlib.sha256(rgb).hexdigest()
         del rgb
         data = macos.encode_image(small, "public.jpeg")
+        sketch = _mac_sketch(macos, image, skip_top=33 if source == "screen" else 0, full_height=height)
     finally:
         lib.cg.CGImageRelease(image)
         if small:
             lib.cg.CGImageRelease(small)
     return CapturedImage(data, out_w, out_h, source, (int(width), int(height)), mime="image/jpeg", title=title,
-                         digest=digest, capture_ms=int((captured - started) * 1000),
+                         digest=digest, sketch=sketch, capture_ms=int((captured - started) * 1000),
                          encode_ms=int((time.monotonic() - captured) * 1000))
 
 

@@ -26,6 +26,7 @@ import json
 import os
 import plistlib
 import select
+import struct
 import subprocess
 import sys
 import threading
@@ -234,7 +235,11 @@ class _Lib:
             self.ax_window_id = sig(ax, "_AXUIElementGetWindow", ctypes.c_int32, _P, ctypes.POINTER(ctypes.c_uint32))
         except AttributeError:
             self.ax_window_id = None
+        sig(ax, "AXUIElementCopyActionNames", ctypes.c_int32, _P, ctypes.POINTER(_P))
         self.t_ax_element, self.t_ax_value = ax.AXUIElementGetTypeID(), ax.AXValueGetTypeID()
+        sig(self.cf, "CFURLGetTypeID", ctypes.c_ulong)
+        sig(self.cf, "CFURLGetString", _P, _P)
+        self.t_url = self.cf.CFURLGetTypeID()
 
         sig(self.proc, "proc_pidpath", ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32)
         sig(objc, "objc_getClass", _P, ctypes.c_char_p)
@@ -299,6 +304,8 @@ class _Lib:
             return None  # ranges, and kAXValueAXErrorType for attributes an element does not have
         if tid == self.t_ax_element:
             return self.cf.CFRetain(ref) if keep_elements else None
+        if tid == self.t_url:
+            return self.string(self.cf.CFURLGetString(ref))
         return None
 
     def dict_get(self, d, key: str):
@@ -380,6 +387,7 @@ def session_locked() -> bool:
 
 
 KVK_ESCAPE = 0x35
+KVK_SPACE = 0x31
 
 
 def key_down(keycode: int) -> bool:
@@ -732,6 +740,12 @@ _WINDOW_ATTRS = ("AXTitle", "AXPosition", "AXSize", "AXMinimized", "AXMain", "AX
 # a window's text (app.desktop.pagetext): web content names its CSS classes, which is how code editors are recognised
 _SNAP_ATTRS = ("AXRole", "AXSubrole", "AXValue", "AXTitle", "AXDescription", "AXPosition", "AXSize", "AXFocused",
                "AXDOMClassList", "AXChildren")
+# a form's controls (app.autofill.forms): the label comes from the page's own <label> or aria-label (AXTitle), its type from
+# what the browser calls it (AXRoleDescription: "email field", "telephone number field")
+_FORM_ATTRS = ("AXRole", "AXSubrole", "AXRoleDescription", "AXTitle", "AXDescription", "AXValue", "AXPlaceholderValue",
+               "AXDOMIdentifier", "AXPosition", "AXSize", "AXEnabled", "AXRequired", "AXInvalid", "AXFocused", "AXChildren")
+_FORM_CONTROLS = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXPopUpButton", "AXCheckBox", "AXRadioButton",
+                  "AXDateTimeArea", "AXDateField", "AXTimeField", "AXButton", "AXLink"}
 # Chromium/Electron apps (Chrome, Discord, Slack, VS Code, WhatsApp...) build their full accessibility tree only
 # when an assistive app asks for it, like VoiceOver does.
 _CHROMIUM = ("com.google.chrome", "com.microsoft.edgemac", "com.brave.browser", "company.thebrowser.browser",
@@ -751,6 +765,9 @@ class AX:
         self._names = self.L.cf_array([self.L.cfstr(a) for a in _NODE_ATTRS])
         self._window_names = self.L.cf_array([self.L.cfstr(a) for a in _WINDOW_ATTRS])
         self._snap_names = self.L.cf_array([self.L.cfstr(a) for a in _SNAP_ATTRS])
+        self._form_names = self.L.cf_array([self.L.cfstr(a) for a in _FORM_ATTRS])
+        self._form_refs: dict[int, int] = {}  # the controls of the last form read: index -> element (retained)
+        self._form_token = 0
 
     def require(self) -> None:
         if not self.L.ax.AXIsProcessTrusted():
@@ -792,6 +809,8 @@ class AX:
         elif isinstance(value, tuple) and len(value) == 2 and name == "AXSize":
             s = CGSize(*value)
             ref, owned = L.ax.AXValueCreate(2, ctypes.byref(s)), True
+        elif isinstance(value, str):
+            ref, owned = L.new_cfstr(value), True
         else:
             raise MacError(f"unsupported value for {name}")
         try:
@@ -917,12 +936,20 @@ class AX:
             self.set(el, "AXMain", True)
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
-                if self.frontmost() == (pid, wid):
+                if self._is_in_front(pid, wid):
                     return True
                 time.sleep(0.03)
-            return self.frontmost() == (pid, wid)
+            return self._is_in_front(pid, wid)
         finally:
             self.L.release(el)
+
+    def _is_in_front(self, pid: int, wid: int) -> bool:
+        """The window is in front. A panel that holds the keyboard without activating its app (XENIO's quick chat) moves what
+        Accessibility calls front but not the window itself: measured 2026-11-02, every focus failed after 4 s while it was open."""
+        if self.frontmost() == (pid, wid):
+            return True
+        first = next((w for w in cg_windows(on_screen_only=True) if w["layer"] == 0 and regular_app(int(w["pid"]))), None)
+        return first is not None and int(first["id"]) == int(wid)
 
     def minimize(self, wid: int, pid: int = 0) -> bool:
         pid, el = self._find_window(wid, pid)
@@ -1228,6 +1255,365 @@ class AX:
                 "nodes": count, "web_page": page is not tree, "editors": found[:3],
                 "ms": int((time.monotonic() - started) * 1000)}
 
+    # ---- forms (app.autofill): read every control once, then act on each by its index, with no second walk ---------------
+
+    def _drop_form(self) -> None:
+        for el in self._form_refs.values():
+            self.L.release(el)
+        self._form_refs = {}
+
+    def form_scan(self, wid: int, max_nodes: int = 8000, budget: float = 3.0) -> dict:
+        """The window's page (or the window) as a flat list in document order: controls with an index for ``form_*``, and
+        the headings and text around them, from which labels come. A secure field's value is never read."""
+        started = time.monotonic()
+        pid, root = self._find_window(wid)
+        self._enhance(pid)
+        self._drop_form()
+        self._form_token += 1
+        nodes: list[dict] = []
+        state = {"count": 0, "complete": True, "web": None, "url": None}
+        deadline = started + budget
+
+        def rect_of(f: dict) -> list[float] | None:
+            pos, size = f.get("AXPosition"), f.get("AXSize")
+            return [pos[0], pos[1], size[0], size[1]] if pos and size else None
+
+        def visit(el, depth: int, group: str, hidden: bool, group_required: bool = False, in_control: bool = False) -> None:
+            state["count"] += 1
+            f = self.get_many(el, self._form_names, _FORM_ATTRS, keep_elements=True)
+            kids = f.pop("AXChildren", None) or []
+            role, sub = str(f.get("AXRole") or ""), str(f.get("AXSubrole") or "")
+            rect = rect_of(f)
+            # a box with no area hides what is inside it (measured: Safari reports a field inside "height: 0" at full size)
+            empty = rect is not None and (rect[2] <= 0 or rect[3] <= 0) and role in ("AXGroup", "AXGenericElement", "AXSection")
+            hidden = hidden or empty
+            title, desc = str(f.get("AXTitle") or ""), str(f.get("AXDescription") or "")
+            # a question: a fieldset, a radio group, or (Google Forms' tick boxes) a named list
+            if sub in ("AXFieldset", "AXApplicationGroup") or role == "AXRadioGroup" or (role == "AXList" and sub == "AXContentList" and (title or desc)):
+                group = title or desc or group
+                group_required = bool(f.get("AXRequired")) or (group_required and sub != "AXContentList")
+            listbox = role == "AXList" and sub != "AXContentList" and bool(title or desc)  # a page's own list (role=listbox)
+            if role in _FORM_CONTROLS or listbox:
+                index = len(self._form_refs)
+                self._form_refs[index] = self.L.cf.CFRetain(el)
+                value = f.get("AXValue")
+                secure = sub == "AXSecureTextField"
+                options = None
+                if listbox:  # its options are in the tree even while closed (measured, Google Forms), the chosen one selected
+                    shown = [(" ".join(str(self.get(k, "AXTitle") or self.get(k, "AXValue") or "").split()), self.get(k, "AXSelected") is True) for k in kids]
+                    options = [n for n, _ in shown if n]
+                    value = next((n for n, chosen in shown if chosen and n), options[0] if options else "")
+                nodes.append({"i": index, "role": "AXListBox" if listbox else role, "sub": sub, **({"options": options} if listbox else {}), "what": str(f.get("AXRoleDescription") or ""), "title": title,
+                              "desc": desc, "value": None if secure else (value if isinstance(value, (str, int, float)) else None),
+                              "placeholder": str(f.get("AXPlaceholderValue") or ""), "dom_id": str(f.get("AXDOMIdentifier") or ""),
+                              "rect": rect, "enabled": f.get("AXEnabled") is not False, "required": f.get("AXRequired") is True or group_required,
+                              "invalid": str(f.get("AXInvalid") or "") not in ("", "false", "False", "0"), "focused": bool(f.get("AXFocused")),
+                              "secure": secure, "hidden": hidden, "group": group, "depth": depth})
+            elif role in ("AXStaticText", "AXHeading"):
+                text = value = f.get("AXValue") if isinstance(f.get("AXValue"), str) else title
+                if text and str(text).strip():
+                    nodes.append({"role": role, "text": " ".join(str(text).split())[:300], "rect": rect, "hidden": hidden, "depth": depth,
+                                  "plain": not in_control})
+            elif role == "AXWebArea" and state["web"] is None:
+                state["web"] = rect
+                state["url"] = self.get(el, "AXURL")
+                nodes.clear()  # the browser's own toolbar is not the page
+                self._drop_form()
+            for kid in kids:
+                if state["count"] < max_nodes and depth < 120 and time.monotonic() < deadline:
+                    visit(kid, depth + 1, group, hidden, group_required, in_control or role in _FORM_CONTROLS or listbox)
+                else:
+                    state["complete"] = False
+                self.L.release(kid)
+
+        try:
+            visit(root, 0, "", False)
+        finally:
+            self.L.release(root)
+        return {"token": self._form_token, "nodes": nodes, "complete": state["complete"], "web_area": state["web"],
+                "url": state["url"] if isinstance(state["url"], str) else "", "count": state["count"], "pid": pid,
+                "ms": int((time.monotonic() - started) * 1000)}
+
+    # ---- the browser's own controls (app.desktop.browser): outside the page ---------------------------------------------
+
+    def _chrome_controls(self, wid: int, role: str, limit: int = 600) -> list:
+        """Retained elements with this role in the window, not looking inside the page."""
+        _, root = self._find_window(wid)
+        found, queue, seen = [], [root], 0
+        while queue and seen < limit:
+            el = queue.pop(0)
+            seen += 1
+            kind = self.get(el, "AXRole")
+            if kind == role:
+                found.append(self.L.cf.CFRetain(el))
+            if kind != "AXWebArea":
+                queue.extend(self.get(el, "AXChildren", keep_elements=True) or [])
+            self.L.release(el)
+        for el in queue:
+            self.L.release(el)
+        return found
+
+    def browser_tabs(self, wid: int) -> dict:
+        tabs = self._chrome_controls(wid, "AXRadioButton")
+        try:
+            return {"tabs": [str(self.get(t, "AXTitle") or self.get(t, "AXDescription") or "") for t in tabs]}
+        finally:
+            for t in tabs:
+                self.L.release(t)
+
+    def browser_tab(self, wid: int, name: str) -> dict:
+        want = " ".join(str(name or "").lower().split())
+        tabs = self._chrome_controls(wid, "AXRadioButton")
+        try:
+            titles = [" ".join(str(self.get(t, "AXTitle") or "").lower().split()) for t in tabs]
+            match = [t for t, title in zip(tabs, titles) if title == want] or [t for t, title in zip(tabs, titles) if want and want in title]
+            return {"pressed": bool(self.act(match[0], "AXPress"))} if len(match) == 1 else {"pressed": False}
+        finally:
+            for t in tabs:
+                self.L.release(t)
+
+    def browser_button(self, wid: int, action: str) -> dict:
+        """Back, forward, reload in the window's toolbar: the same whichever Space or app is in front."""
+        words = {"back": ("back", "go back"), "forward": ("forward", "go forward"),
+                 "reload": ("reload this page", "reload", "reload page")}[action]
+        buttons = self._chrome_controls(wid, "AXButton")
+        try:
+            for button in buttons:
+                name = " ".join(str(self.get(button, "AXDescription") or self.get(button, "AXTitle") or "").lower().split())
+                if name in words and self.get(button, "AXEnabled") is not False:
+                    return {"pressed": bool(self.act(button, "AXPress"))}
+            return {"pressed": False}
+        finally:
+            for button in buttons:
+                self.L.release(button)
+
+    def _form_el(self, token: int, index: int):
+        el = self._form_refs.get(int(index)) if int(token) == self._form_token else None
+        if el is None:
+            raise MacError("STALE: the form changed: read it again")
+        return el
+
+    def form_read(self, token: int, index: int) -> dict:
+        """What a control holds now. ``alive`` false when it is gone from the page."""
+        el = self._form_el(token, index)
+        role = self.get(el, "AXRole")
+        if not role:
+            return {"alive": False, "value": None}
+        if self.get(el, "AXSubrole") == "AXSecureTextField":
+            return {"alive": True, "value": None}
+        value = self.get(el, "AXValue")
+        return {"alive": True, "value": value if isinstance(value, (str, int, float)) else None,
+                "invalid": str(self.get(el, "AXInvalid") or "") not in ("", "false", "False", "0")}
+
+    def form_set(self, token: int, index: int, text: str, blur: bool = False) -> dict:
+        """Put text into a field: focus it, then set its value (measured in Safari: without the focus the call succeeds and
+        nothing happens; with it the page gets its input and change events). Focusing brings the app to the front."""
+        el = self._form_el(token, index)
+        if self.get(el, "AXSubrole") == "AXSecureTextField":
+            raise MacError("REFUSED: a password field")
+        started = time.monotonic()
+        focused = self.set(el, "AXFocused", True) and _poll(lambda: self.get(el, "AXFocused") is True, 0.5)
+        accepted = self.set(el, "AXValue", str(text))
+        got = None
+        if accepted:  # the page may take a moment to take it
+            want = str(text)
+            def stuck():
+                nonlocal got
+                got = self.get(el, "AXValue")
+                return got == want
+            _poll(stuck, 0.25)
+        if blur:
+            self.set(el, "AXFocused", False)
+        return {"focused": bool(focused), "accepted": bool(accepted), "value": got if isinstance(got, str) else None,
+                "ms": int((time.monotonic() - started) * 1000)}
+
+    def _can_press(self, el) -> bool:
+        out = _P()
+        if self.L.ax.AXUIElementCopyActionNames(el, ctypes.byref(out)) != AX_OK or not out:
+            return True  # not known: try it, and the value will tell
+        try:
+            return "AXPress" in (self.L.to_py(out.value) or [])
+        finally:
+            self.L.release(out.value)
+
+    def form_press(self, token: int, index: int) -> dict:
+        """A checkbox, radio button, button or link, pressed the way VoiceOver does: no mouse, no focus taken. The page may take
+        a moment to answer. ``can_press`` false: this control has no such action (measured: Google Forms' radio buttons say
+        yes to AXPress and do nothing; they offer no AXPress at all, and take focus and Space)."""
+        el = self._form_el(token, index)
+        if not self._can_press(el):
+            return {"pressed": False, "can_press": False, "value": self.get(el, "AXValue")}
+        before = self.get(el, "AXValue")
+        pressed = self.act(el, "AXPress")
+        got = before
+        if pressed and self.get(el, "AXRole") in ("AXCheckBox", "AXRadioButton"):
+            def changed():
+                nonlocal got
+                got = self.get(el, "AXValue")
+                return got != before
+            _poll(changed, 0.35)
+        else:
+            got = self.get(el, "AXValue")
+        return {"pressed": bool(pressed), "can_press": True, "value": got if isinstance(got, (int, float, str)) else None}
+
+    def form_point(self, token: int, index: int) -> dict:
+        """Where a control is on screen, scrolled into view first: for a real click, when nothing else moved it."""
+        el = self._form_el(token, index)
+        self.act(el, "AXScrollToVisible")
+        time.sleep(0.15)
+        pos, size = self.get(el, "AXPosition"), self.get(el, "AXSize")
+        return {"point": [int(pos[0] + size[0] / 2), int(pos[1] + size[1] / 2)] if pos and size else None}
+
+    def form_space(self, token: int, index: int) -> dict:
+        """Focus and the Space key, as a person using the keyboard would. The caller has made sure the window is in front."""
+        el = self._form_el(token, index)
+        before = self.get(el, "AXValue")
+        if not (self.set(el, "AXFocused", True) and _poll(lambda: self.get(el, "AXFocused") is True, 0.4)):
+            return {"focused": False, "value": before}
+        for down in (True, False):
+            post(key_event(KVK_SPACE, down))
+        got = before
+
+        def changed():
+            nonlocal got
+            got = self.get(el, "AXValue")
+            return got != before
+        _poll(changed, 0.35)
+        return {"focused": True, "value": got if isinstance(got, (int, float, str)) else None}
+
+    def _keys(self, text: str) -> None:
+        """One key event per character: a date's parts and a list's type-ahead take a key at a time (measured: "31" as one
+        event left the day at 3)."""
+        for ch in text:
+            units = list(struct.unpack(f"<{len(ch.encode('utf-16-le')) // 2}H", ch.encode("utf-16-le")))
+            for down in (True, False):
+                post(unicode_event(units, down))
+            time.sleep(0.012)
+
+    def form_type_ahead(self, token: int, index: int, text: str) -> dict:
+        """A <select>: focused, then its option's name typed (measured in WebKit: the menu does not open through accessibility,
+        and its options are not in the tree; typing chooses the option and the page gets its input and change events).
+        The caller has made sure the window is in front, so the keys arrive here."""
+        el = self._form_el(token, index)
+        focused = self.set(el, "AXFocused", True) and _poll(lambda: self.get(el, "AXFocused") is True, 0.5)
+        if not focused:
+            return {"focused": False, "value": self.get(el, "AXValue")}
+        self._keys(str(text))
+        time.sleep(0.05)
+        value = self.get(el, "AXValue")
+        return {"focused": True, "value": value if isinstance(value, str) else None}
+
+    def form_date(self, token: int, index: int, year: int, month: int, day: int) -> dict:
+        """A native date field: its parts are named controls (day, month, year) whatever order the Mac's region shows them
+        in. Each is focused and given its digits, then read back."""
+        el = self._form_el(token, index)
+        parts: dict[str, int] = {}
+
+        def collect(node, depth: int = 0) -> None:
+            for kid in self.get(node, "AXChildren", keep_elements=True) or []:
+                role = self.get(kid, "AXRole")
+                name = str(self.get(kid, "AXTitle") or self.get(kid, "AXDescription") or "").lower()
+                if role == "AXIncrementor" and name in ("day", "month", "year"):
+                    parts[name] = kid
+                    continue
+                if depth < 4:
+                    collect(kid, depth + 1)
+                self.L.release(kid)
+
+        collect(el)
+        try:
+            if set(parts) != {"day", "month", "year"}:
+                return {"parts": sorted(parts), "verified": False}
+            wanted = {"day": (day, f"{day:02d}"), "month": (month, f"{month:02d}"), "year": (year, f"{year:04d}")}
+            got = {}
+            for name, (number, digits) in wanted.items():
+                self.set(parts[name], "AXFocused", True)
+                _poll(lambda n=name: self.get(parts[n], "AXFocused") is True, 0.4)
+                self._keys(digits)
+                time.sleep(0.03)
+            time.sleep(0.05)
+            for name, (number, _) in wanted.items():
+                got[name] = self.get(parts[name], "AXValue")
+            return {"parts": sorted(parts), "verified": all(got[n] == wanted[n][0] for n in wanted)}
+        finally:
+            for kid in parts.values():
+                self.L.release(kid)
+
+    def _list_options(self, el) -> list[dict]:
+        """[{name, rect, selected, ref}] of a page's own list (retained refs: the caller releases them)."""
+        out = []
+        for kid in self.get(el, "AXChildren", keep_elements=True) or []:
+            name = " ".join(str(self.get(kid, "AXTitle") or self.get(kid, "AXValue") or "").split())
+            if not name:
+                self.L.release(kid)
+                continue
+            pos, size = self.get(kid, "AXPosition"), self.get(kid, "AXSize")
+            out.append({"name": name, "rect": [*pos, *size] if pos and size else None, "selected": self.get(kid, "AXSelected") is True, "ref": kid})
+        return out
+
+    def form_list_point(self, token: int, index: int) -> dict:
+        """Where to click to open a page's own list (Google Forms': it answers neither AXPress nor focus, measured). Scrolled
+        into view first."""
+        el = self._form_el(token, index)
+        self.act(el, "AXScrollToVisible")
+        time.sleep(0.2)
+        options = self._list_options(el)
+        try:
+            shown = next((o for o in options if o["selected"]), options[0] if options else None)
+            rect = shown["rect"] if shown and shown["rect"] else None
+            if rect is None:
+                pos, size = self.get(el, "AXPosition"), self.get(el, "AXSize")
+                rect = [*pos, *size] if pos and size else None
+            if rect is None:
+                return {"point": None}
+            return {"point": [int(rect[0] + rect[2] / 2), int(rect[1] + rect[3] / 2)]}
+        finally:
+            for option in options:
+                self.L.release(option["ref"])
+
+    def form_list_pick(self, token: int, index: int, values: list[str]) -> dict:
+        """With the list open: the first of ``values`` an option clearly says, pressed. ``point``: that option, should the press
+        do nothing."""
+        from app.autofill.matching import AUTO_FILL, match_option
+
+        el = self._form_el(token, index)
+        options: list[dict] = []
+        end = time.monotonic() + 0.8
+        while time.monotonic() < end:  # open, its options have their height (closed: 10 of 48 points, measured)
+            for option in options:
+                self.L.release(option["ref"])
+            options = self._list_options(el)
+            if len([o for o in options if o["rect"] and o["rect"][3] >= 18]) >= 2:
+                break
+            time.sleep(0.04)
+        try:
+            names = [o["name"] for o in options]
+            for value in values:
+                wanted, score = match_option(str(value), names)
+                if wanted and score >= AUTO_FILL:
+                    option = next(o for o in options if o["name"] == wanted)
+                    self.act(option["ref"], "AXPress")
+                    rect = option["rect"]
+                    return {"options": names[:40], "chosen": wanted, "point": [int(rect[0] + rect[2] / 2), int(rect[1] + rect[3] / 2)] if rect else None}
+            return {"options": names[:40], "chosen": ""}
+        finally:
+            for option in options:
+                self.L.release(option["ref"])
+
+    def form_list_value(self, token: int, index: int) -> dict:
+        el = self._form_el(token, index)
+        options = self._list_options(el)
+        try:
+            open_now = len([o for o in options if o["rect"] and o["rect"][3] >= 18]) >= 2
+            shown = next((o["name"] for o in options if o["selected"]), options[0]["name"] if options else "")
+            return {"value": shown, "open": open_now}
+        finally:
+            for option in options:
+                self.L.release(option["ref"])
+
+    def form_is_focused(self, token: int, index: int) -> dict:
+        return {"focused": self.get(self._form_el(token, index), "AXFocused") is True}
+
     def _is_focused(self, el, pid: int) -> bool:
         if self.get(el, "AXFocused") is True:  # the page's own focus (true even while the app is behind others)
             return True
@@ -1301,6 +1687,53 @@ def visible_frame(point: tuple[float, float]) -> tuple[float, float, float, floa
 
 # ---- the helper process ----------------------------------------------------------------------------------------
 
+# ---- PDFs (app.teacher.materials): the words of each page, and a page as a picture when it is a scan -----------------------------
+
+_pdfkit = None
+_MAX_PDF_PAGES = 3000
+
+
+def _pdf_document(path: str):
+    global _pdfkit
+    L = lib()
+    if _pdfkit is None:
+        _pdfkit = ctypes.CDLL("/System/Library/Frameworks/PDFKit.framework/PDFKit")
+    url = L.send(L.cls("NSURL"), "fileURLWithPath:", _P, L.cfstr(path), argtypes=(_P,))
+    doc = L.send(L.send(L.cls("PDFDocument"), "alloc"), "initWithURL:", _P, url, argtypes=(_P,))
+    if not doc:
+        raise MacError("that PDF could not be opened")
+    if L.send(doc, "isLocked", ctypes.c_bool):
+        raise MacError("that PDF is locked with a password")
+    return doc
+
+
+def pdf_text(path: str) -> dict:
+    L = lib()
+    doc = _pdf_document(path)
+    pages = []
+    for index in range(min(int(L.send(doc, "pageCount", ctypes.c_ulong)), _MAX_PDF_PAGES)):
+        page = L.send(doc, "pageAtIndex:", _P, ctypes.c_ulong(index), argtypes=(ctypes.c_ulong,))
+        words = L.send(page, "string") if page else None
+        pages.append(L.string(words) if words else "")
+    return {"pages": pages}
+
+
+def pdf_page_image(path: str, index: int, longest: float = 2000.0) -> dict:
+    """One page, for reading a scan."""
+    import base64
+
+    L = lib()
+    doc = _pdf_document(path)
+    page = L.send(doc, "pageAtIndex:", _P, ctypes.c_ulong(index), argtypes=(ctypes.c_ulong,))
+    if not page:
+        raise MacError("that page does not exist")
+    picture = L.send(page, "thumbnailOfSize:forBox:", _P, CGSize(longest, longest), ctypes.c_long(0), argtypes=(CGSize, ctypes.c_long))
+    if not picture:
+        raise MacError("that page could not be drawn")
+    image = L.send(picture, "CGImageForProposedRect:context:hints:", _P, None, None, None, argtypes=(_P, _P, _P))
+    return {"jpeg": base64.b64encode(encode_image(image, quality=0.85)).decode()}
+
+
 def _handle(ax: AX, cmd: str, a: dict):
     if cmd == "ping":
         return {"trusted": bool(ax.L.ax.AXIsProcessTrusted()), "pid": os.getpid()}
@@ -1319,6 +1752,13 @@ def _handle(ax: AX, cmd: str, a: dict):
         return ax.fullscreen(int(a["id"]), int(a.get("pid") or 0), None if value is None else bool(value))
     if cmd == "press":
         return ax.press(int(a["id"]), str(a.get("name") or ""))
+    if cmd == "ocr":
+        from app.desktop import ocr
+
+        try:
+            return ocr.read_here(int(a["id"]), tuple(a["rect"]))
+        except ocr.OcrError as exc:
+            raise MacError(str(exc)) from None
     if cmd == "find":
         return ax.find(int(a["id"]), str(a.get("query") or ""), int(a.get("limit") or 8), int(a.get("max_nodes") or 2500),
                        float(a.get("budget") or 2.5))
@@ -1330,6 +1770,40 @@ def _handle(ax: AX, cmd: str, a: dict):
         return ax.read_text(int(a["id"]), int(a.get("max_chars") or 60000))
     if cmd == "editor":
         return ax.editor(int(a["id"]), bool(a.get("focus", True)))
+    if cmd == "pdf_text":
+        return pdf_text(str(a["path"]))
+    if cmd == "pdf_page_image":
+        return pdf_page_image(str(a["path"]), int(a["page"]))
+    if cmd == "form_scan":
+        return ax.form_scan(int(a["id"]), int(a.get("max_nodes") or 8000), float(a.get("budget") or 3.0))
+    if cmd == "browser_tabs":
+        return ax.browser_tabs(int(a["id"]))
+    if cmd == "browser_tab":
+        return ax.browser_tab(int(a["id"]), str(a.get("name") or ""))
+    if cmd == "browser_button":
+        return ax.browser_button(int(a["id"]), str(a.get("action") or ""))
+    if cmd == "form_read":
+        return ax.form_read(int(a["token"]), int(a["index"]))
+    if cmd == "form_set":
+        return ax.form_set(int(a["token"]), int(a["index"]), str(a.get("text") or ""), bool(a.get("blur")))
+    if cmd == "form_press":
+        return ax.form_press(int(a["token"]), int(a["index"]))
+    if cmd == "form_type_ahead":
+        return ax.form_type_ahead(int(a["token"]), int(a["index"]), str(a.get("text") or ""))
+    if cmd == "form_date":
+        return ax.form_date(int(a["token"]), int(a["index"]), int(a["year"]), int(a["month"]), int(a["day"]))
+    if cmd == "form_point":
+        return ax.form_point(int(a["token"]), int(a["index"]))
+    if cmd == "form_space":
+        return ax.form_space(int(a["token"]), int(a["index"]))
+    if cmd == "form_list_point":
+        return ax.form_list_point(int(a["token"]), int(a["index"]))
+    if cmd == "form_list_pick":
+        return ax.form_list_pick(int(a["token"]), int(a["index"]), [str(v) for v in a.get("values") or []])
+    if cmd == "form_list_value":
+        return ax.form_list_value(int(a["token"]), int(a["index"]))
+    if cmd == "form_is_focused":
+        return ax.form_is_focused(int(a["token"]), int(a["index"]))
     raise MacError(f"unknown command {cmd!r}")
 
 

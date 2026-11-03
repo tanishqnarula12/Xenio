@@ -1,3 +1,4 @@
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { Shell } from "./components/Shell";
 import { Loading } from "./components/ui";
@@ -7,12 +8,15 @@ import { useAppState } from "./state/context";
 import { useRoute, type Route } from "./state/router";
 
 // Home is the first screen; every other page loads when it is first opened.
+const ChatPage = lazy(() => import("./pages/Chat").then((m) => ({ default: m.ChatPage })));
 const AgentsPage = lazy(() => import("./pages/Agents").then((m) => ({ default: m.AgentsPage })));
 const OrchestrationPage = lazy(() => import("./pages/Orchestration").then((m) => ({ default: m.OrchestrationPage })));
 const TasksPage = lazy(() => import("./pages/Tasks").then((m) => ({ default: m.TasksPage })));
 const SchedulesPage = lazy(() => import("./pages/Schedules").then((m) => ({ default: m.SchedulesPage })));
 const ToolsPage = lazy(() => import("./pages/Tools").then((m) => ({ default: m.ToolsPage })));
 const MemoryPage = lazy(() => import("./pages/Memory").then((m) => ({ default: m.MemoryPage })));
+const LearnPage = lazy(() => import("./pages/Learn").then((m) => ({ default: m.LearnPage })));
+const ProfilePage = lazy(() => import("./pages/Profile").then((m) => ({ default: m.ProfilePage })));
 const ActivityPage = lazy(() => import("./pages/Activity").then((m) => ({ default: m.ActivityPage })));
 const ApprovalsPage = lazy(() => import("./pages/Approvals").then((m) => ({ default: m.ApprovalsPage })));
 const IntegrationsPage = lazy(() => import("./pages/SystemPages").then((m) => ({ default: m.IntegrationsPage })));
@@ -22,12 +26,15 @@ const SettingsPage = lazy(() => import("./pages/SystemPages").then((m) => ({ def
 function Page({ route }: { route: Route }) {
   switch (route.page) {
     case "home": return <HomePage />;
+    case "chat": return <ChatPage />;
     case "agents": return <AgentsPage />;
     case "orchestration": return <OrchestrationPage runId={route.param} />;
     case "tasks": return <TasksPage />;
     case "schedules": return <SchedulesPage />;
     case "tools": return <ToolsPage />;
     case "memory": return <MemoryPage />;
+    case "learn": return <LearnPage param={route.param} />;
+    case "profile": return <ProfilePage />;
     case "activity": return <ActivityPage />;
     case "approvals": return <ApprovalsPage />;
     case "integrations": return <IntegrationsPage />;
@@ -56,7 +63,7 @@ export function App() {
     <Shell page={route.page}>
       {loadError && <p className="banner banner--danger" role="alert">XENIO could not be reached: {loadError}. It retries on its own.</p>}
       <div ref={page} key={route.page} className="page">
-        <Suspense fallback={<Loading what="the page" />}><Page route={route} /></Suspense>
+        <ErrorBoundary what="This page" resetKey={route}><Suspense fallback={<Loading what="the page" />}><Page route={route} /></Suspense></ErrorBoundary>
       </div>
     </Shell>
   );

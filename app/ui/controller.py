@@ -51,6 +51,13 @@ SETTINGS_SCHEMA = {"motion": ("system", "full", "reduced"), "speak_replies": boo
 INT_RANGES = {"transcript_lines": (10, 200), "summon_interval_ms": (200, 1000)}
 
 
+IMAGE_POLL_SECONDS = 0.5
+_IMAGE_CARD = re.compile(r"\[xenio-card image (img_[0-9a-f]{16})\]")
+_CARD_WORDS = re.compile(r"\s*\[xenio-card (?:lesson|image) [\w-]{1,40}\]")
+HANDS_TOOLS = {"xenio_gui", "xenio_look_at_screen", "xenio_find_ui", "xenio_form", "xenio_browser"}
+HANDS_POLL_SECONDS = 0.15
+
+
 class UiError(Exception):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
@@ -70,6 +77,7 @@ class UiController:
         self.engineering = engineering
         self.notifications = notifications
         self.proactive = proactive
+        self._images = None
         self.memory = memory
         self.stt = stt
         self.tts = tts
@@ -78,6 +86,7 @@ class UiController:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.conversation: list[dict] = []
         self._turn_task: asyncio.Task | None = None
+        self._hands_task: asyncio.Task | None = None  # follows a running desktop tool
         self._health: tuple[float, list[dict]] | None = None
         self._last_health: dict[str, str] = {}
         self._runs_seen: dict[str, str] = {}
@@ -133,6 +142,8 @@ class UiController:
                     self.state.connection = "disconnected"
                     self.state.error = "The connection to Hermes was lost."
                     self.hub.publish("assistant.error", {"error": self.state.error})
+                if self.state.turn is not None and self._turn_task is not None and self._turn_task.done():
+                    self.state.turn_finished(False, cancelled=True)  # a turn that ended without saying so must not hold the orb and the chat
                 now = self.state.snapshot()
                 if now != last:
                     self.hub.publish("assistant.state", now)
@@ -152,10 +163,39 @@ class UiController:
                 "voice": self.voice_info(), "grant": self.grant_info(), "overlay": self.overlay_info(),
                 "platform": sys.platform, "demo": False}
 
-    def chat(self, text: str, via: str = "text", quiet: bool = False) -> dict:
+    def _uploads(self):
+        from app.ui.uploads import Uploads
+
+        return Uploads(self.settings.data_dir / "uploads")
+
+    def upload(self, name: str, body: bytes) -> dict:
+        from app.ui.uploads import UploadError
+
+        try:
+            return self._uploads().save(name, body)
+        except UploadError as exc:
+            raise UiError(str(exc), exc.status) from None
+
+    def _attached(self, ids: list | None) -> list[dict]:
+        from app.ui.uploads import MAX_FILES_IN_A_MESSAGE
+
+        ids = [str(i) for i in (ids or [])]
+        if len(ids) > MAX_FILES_IN_A_MESSAGE:
+            raise UiError(f"at most {MAX_FILES_IN_A_MESSAGE} files in one message", 422)
+        store = self._uploads()
+        out = []
+        for upload_id in ids:
+            info = store.get(upload_id)
+            if info is None:
+                raise UiError("one of those files is not there any more: add it again", 409)
+            out.append(info)
+        return out
+
+    def chat(self, text: str, via: str = "text", quiet: bool = False, files: list | None = None) -> dict:
         """``quiet``: answer on screen only, never out loud (typed in the floating orb: the user may not be able to
-        listen right now)."""
-        text = (text or "").strip()
+        listen right now). ``files``: ids from ``upload``, read and given to the model with this message."""
+        attached = self._attached(files)
+        text = (text or "").strip() or ("Look at the attached file." if len(attached) == 1 else "Look at the attached files." if attached else "")
         if not text:
             raise UiError("type or say something first", 422)
         if len(text) > MAX_MESSAGE:
@@ -164,7 +204,7 @@ class UiController:
         if refusal is not None:
             raise refusal
         turn_id = uuid.uuid4().hex[:12]
-        self.run(self._begin(turn_id, text, via, quiet), timeout=10)
+        self.run(self._begin(turn_id, text, via, quiet, attached), timeout=10)
         return {"turn": turn_id}
 
     def turn_running(self) -> bool:
@@ -180,12 +220,12 @@ class UiController:
             return UiError("XENIO is still answering: stop it or wait for the answer", 409)
         return None
 
-    async def _begin(self, turn_id: str, text: str, via: str, quiet: bool = False) -> None:
+    async def _begin(self, turn_id: str, text: str, via: str, quiet: bool = False, attached: list[dict] | None = None) -> None:
         # checked again here, on XENIO's loop: two quick submits both passed the check in their request threads
         # before either turn had started (and the second then ran the same request again)
         if self.turn_running():
             raise UiError("XENIO is still answering: stop it or wait for the answer", 409)
-        self._turn_task = asyncio.ensure_future(self._turn(turn_id, text, via, quiet=quiet))
+        self._turn_task = asyncio.ensure_future(self._turn(turn_id, text, via, quiet=quiet, attached=attached))
 
     async def voice_turn(self, text: str, on_chunk=None, on_tool=None, context: str | None = None):
         """A request the talk engine heard (on XENIO's loop): the same turn as a typed one, plus the engine's own
@@ -199,11 +239,19 @@ class UiController:
         self._turn_task = asyncio.ensure_future(self._turn(turn_id, text, "voice", on_chunk, on_tool, context))
         return await self._turn_task
 
+    async def _read_attached(self, attached: list[dict]) -> str:
+        from app.ui.uploads import Uploads, note_for
+
+        store: Uploads = self._uploads()
+        read = await asyncio.gather(*(asyncio.to_thread(store.read, info) for info in attached))
+        return note_for([(info, words, store.path(info)) for info, words in zip(attached, read)])
+
     async def _turn(self, turn_id: str, text: str, via: str, voice_chunk=None, voice_tool=None,
-                    context: str | None = None, quiet: bool = False):
+                    context: str | None = None, quiet: bool = False, attached: list[dict] | None = None):
         self.state.turn_started(turn_id)
         message = {"id": turn_id + "-u", "turn": turn_id, "role": "user", "text": self.redact(text), "via": via,
-                   "at": datetime.now().isoformat(timespec="seconds"), **({"quiet": True} if quiet else {})}
+                   "at": datetime.now().isoformat(timespec="seconds"), **({"quiet": True} if quiet else {}),
+                   **({"files": [{k: f.get(k) for k in ("id", "name", "size", "kind")} for f in attached]} if attached else {})}
         self.conversation.append(message)
         self.hub.publish("chat.user", message)
         self.hub.publish("request.received", {"turn": turn_id, "via": via, "chars": len(text)})  # no content kept
@@ -218,13 +266,19 @@ class UiController:
                 voice_chunk(chunk)
 
         def on_tool(activity) -> None:
+            from app.orchestrator import not_confirmed
+
             title = self.redact(str(getattr(activity, "title", "") or ""))[:160]
             status = str(getattr(activity, "status", "") or "")
-            self.state.tool_changed(title, str(getattr(activity, "kind", "") or ""), status)
+            self.state.tool_changed(title, str(getattr(activity, "kind", "") or ""), status, str(getattr(activity, "tool_call_id", "") or ""))
+            self._follow_hands(title, status)
+            if not self.state.running:
+                self._stop_following()  # whatever its last title said, nothing is running: nothing to follow
+            self._follow_images(status, str(getattr(activity, "result", "") or ""))
             self.hub.publish("chat.tool", {"turn": turn_id, "id": self.redact(str(getattr(activity, "tool_call_id", "")
                                                                                   or ""))[:80], "title": title,
-                                           "status": status, "detail": self.redact(str(getattr(activity, "detail", "")
-                                                                                       or ""))[:300]})
+                                           "status": status, "unconfirmed": not_confirmed(activity),
+                                           "detail": self.redact(str(getattr(activity, "detail", "") or ""))[:300]})
             self.publish_state()
             if voice_tool is not None:
                 voice_tool(activity)
@@ -233,8 +287,19 @@ class UiController:
 
         try:
             extra = {"context": context} if context else {}
+            if attached:  # read before the model starts; the words of a file never decide a fast command
+                note = await self._read_attached(attached)
+                extra = {"context": f"{context}\n{note}" if context else note, "fast": False}
             response = await self.orchestrator.process_text(text, on_chunk=on_chunk, on_tool=on_tool, **extra)
+        except asyncio.CancelledError:  # not an Exception: without this the orb would say "Thinking" for good
+            self._stop_following()
+            self.state.turn_finished(False, cancelled=True)
+            self.hub.publish("chat.done", {"id": turn_id + "-a", "turn": turn_id, "role": "assistant", "text": "", "attachments": [], "ok": False, "cancelled": True, "error": None,
+                                           "actions": [], "sources": [], "at": datetime.now().isoformat(timespec="seconds")})
+            self.publish_state()
+            raise
         except Exception as exc:  # noqa: BLE001 - a turn failure is shown, never swallowed
+            self._stop_following()
             log.exception("UI turn failed")
             self.state.turn_finished(False, f"{type(exc).__name__}: {exc}")
             self.hub.publish("chat.done", {"turn": turn_id, "ok": False, "text": "", "error": self.state.error,
@@ -242,7 +307,9 @@ class UiController:
             self.hub.publish("assistant.error", {"turn": turn_id, "error": self.state.error})
             self.publish_state()
             return XenioResponse(text="That request failed; the details are on screen.", ok=False, error="hermes_error")
-        reply = {"id": turn_id + "-a", "turn": turn_id, "role": "assistant", "text": self.redact(response.text or ""),
+        self._stop_following()  # a stopped turn never reports its running tool as ended
+        reply = {"id": turn_id + "-a", "turn": turn_id, "role": "assistant", "text": self.redact(_CARD_WORDS.sub("", response.text or "").strip()),
+                 "attachments": list(getattr(response, "attachments", None) or []),
                  "ok": response.ok, "cancelled": response.cancelled, "error": response.error,
                  "actions": [self.redact(a.strip()) for a in response.action_lines() if a.strip() not in ("", "actions:")],
                  "sources": [{"title": s.title, "url": s.url} for s in (response.sources or [])][:8],
@@ -257,6 +324,46 @@ class UiController:
                 and self.ui_settings()["speak_replies"]):
             asyncio.ensure_future(self.voice.speak_reply(response.text or ""))  # typed: answered out loud too
         return response
+
+    def _follow_hands(self, title: str, status: str) -> None:
+        """Keep the orb and Mission Control on what a desktop tool is really doing: it runs inside Hermes, which reports a
+        tool only when it starts and ends, so its steps are read from the small state file it keeps - only while it runs."""
+        from app.ui.assistant import tool_name
+
+        if tool_name(title) not in HANDS_TOOLS:
+            return
+        self._stop_following()
+        if status in ("pending", "in_progress"):
+            try:
+                self._hands_task = asyncio.ensure_future(self._read_hands(time.time()))
+            except RuntimeError:  # no loop running (tests that drive the callback directly)
+                pass
+
+    def _stop_following(self) -> None:
+        if self._hands_task is not None:
+            self._hands_task.cancel()
+            self._hands_task = None
+
+    async def _read_hands(self, since: float) -> None:
+        path = self.settings.data_dir / "desktop_state.json"
+        last = None
+        while True:
+            await asyncio.sleep(HANDS_POLL_SECONDS)
+            try:
+                seen = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(seen, dict) or float(seen.get("at") or 0) < since - 0.5 or seen == last:
+                continue
+            last = seen
+            self.state.action = {k: seen.get(k) for k in ("state", "action", "step", "total", "verified")}
+            self.publish_state()
+
+    def desktop_stats(self, since_hours: float | None = None) -> dict:
+        """What seeing and acting on the desktop really cost (app/desktop/metrics.py): measurements only."""
+        from app.desktop import metrics
+
+        return metrics.summary(self.settings.data_dir, since_hours)
 
     def cancel(self) -> dict:
         if self.voice is not None:
@@ -866,6 +973,273 @@ class UiController:
             raise UiError(str(exc), exc.status) from None
         self.hub.publish("memory.changed", {"store": result["store"], "action": result["action"]})  # never the text
         return {"ok": True, **{k: v for k, v in result.items() if k != "text"}}
+
+    # ---- the profile vault (V4 phase 2): the user's own details, in the user's own hands ----------------------------------
+
+    def _vault(self):
+        from app.personal.vault import ProfileVault
+
+        return ProfileVault()
+
+    def _last_form(self) -> dict | None:
+        """The last form XENIO worked on: names and statuses only (the form on screen shows the values)."""
+        from app.autofill.engine import STATE_FILE
+        from app.integrations.base import data_dir
+
+        try:
+            state = json.loads((data_dir() / STATE_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return state if isinstance(state, dict) else None
+
+    def profile(self) -> dict:
+        from app.autofill.matching import FIELDS, LABELS
+        from app.personal.vault import CATEGORIES, VaultError
+
+        vault = self._vault()
+        out = {"categories": CATEGORIES, "last_form": self._last_form(),
+               "suggestions": [{"field": name, "label": LABELS[name], "category": spec[0]} for name, spec in FIELDS.items()]}
+        try:
+            entries = vault.entries(with_values=True)
+        except VaultError as exc:
+            return {**out, "available": False, "reason": str(exc), "entries": []}
+        return {**out, "available": True, "protected_by": "the macOS Keychain and AES-256 on this Mac", "entries": entries}
+
+    def profile_change(self, payload: dict) -> dict:
+        """add / update / delete / reveal: the user's own changes. No event or log ever carries a detail's name or value."""
+        from app.personal.vault import SecretRefused, VaultError, VaultUnavailable
+
+        payload = payload or {}
+        action = str(payload.get("action") or "")
+        vault = self._vault()
+        wanted = str(payload.get("id") or "")
+        try:
+            if action == "add":
+                made = vault.add(str(payload.get("category") or ""), str(payload.get("label") or ""), str(payload.get("value") or ""),
+                                 field=str(payload.get("field") or ""), source="mission_control",
+                                 sensitive=payload["sensitive"] if isinstance(payload.get("sensitive"), bool) else None)
+                result = {"ok": True, "entry": made}
+            elif action == "update":
+                changes = {k: payload[k] for k in ("label", "value", "category", "field") if isinstance(payload.get(k), str)}
+                if isinstance(payload.get("sensitive"), bool):
+                    changes["sensitive"] = payload["sensitive"]
+                result = {"ok": True, "entry": vault.update(wanted, **changes)}
+            elif action == "delete":
+                removed = vault.delete(wanted)
+                if vault.get(wanted) is not None:  # checked, not assumed: autofill reads the same store
+                    raise UiError("the detail could not be removed", 500)
+                result = {"ok": True, "deleted": removed}
+            elif action == "reveal":
+                entry = vault.get(wanted)
+                if entry is None:
+                    raise UiError("that detail is not in the profile any more: reload", 409)
+                self.hub.publish("profile.changed", {"action": "reveal"})
+                return {"ok": True, "value": entry["value"]}
+            else:
+                raise UiError("action must be add, update, delete or reveal", 422)
+        except SecretRefused as exc:
+            raise UiError(str(exc), 422) from None
+        except VaultUnavailable as exc:
+            raise UiError(str(exc), 503) from None
+        except VaultError as exc:
+            raise UiError(str(exc), 422) from None
+        self.hub.publish("profile.changed", {"action": action})
+        return result
+
+    # ---- pictures (V4 phase 4): jobs, one per picture, and their state as it really is -------------------------------------
+
+    @property
+    def images(self):
+        if self._images is None:
+            from app.images.studio import ImageStudio
+
+            self._images = ImageStudio(self.settings.data_dir / "images", notify=lambda job: self.hub.publish("image.job", job))
+            fast = getattr(self.orchestrator, "fast", None)
+            if fast is not None:
+                fast._images = self._images
+        return self._images
+
+    def image_list(self) -> dict:
+        return {"images": self.images.list(40)}
+
+    def image(self, job_id: str) -> dict:
+        from app.images.studio import StudioError
+
+        try:
+            job = self.images.get(job_id)
+        except StudioError as exc:
+            raise UiError(str(exc), exc.status) from None
+        if job is None:
+            raise UiError("that picture is not there any more", 404)
+        return self.images.public(job)
+
+    def image_file(self, job_id: str) -> tuple[bytes, str]:
+        from app.images.studio import StudioError
+
+        try:
+            found = self.images.file(job_id)
+        except StudioError as exc:
+            raise UiError(str(exc), exc.status) from None
+        if found is None:
+            raise UiError("there is no finished picture there", 404)
+        return found
+
+    def image_make(self, payload: dict) -> dict:
+        from app.images.studio import StudioError
+
+        try:
+            return self.images.submit(str((payload or {}).get("prompt") or ""), str((payload or {}).get("size") or ""))
+        except StudioError as exc:
+            raise UiError(str(exc), exc.status) from None
+
+    def image_change(self, job_id: str, payload: dict) -> dict:
+        """What the buttons on a picture do. Each new picture is a new job, and the original stays as it was."""
+        from app.images.studio import StudioError
+
+        payload, studio = payload or {}, self.images
+        action = str(payload.get("action") or "")
+        try:
+            if action == "cancel":
+                return studio.cancel(job_id)
+            if action == "retry":
+                return studio.retry(job_id)
+            if action == "regenerate":
+                return studio.regenerate(job_id)
+            if action == "variation":
+                count = payload.get("count") if isinstance(payload.get("count"), int) else 1
+                return {"jobs": studio.variation(job_id, count)}
+            if action == "refine":
+                return studio.refine(job_id, str(payload.get("change") or ""))
+            if action == "save":
+                return studio.save(job_id)
+        except StudioError as exc:
+            raise UiError(str(exc), exc.status) from None
+        raise UiError("unknown action", 422)
+
+    def _follow_images(self, status: str, result: str) -> None:
+        """A job started by a tool runs inside Hermes: its state is read from its file until it ends. Only while one is running."""
+        ids = _IMAGE_CARD.findall(result or "")
+        if status != "completed" or not ids:
+            return
+        try:
+            asyncio.ensure_future(self._watch_images(ids))
+        except RuntimeError:  # no loop running (tests that drive the callback directly)
+            pass
+
+    async def _watch_images(self, ids: list[str]) -> None:
+        from app.images.studio import ACTIVE
+
+        seen: dict[str, str] = {}
+        waiting = set(ids)
+        for _ in range(int(480 / IMAGE_POLL_SECONDS)):
+            for job_id in list(waiting):
+                job = self.images.get(job_id)
+                if job is None:
+                    waiting.discard(job_id)
+                    continue
+                if seen.get(job_id) != job["state"]:
+                    seen[job_id] = job["state"]
+                    self.hub.publish("image.job", self.images.public(job))
+                if job["state"] not in ACTIVE:
+                    waiting.discard(job_id)
+            if not waiting:
+                return
+            await asyncio.sleep(IMAGE_POLL_SECONDS)
+
+    # ---- learning (V4 phase 3): the tutor's records, in the learner's own hands --------------------------------------------
+
+    def _teacher(self):
+        from app.tools import teacher
+
+        return teacher.teacher()
+
+    def learning(self) -> dict:
+        from app.teacher import sandbox
+
+        return {**self._teacher().overview(), "can_run": sandbox.available()}
+
+    def learning_topic(self, topic_id: int) -> dict:
+        found = self._teacher().topic_details(topic_id)
+        if found is None:
+            raise UiError("that subject is not there any more", 404)
+        return found
+
+    def lesson(self, lesson_id: int) -> dict:
+        found = self._teacher().lesson(lesson_id)
+        if found is None:
+            raise UiError("that lesson is not there any more", 404)
+        return found
+
+    def learning_change(self, payload: dict) -> dict:
+        """What the Learn page does. Answers given there are real answers, and count like any other. No event carries a question or answer."""
+        from app.teacher.engine import TeachError
+
+        payload = payload or {}
+        t, action = self._teacher(), str(payload.get("action") or "")
+        get = payload.get
+        try:
+            if action == "start":
+                out = t.start(str(get("topic") or ""), str(get("goal") or ""), str(get("level") or ""), str(get("mode") or ""))
+            elif action == "compose":
+                out = t.compose(str(get("topic") or ""), str(get("concept") or ""), str(get("mode") or ""), get("fresh") is True)
+            elif action == "answer":
+                out = t.answer(get("id"), str(get("answer") or ""), source="learn page")
+            elif action == "ask":
+                out = t.ask(get("id"))
+            elif action == "hint":
+                out = t.hint(get("id"))
+            elif action == "reveal":
+                out = t.reveal(get("id"))
+            elif action == "run_code":  # the learner pressed Run: their code, in the sandbox
+                from app.teacher import sandbox
+
+                try:
+                    out = {"result": sandbox.run(str(get("language") or ""), str(get("code") or ""), str(get("stdin") or ""))}
+                except sandbox.CodeError as exc:
+                    raise UiError(str(exc), 422) from None
+                return {"ok": True, **out}  # no event: running code changes no record
+            elif action == "check_code":
+                from app.teacher import sandbox
+
+                try:
+                    out = t.exercise_check(int(get("lesson")), int(get("index")), str(get("language") or ""), str(get("code") or ""))
+                except sandbox.CodeError as exc:
+                    raise UiError(str(exc), 422) from None
+            elif action == "add_material":
+                from app.safety.policy import default_path_policy
+
+                path = str(get("path") or "")
+                if get("upload"):
+                    info = self._uploads().get(str(get("upload")))
+                    if info is None:
+                        raise UiError("that file is not there any more: add it again", 409)
+                    path = str(self._uploads().path(info))
+                elif path:
+                    check = default_path_policy().check(path, "read", None)
+                    if check.blocked:
+                        raise UiError(check.reason, 403)
+                out = t.add_material(path, str(get("text") or ""), str(get("title") or ""), str(get("topic") or ""))
+            elif action == "delete_material":
+                from app.teacher import materials
+
+                out = {"deleted": materials.delete(t.store, int(get("id")))}
+            elif action == "correct_attempt":
+                out = t.correct_attempt(int(get("id")), float(get("credit")))
+            elif action == "delete_attempt":
+                out = t.correct_attempt(int(get("id")), delete=True)
+            elif action == "forget_topic":
+                out = {"deleted": t.forget_topic(int(get("id")))}
+            elif action == "prefer":
+                t.store.set_pref("style", " ".join(str(get("style") or "").split())[:300])
+                out = {"saved": True}
+            else:
+                raise UiError("unknown learning action", 422)
+        except TeachError as exc:
+            raise UiError(str(exc), 422) from None
+        except (TypeError, ValueError):
+            raise UiError("that request is missing something", 422) from None
+        self.hub.publish("learning.changed", {"action": action})
+        return {"ok": True, **out}
 
     # ---- context (V3: where the ongoing work stands, from XENIO's own records) -----------------------------------------
 

@@ -155,7 +155,7 @@ _SECRET_NAMES = re.compile(
     r"^(\.env(\.(?!example$|sample$|template$|dist$)[\w.-]+)?|id_(rsa|dsa|ecdsa|ed25519)(_sk)?|.*\.(pem|key|p12|pfx|kdbx|keychain|keychain-db|ppk|jks|keystore|binarycookies)"
     r"|\.git-credentials|\.netrc|_netrc|\.pgpass|\.npmrc|\.pypirc|credentials(\.json)?|client_secret.*\.json"
     r"|token\.json|google_token\.json|google_client_secret\.json|auth\.json|login data|login data for account|cookies|web data|local state|logins\.json|key[34]\.db"
-    r"|cookies\.sqlite|signons\.sqlite|sam|security)$",
+    r"|cookies\.sqlite|signons\.sqlite|sam|security|profile_vault\.db(-journal|-wal|-shm)?)$",
     re.IGNORECASE,
 )
 _SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", "credentials", "protect", "vault", "keychains"}
@@ -505,6 +505,8 @@ _PROCESS_CONFIRM = {"kill", "taskkill", "killall", "pkill", "xkill", "systemctl"
                     "sqlite3", "mongo", "mongosh", "redis-cli", "code", "notepad", "explorer", "start", "open",
                     "xdg-open", "make", "cmake", "ninja", "msbuild", "gradle", "mvn", "gh", "az", "aws", "gcloud",
                     "vercel", "netlify", "firebase", "heroku", "fly", "flyctl", "npx", "pnpx", "bunx", "hermes"}
+_KEYCHAIN_SECRETS = re.compile(r"\b(find-generic-password|find-internet-password|dump-keychain|delete-generic-password"
+                               r"|export|unlock-keychain|add-generic-password|set-generic-password-partition-list)\b", re.IGNORECASE)
 _PRODUCTION = re.compile(r"\b(prod|production|live)\b", re.IGNORECASE)
 _DESTRUCTIVE_SQL = re.compile(r"\b(drop|truncate|delete\s+from|alter|update\s+\w+\s+set|flushall|flushdb|dropdatabase)\b",
                               re.IGNORECASE)
@@ -744,6 +746,8 @@ def _classify_program(prog: str, args: list[str], ctx: _Ctx, text: str, piped_fr
                         f"run a script downloaded from the internet: {' '.join(piped_from)} | {text}")
         return confirm("terminal.pipe_to_shell", run_text)
 
+    if prog == "security" and _KEYCHAIN_SECRETS.search(text):
+        return blocked("terminal.keychain", run_text, "XENIO never reads passwords or keys out of the macOS Keychain")
     if prog in _READ_ONLY:
         paths = [a for a in _non_flags(args, slash) if _looks_like_path(a) or _exists(ctx, a)] \
             if prog in {"ls", "dir", "tree", "du"} else []
@@ -1826,6 +1830,8 @@ UNTRUSTED_SOURCE_TOOLS = {"web_extract", "web_search", "browser_exec", "browser_
                           "xenio_github", "xenio_daily_briefing", "session_search", "terminal",
                           "xenio_look_at_screen", "vision_analyze", "video_analyze",  # V5: text seen in images
                           "xenio_find_ui",  # V5.5: names of on-screen controls (chat text, page text)
+                          "xenio_browser", "xenio_form",  # V4 phase 2: a page's text, a form's field names
+                          "xenio_teach",  # V4 phase 3: passages of the learner's own material
                           "xenio_gui",  # V3: text copied off the screen (a page, an editor)
                           "xenio_open_app",  # a command's output in the user's Terminal window
                           "xenio_media"}  # track names
@@ -1864,6 +1870,8 @@ def escalate_after_injection(decision: Decision, tool: str, phrase: str) -> Deci
     without the user's yes: a write, a command, a page visit or a memory update could be the injected order."""
     if decision.blocked or decision.needs_confirmation or tool in _SAFE_AFTER_INJECTION:
         return decision
+    if tool in ("xenio_form", "xenio_browser", "xenio_teach") and decision.level == RiskLevel.READ:
+        return decision  # reading a page or form's field names, like xenio_find_ui: no question for each look
     return Decision(RiskLevel.CONFIRM_REQUIRED, decision.action,
                     f"{decision.summary} (asked right after reading outside content that tried to give instructions: "
                     f"\"{phrase[:60]}\")", scopes=decision.scopes)
@@ -1885,6 +1893,19 @@ _SCREEN_REQUEST = re.compile(
 _XENIO_NOTES = re.compile(r"\[XENIO[^\]]*\]", re.DOTALL)
 RECENT_LOOK_SECONDS = 300  # a follow-up within this window may look again without asking
 STALE_LOOK_SECONDS = 30  # after this, a new question about the screen gets "it may have changed: look again"
+
+
+_FILE_BLOCK = re.compile(r"<<XENIO-FILE>>.*?(?:<<END-XENIO-FILE>>|\Z)", re.DOTALL)
+
+
+def own_words(message: str) -> str:
+    """What the user really said in a message: without XENIO's notes, and without the words of files they attached. A file saying "my
+    answer is B" or "remember this" is not the user saying so."""
+    return _XENIO_NOTES.sub(" ", _FILE_BLOCK.sub(" ", str(message or ""))).strip()
+
+
+def file_words(message: str) -> str:
+    return "\n".join(_FILE_BLOCK.findall(str(message or "")))
 
 
 def asked_about_screen(user_message: str) -> bool:
@@ -2053,15 +2074,76 @@ _ASSESSMENT = re.compile(
     r"|hiring\s+(?:test|challenge)|interview\s+(?:round|test|assessment)|live\s+interview|screening\s+test"
     r"|olympiad|codility|codesignal|mettl|coderbyte|testgorilla|hackerrank\s+for\s+work)\b",
     re.IGNORECASE)
+# A college's or school's own tests, by name (measured 2026-11-02: a real Google Form titled "Unit Test- <subject>" was not
+# recognised). "Unit test" is also a programmer's word, so a title that is about code does not count. That exception is kept narrow,
+# because everything it lets through is a real test left unguarded: a file name is lowercase (a course code like "AB12.C" is none), and
+# ordinary words ("Legal Framework", "Tutorial 3", a course called "CI") count only next to "unit test".
+_CLASS_TEST = re.compile(r"\b(?:unit|class|cycle|weekly|monthly|surprise|periodic|internal|sessional|semester|sem)\s+(?:test|quiz)\b"
+                         r"|\bmid-?\s?(?:term|sem)\b|\bend-?\s?(?:term|sem)\b|\bviva\b", re.IGNORECASE)
+_ABOUT_CODE = re.compile(r"\w\.(?-i:py|js|jsx|ts|tsx|java|go|rb|rs|cpp|c|cs|php|swift|kt)\b"
+                         r"|\b(?:pytest|jest|junit|mocha|vitest|xctest|rspec|github|gitlab|stack\s?overflow|vs\s?code|visual studio|xcode|intellij|pycharm"
+                         r"|pull request|how to|code coverage|ci/cd)\b"
+                         r"|\bunit tests\b|\bunit\s+test\s+(?:framework|coverage|tutorial|case|cases|file|suite|runner)\b", re.IGNORECASE)
 _PRACTICE_TITLE = re.compile(
-    r"\b(?:mock|practice|sample|demo)\s+(?:test|tests|exam|exams|interview|interviews|assessment|contest|round)\b"
+    r"\b(?:mock|practice|sample|demo)\s+(?:\w+\s+)?(?:test|tests|exam|exams|interview|interviews|assessment|contest|round|quiz)\b"
     r"|\b(?:virtual|past|previous|old)\s+contests?\b|\bupsolv\w*|\btest\s+series\b|\bprevious\s+year\b",
     re.IGNORECASE)
 
 
 def live_test(title: str) -> bool:
     """A window titled as a live test, contest, hiring assessment or interview round (practice formats excluded)."""
-    return bool(_ASSESSMENT.search(title or "")) and not _PRACTICE_TITLE.search(title or "")
+    text = title or ""
+    if _PRACTICE_TITLE.search(text):
+        return False
+    return bool(_ASSESSMENT.search(text)) or (bool(_CLASS_TEST.search(text)) and not _ABOUT_CODE.search(text))
+
+
+# What a page shows only while a test or contest runs: its countdown to the end, or the control that ends it (measured on
+# 2026-10-28, a GeeksforGeeks contest: "Contest Ends in 00 : 01 : 40 : 49" and "Finish Contest"). The title alone can miss
+# it. Narrow on purpose, because every look at a web page is checked: an article that mentions an exam, a promotion
+# ("contest starts in 2 days") or a practice page's own "Start Timer" do not match; buttons are read as "[Name]".
+_LIVE_PAGE = re.compile(
+    r"\b(?:contest|test|exam|examination|assessment|round)\s+(?:ends|ending|closes|will\s+end)\s+in\b[\s:]*\d"
+    r"|\[(?:finish|end|submit|leave)\s+(?:the\s+)?(?:contest|test|exam|examination|assessment)\]"
+    r"|\bfinish\s+contest\b|\bcontest\s+is\s+running\b", re.IGNORECASE)
+
+
+def live_test_page(text: str, title: str = "") -> bool:
+    """A page that shows a live test or contest running, whatever its title says - unless the title names a practice
+    format (mock, virtual or past contest...)."""
+    return bool(_LIVE_PAGE.search(text or "")) and not _PRACTICE_TITLE.search(title or "")
+
+
+# A graded quiz says so on the page: Google Forms shows "1 point" beside each question and "Total points". Its questions are the
+# person's own to answer, whatever it is called; a mock or practice test is exempt, as everywhere.
+_GRADED_FORM = re.compile(r"(?im)^\s*\d+\s+(?:points?|marks?)\s*$|\btotal\s+(?:points|marks)\b|\b\d+\s*/\s*\d+\s+points\b")
+
+
+def graded_form(text: str, title: str = "") -> bool:
+    if _PRACTICE_TITLE.search(title or ""):
+        return False
+    return bool(_GRADED_FORM.search(text or "")) or bool(re.search(r"\bquiz\b", title or "", re.IGNORECASE))
+
+
+def _live(info: dict) -> bool:
+    """The window an action works in is a live test: by its title, or by what its page shows (the probe read it)."""
+    return live_test(str(info.get("title") or "")) or info.get("live_page") is True
+
+
+LIVE_TEST_REASON = ("this window looks like a test, contest, assessment or interview: XENIO does not read its questions "
+                    "to answer them. Offer to teach the subject with xenio_teach instead, after the test")
+
+
+def screen_look_on_live_test(decision: Decision, windows: list[dict]) -> Decision:
+    """Looking at the screen follows the same rule as reading a window: a screenshot or the window's text would carry the
+    questions just the same (measured 2026-10-28: a running contest's problems reached the model through a screenshot).
+    ``windows``: what the look would see, ``{"title", "live_page"}`` each."""
+    if decision.blocked:
+        return decision
+    for window in windows:
+        if _live(window):
+            return blocked("desktop.assessment", f"look at {str(window.get('title') or 'the screen')[:60]!r}", LIVE_TEST_REASON)
+    return decision
 
 
 def _text_into_field(action: str, text: str, a: dict, info: dict, kinds: set, app: str, where: str) -> Decision:
@@ -2074,7 +2156,7 @@ def _text_into_field(action: str, text: str, a: dict, info: dict, kinds: set, ap
     if focused.get("is_password") or _SENSITIVE_FIELD.search(str(focused.get("name") or "")):
         return blocked("desktop.type_password", f"{verb} into a password field{where}",
                        "XENIO does not enter passwords or codes into login fields")
-    if (a.get("code") is True or action == "paste" or "\n" in text) and live_test(str(info.get("title") or "")):
+    if (a.get("code") is True or action == "paste" or "\n" in text) and _live(info):
         return blocked("desktop.assessment", f"write an answer into {str(info.get('title'))[:60]!r}",
                        "this window looks like a test, contest, assessment or interview: XENIO does not write answers "
                        "where outside help is not allowed. Offer to explain the topic instead, after the test")
@@ -2090,6 +2172,31 @@ def _text_into_field(action: str, text: str, a: dict, info: dict, kinds: set, ap
                                                                        f"{verb} {_preview(text)} into")
     return Decision(RiskLevel.SAFE_WRITE, f"desktop.{verb}", f"{how} {field}{where}" + (
         f" with {_preview(text)}" if a.get("select_all") is True or a.get("code") is True else ""))
+
+
+MAX_BATCH_STEPS = 8
+BATCH_ACTIONS = ("click", "double_click", "scroll", "key", "type", "wait")
+
+
+def _classify_batch(a: dict, info: dict, where: str) -> Decision:
+    """A short sequence of ordinary actions in one call. Only what can be told now is judged here (a secret to be typed,
+    a step that is always refused); the service judges every step again right before it runs, on the UI as it is then,
+    and stops before anything that needs the user's yes - which the model then asks for with that step alone."""
+    steps = a.get("steps")
+    if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_BATCH_STEPS:
+        return blocked("desktop.batch", "run a batch of actions", f"a batch has 1 to {MAX_BATCH_STEPS} steps")
+    words = []
+    for step in steps:
+        action = str(step.get("action") or "").lower() if isinstance(step, dict) else ""
+        if action not in BATCH_ACTIONS:
+            return blocked("desktop.batch", "run a batch of actions", f"a batch can only {', '.join(BATCH_ACTIONS)}: "
+                                                                      f"{action or 'a step without an action'} runs by itself")
+        if action != "wait":
+            decision = classify_gui_action(step, {k: v for k, v in info.items() if k not in ("element", "point", "focused")})
+            if decision.blocked:
+                return decision
+        words.append(action if action != "type" else f"type {_preview(str(step.get('text') or ''))}")
+    return Decision(RiskLevel.SAFE_WRITE, "desktop.batch", f"{len(steps)} steps{where}: {', '.join(words)[:200]}")
 
 
 def classify_gui_action(args: dict, info: dict | None = None) -> Decision:
@@ -2113,6 +2220,8 @@ def classify_gui_action(args: dict, info: dict | None = None) -> Decision:
     if "credentials" in kinds and action != "move":
         return blocked("desktop.credentials", f"{action} in {app}",
                        "XENIO never operates password managers or credential stores")
+    if action == "batch":
+        return _classify_batch(a, info, where)
     if action in ("move", "scroll"):
         return Decision(RiskLevel.SAFE_WRITE, f"desktop.{action}", f"{'move the mouse' if action == 'move' else 'scroll'}{where}")
     if action in ("click", "double_click", "right_click"):
@@ -2139,20 +2248,20 @@ def classify_gui_action(args: dict, info: dict | None = None) -> Decision:
     if action == "copy":
         if focused.get("is_password"):
             return blocked("desktop.copy", f"copy from a password field{where}", "XENIO never reads password fields")
-        if live_test(str(info.get("title") or "")):
+        if _live(info):
             return blocked("desktop.assessment", f"read {str(info.get('title'))[:60]!r}",
                            "this window looks like a test, contest, assessment or interview: XENIO does not read its "
                            "questions to answer them")
         return read("desktop.copy", f"read the {'whole ' if a.get('select_all') is True else 'selected '}text{where} "
                                     "(copied, then your clipboard is put back)")
     if action == "read":  # V3: the window's text through accessibility (password fields are never part of it)
-        if live_test(str(info.get("title") or "")):
+        if _live(info):
             return blocked("desktop.assessment", f"read {str(info.get('title'))[:60]!r}",
                            "this window looks like a test, contest, assessment or interview: XENIO does not read its "
                            "questions to answer them")
         return read("desktop.read", f"read the text of the window{where}")
     if action == "run":  # V3: the page's Run / Compile & Run button, found by its exact name - never Submit
-        if live_test(str(info.get("title") or "")):
+        if _live(info):
             return blocked("desktop.assessment", f"run code in {str(info.get('title'))[:60]!r}",
                            "this window looks like a test, contest, assessment or interview: XENIO does not work on its "
                            "answers")
@@ -2224,7 +2333,7 @@ def classify_desktop_tool(tool: str, args: dict, info: dict | None = None) -> De
 
 def unattended_desktop(decision: Decision, tool: str, session_id: str = "") -> Decision:
     """Scheduled/unattended runs never use XENIO's hands (no continuous unattended GUI automation)."""
-    if tool in DESKTOP_TOOLS and str(session_id or "").startswith("cron_"):
+    if (tool in DESKTOP_TOOLS or tool in WORK_TOOLS or tool in ("xenio_teach", "xenio_image")) and str(session_id or "").startswith("cron_"):
         return blocked("desktop.unattended", decision.summary, "XENIO never controls the desktop in a scheduled or unattended run")
     return decision
 
@@ -2414,6 +2523,10 @@ _REVEAL_SECRET = re.compile(r"\b(?:show|reveal|copy|export|view)\b.{0,30}\b(?:pa
                             r"|secret|recovery\s+code|private\s+key|cookie)", re.IGNORECASE)
 
 
+_HUMAN_CHECK = re.compile(r"\b(?:i'?m not a robot|not a robot|verify (?:that )?you(?:'re| are) (?:a )?human|captcha|recaptcha|hcaptcha"
+                          r"|press and hold)\b", re.IGNORECASE)
+
+
 def classify_visual_action(action: str, target: str = "", text: str = "") -> Decision:
     """How risky a screen action would be, judged by its consequence: reading is READ; scrolling and harmless UI is
     SAFE_WRITE; submitting, sending, uploading or changing data needs a yes; payments, credential and security
@@ -2430,6 +2543,9 @@ def classify_visual_action(action: str, target: str = "", text: str = "") -> Dec
     if act in ("scroll", "hover", "focus", "navigate", "switch_window", "zoom"):
         return Decision(RiskLevel.SAFE_WRITE, "screen.navigate", f"{act} on the screen{where}")
     if act in ("click", "double_click", "right_click", "press"):
+        if _HUMAN_CHECK.search(label):
+            return blocked("screen.human_check", f"{act} on {label}", "a check that a person is here: only the user does it, "
+                                                                      "XENIO never tries to pass it")
         if not label:  # a bare coordinate says nothing about the consequence
             return Decision(RiskLevel.CONFIRM_REQUIRED, "screen.click", "click a spot on the screen")
         decision = _interaction(label, "click on the screen")
@@ -2440,6 +2556,240 @@ def classify_visual_action(action: str, target: str = "", text: str = "") -> Dec
     if act == "drag":
         return Decision(RiskLevel.CONFIRM_REQUIRED, "screen.drag", f"drag on the screen{where} (it can move files or data)")
     return Decision(RiskLevel.CONFIRM_REQUIRED, f"screen.{act or 'unknown'}", f"{act or 'an unknown action'} on the screen{where}")
+
+
+# =============================================================================
+# V4 phase 2: the profile vault, forms, and working in the user's own browser
+# =============================================================================
+
+WORK_TOOLS = {"xenio_profile", "xenio_form", "xenio_browser"}
+_SPOKEN_DIGITS = re.compile(r"\D+")
+
+
+def said_by_user(value: str, user_message: str) -> bool:
+    """The value is in the user's own words of this request ("save my phone as 98..."), not something a page or the model
+    came up with: what the user explicitly provides may be saved without asking again."""
+    text = _XENIO_NOTES.sub(" ", user_message or "")
+    plain, words_ = " ".join(str(value or "").split()).lower(), " ".join(text.split()).lower()
+    if not plain:
+        return False
+    if len(plain) <= 3:  # "B" or "2": as a word of its own, not a letter somewhere in the message
+        return bool(re.search(rf"(?<!\w){re.escape(plain)}(?!\w)", words_))
+    if plain in words_:
+        return True
+    digits = _SPOKEN_DIGITS.sub("", plain)
+    return len(digits) >= 6 and len(digits) >= len(plain) * 0.6 and digits in _SPOKEN_DIGITS.sub("", text)
+
+
+def classify_profile_tool(a: dict, user_message: str = "") -> Decision:
+    """Reading labels is free. Saving what the user just said needs no second yes; anything else offered for saving (a page's
+    text, the model's guess) does. Deleting asks. Passwords, codes, tokens and payment details are never stored."""
+    from app.personal.vault import secret_label, sensitive_label  # stdlib-only; imported here because the vault imports this module
+
+    action = str(a.get("action") or "list").lower()
+    label = " ".join(str(a.get("label") or "").split())[:60]
+    if action == "list":
+        return read("profile.list", "see which details are in your profile (names only)")
+    if action == "get":
+        return read("profile.get", f"look up a saved detail ({a.get('id') or label})")
+    if action in ("add", "update"):
+        value = str(a.get("value") or "")
+        if secret_label(label) or contains_secret(value, strict=False) or contains_personal_secret(value):
+            return blocked("profile.secret", f"save {label or 'a detail'} in your profile",
+                           "passwords, codes, tokens and payment details are never stored, not even in the vault")
+        if not value and action == "update":
+            return Decision(RiskLevel.SAFE_WRITE, "profile.update", f"change {label or 'a saved detail'} in your profile")
+        shown = "(hidden)" if a.get("sensitive") is True or sensitive_label(label) else f"«{_preview(value)}»"
+        if said_by_user(value, user_message):
+            return Decision(RiskLevel.SAFE_WRITE, f"profile.{action}", f"save {label or 'a detail'} in your profile, as you said")
+        return Decision(RiskLevel.CONFIRM_REQUIRED, f"profile.{action}", f"save {label or 'a detail'} = {shown} in your profile")
+    if action == "delete":
+        return Decision(RiskLevel.CONFIRM_REQUIRED, "profile.delete", f"delete {label or a.get('id') or 'a detail'} from your profile")
+    return blocked("profile.action", f"{action} in your profile", "unknown profile action")
+
+
+_IMAGE_REQUEST = re.compile(r"\b(image|images|picture|pictures|photo|photos|wallpaper|illustrat\w*|draw|drawing|paint|painting|poster|logo|artwork|render|sketch|variations?|visual|regenerate)\b|तस्वीर|चित्र|\b(chitra|tasveer)\b", re.IGNORECASE)
+
+
+def wants_image(user_message: str) -> bool:
+    return bool(_IMAGE_REQUEST.search(_XENIO_NOTES.sub(" ", user_message or "")))
+
+
+def classify_image_tool(a: dict, user_message: str | None = None) -> Decision:
+    """Making a picture sends its words to the image provider. When the user asked for a picture it just runs; a picture they did not ask for asks first.
+    Secrets never go, and some things are never made."""
+    from app.images.studio import refused_prompt  # imported here: the studio's module needs nothing of the policy, but keep it light
+
+    a = a if isinstance(a, dict) else {}
+    action = str(a.get("action") or "generate").lower()
+    if action in ("status", "list"):
+        return read("image.look", "see how a picture is doing")
+    if action in ("cancel", "retry"):
+        return Decision(RiskLevel.SAFE_WRITE, f"image.{action}", f"{action} a picture")
+    words = " ".join(str(a.get(k) or "") for k in ("prompt", "change"))
+    if contains_secret(words, strict=True) or contains_personal_secret(words):
+        return blocked("image.secret", "make a picture", "the description holds a key, password or card number, which must never be sent to the image provider")
+    reason = refused_prompt(words)
+    if reason:
+        return blocked("image.refused", "make a picture", reason)
+    if user_message is None or wants_image(user_message):
+        return Decision(RiskLevel.SAFE_WRITE, "image.generate", "make a picture")
+    return Decision(RiskLevel.CONFIRM_REQUIRED, "image.generate", f"make a picture of «{_preview(words, 100)}» (its description goes to the image provider)")
+
+
+TEACH_WRITES = {"start", "compose", "diagram", "question", "ask", "answer", "add_material", "prefer", "end"}
+
+
+def classify_teach_tool(a: dict, user_message: str | None = None, paths: PathPolicy | None = None, cwd=None) -> Decision:
+    """The tutor. Nothing here is consequential outside the learner's own record, so it does not ask, with one rule: an answer is
+    recorded only if the learner really gave it (``user_message``, from the guard), because mastery comes from these and nothing else."""
+    a = a if isinstance(a, dict) else {}
+    action = str(a.get("action") or "status").lower()
+    if action in ("status", "mistakes", "review", "search_material", "hint", "reveal"):
+        return read(f"teach.{action}", f"look up your learning record ({action})")
+    if action == "answer" and user_message is not None and not said_by_user(str(a.get("answer") or ""), user_message):
+        return blocked("teach.answer", "record an answer", "only what the learner really said counts: pass their exact words from this message in 'answer', or wait for them to answer")
+    if action == "add_material":
+        path = str(a.get("path") or "")
+        if path and paths is not None:
+            check = paths.check(path, "read", cwd)
+            if check.blocked:
+                return check
+        if contains_secret(str(a.get("text") or ""), strict=False):
+            return blocked("teach.secret", "keep study notes", "those notes contain an API key or token")
+        return Decision(RiskLevel.SAFE_WRITE, "teach.add_material", "add study material (its passages are read by Nabh for searching)")
+    return Decision(RiskLevel.SAFE_WRITE, f"teach.{action}", f"update your learning record ({action})")
+
+
+def wants_form(user_message: str) -> bool:
+    """The user's own words are about filling in a form."""
+    return bool(_FORM_REQUEST.search(_XENIO_NOTES.sub(" ", user_message or "")))
+
+
+_FORM_REQUEST = re.compile(r"\b(?:form|forms|auto ?fill|fill (?:in|out|up)|fill (?:this|that|it|the|my)|application|sign ?up|register)\b"
+                           r"|फ़?फॉर्म|bhar\s*(?:do|de|dena)", re.IGNORECASE)
+IMPACT_WORDS = {"financial": "money", "legal": "a legal agreement", "government": "a government or identity record",
+                "medical": "health information", "account": "your account"}
+
+
+def classify_form_tool(a: dict, info: dict | None = None) -> Decision:
+    """A form, judged on what the page really holds (``info``: app.autofill.engine.Autofill.probe). Reading it is free, filling
+    what is certain runs, a sensitive detail, replacing what is there or ticking an agreement asks first, and submitting
+    always asks: with the review in the question, and as a high-impact confirmation for money, legal, identity or health
+    forms and whenever a sensitive detail went in. A running test or contest is refused at every step."""
+    a = a if isinstance(a, dict) else {}
+    info = info or {}
+    action = str(a.get("action") or "scan").lower()
+    title = str(info.get("title") or "")
+    where = f" in {title[:60]!r}" if title else ""
+    if info.get("locked"):
+        return blocked("form.locked", f"{action} a form while the Mac is locked", "the Mac is locked: ask the user to unlock it")
+    if "credentials" in _app_kind(info):
+        return blocked("form.credentials", f"{action} a form in {info.get('app')}", "XENIO never operates password managers")
+    if _live(info):
+        return blocked("form.assessment", f"{action} a form{where}",
+                       "this window looks like a running test, contest, assessment or interview: XENIO does not read, fill "
+                       "or submit it. Offer to explain the topic instead, after the test")
+    for text in [*_strings(a.get("text")), *_strings(a.get("choose"))]:
+        if contains_secret(text, strict=True) or contains_personal_secret(text):
+            return blocked("form.secret", f"put a secret into a form{where}",
+                           "XENIO never enters API keys, passwords, tokens or card numbers")
+    if action in ("scan", "review"):
+        return read(f"form.{action}", f"read the form's fields{where} (names only)")
+    if action == "fill":
+        if info.get("graded") and (a.get("choose") or a.get("text")):
+            return blocked("form.graded", f"answer the questions of a graded quiz{where}",
+                           "this form is graded: XENIO fills the user's own details, but its questions are theirs to answer")
+        asks = []
+        if info.get("sensitive"):
+            asks.append("your " + ", ".join(str(x) for x in info["sensitive"][:6]))
+        if info.get("replacing"):
+            asks.append("replacing what is already in " + ", ".join(str(x) for x in info["replacing"][:6]))
+        if info.get("agreeing"):
+            asks.append("ticking " + ", ".join(repr(str(x)[:50]) for x in info["agreeing"][:3]))
+        if asks:
+            return Decision(RiskLevel.CONFIRM_REQUIRED, "form.fill_sensitive", f"fill a form{where}: {'; '.join(asks)}")
+        if info.get("probe_error"):
+            return Decision(RiskLevel.CONFIRM_REQUIRED, "form.fill", f"fill a form it could not read first{where}")
+        return Decision(RiskLevel.SAFE_WRITE, "form.fill", f"fill the form{where} from your profile")
+    button = info.get("button") or {}
+    name = str(button.get("name") or a.get("element") or "")[:60]
+    if action == "next" and button.get("kind") == "next":
+        return Decision(RiskLevel.SAFE_WRITE, "form.next", f"go to the form's next page{where} ({name})")
+    if action in ("next", "submit"):
+        if _HUMAN_CHECK.search(name):
+            return blocked("form.human_check", f"press {name!r}{where}", "a check that a person is here: only the user does it")
+        impact = [IMPACT_WORDS.get(str(x), str(x)) for x in info.get("impact") or []]
+        sensitive = [str(x) for x in info.get("sensitive") or []]
+        review = f"{info.get('filled', 0)} field(s) filled by XENIO"
+        if info.get("empty"):
+            review += ", still empty: " + ", ".join(str(x) for x in info["empty"][:5])
+        summary = f"submit the form{where} by pressing {name or 'its button'!r}: {review}. Check it on screen first"
+        if impact or sensitive or _MONEY_OR_ACCOUNT.search(name):
+            why = ", ".join(impact + ([f"your {x}" for x in sensitive[:4]]))
+            return Decision(RiskLevel.HIGH_RISK, "form.submit_high_impact", f"{summary} (this involves {why or name})")
+        return Decision(RiskLevel.CONFIRM_REQUIRED, "form.submit", summary)
+    return blocked("form.action", f"{action} a form", "unknown form action")
+
+
+def classify_browser_tool_work(a: dict, info: dict | None = None, paths: PathPolicy | None = None, cwd=None) -> Decision:
+    """Working in the user's own browser, where their logins are. Reading and moving around run on their own; a click is judged
+    like any other, by what it says, and so is typing; a password or code is never entered; closing a window XENIO did not
+    open asks. A running test is refused at every step."""
+    a = a if isinstance(a, dict) else {}
+    info = info or {}
+    action = str(a.get("action") or "page").lower()
+    title = str(info.get("title") or "")
+    where = f" in {title[:60]!r}" if title else ""
+    if info.get("locked"):
+        return blocked("browser.locked", f"{action} in the browser while the Mac is locked", "the Mac is locked: ask the user to unlock it")
+    if action == "open":
+        raw = a.get("url") if isinstance(a.get("url"), str) else ""
+        decision = classify_url(raw, paths, cwd)
+        if decision.blocked:
+            return decision
+        url = normalize_url(raw)
+        if not url.lower().startswith(("http://", "https://")):
+            return blocked("browser.open", f"open {raw[:80]}", "only http and https web pages")
+        return Decision(RiskLevel.SAFE_WRITE, "browser.open", f"open {url_host(url)} in a new window of your browser")
+    if action == "tabs":
+        return read("browser.tabs", "see your browser's windows and tabs (titles)")
+    if _live(info):
+        return blocked("browser.assessment", f"{action} in {title[:60]!r}", LIVE_TEST_REASON)
+    if action == "page":
+        return read("browser.page", f"read the page{where}")
+    if action in ("back", "forward", "reload", "switch"):
+        return Decision(RiskLevel.SAFE_WRITE, f"browser.{action}", f"{action} in the browser{where}")
+    if action == "close":
+        if info.get("own_window"):
+            return Decision(RiskLevel.SAFE_WRITE, "browser.close", "close the browser window XENIO opened")
+        return Decision(RiskLevel.CONFIRM_REQUIRED, "browser.close", f"close a browser window XENIO did not open{where}")
+    if action == "click":
+        element = info.get("element") or {}
+        name = str(element.get("name") or a.get("element") or "")
+        decision = classify_gui_action({"action": "click", "element": name}, {
+            "app": info.get("app"), "process": info.get("process"), "title": title,
+            "element": {"name": name, "type": element.get("type"), "parents": []}})
+        return decision if decision.blocked else replace(decision, action=f"browser.{decision.action.split('.')[-1]}")
+    if action == "type":
+        text = a.get("text") if isinstance(a.get("text"), str) else ""
+        field = info.get("field") or {}
+        name = str(field.get("name") or a.get("element") or "")
+        if not text:
+            return blocked("browser.type", "type in the browser", "nothing to type")
+        if contains_secret(text, strict=True) or contains_personal_secret(text):
+            return blocked("browser.type_secret", f"type into {name[:50]}", "XENIO never types API keys, passwords, tokens or other secrets")
+        if field.get("is_password") or _SENSITIVE_FIELD.search(_pin_code_is_postal(name)):
+            return blocked("browser.type_password", f"type into {name[:50]}", "XENIO does not enter passwords or codes: the user signs in themselves")
+        if a.get("press_enter") is True and not _SEARCH_WORDS.search(f"{name} {field.get('kind') or ''}"):
+            return Decision(RiskLevel.CONFIRM_REQUIRED, "browser.type_enter",
+                            f"type into {name[:50]}{where} and press Enter, which may submit something")
+        return Decision(RiskLevel.SAFE_WRITE, "browser.type", f"type into {name[:50]}{where}")
+    return blocked("browser.action", f"{action} in the browser", "unknown browser action")
+
+
+def _pin_code_is_postal(name: str) -> str:
+    return re.sub(r"\bpin\s*-?\s*code\b", " ", str(name or ""), flags=re.IGNORECASE)
 
 
 # =============================================================================
@@ -2608,6 +2958,16 @@ def _classify_xenio_tool(tool: str, a: dict, paths: PathPolicy, cwd) -> Decision
         return classify_download(a, paths, cwd)
     if tool in PERSONAL_TOOLS:
         return classify_personal_tool(tool, a)
+    if tool == "xenio_profile":
+        return classify_profile_tool(a)
+    if tool == "xenio_teach":
+        return classify_teach_tool(a, None, paths, cwd)
+    if tool == "xenio_image":
+        return classify_image_tool(a)
+    if tool == "xenio_form":
+        return classify_form_tool(a)
+    if tool == "xenio_browser":
+        return classify_browser_tool_work(a, None, paths, cwd)
     return Decision(RiskLevel.CONFIRM_REQUIRED, f"tool.{tool}", f"use {tool}")
 
 

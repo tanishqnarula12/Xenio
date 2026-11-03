@@ -1,4 +1,4 @@
-import { MessageSquarePlus, Minus, PanelRightClose, Pause, Play, Plus } from "lucide-react";
+import { MessagesSquare, MessageSquarePlus, Minus, PanelRightClose, Pause, Play, Plus } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type RefObject } from "react";
 import { Composer, PendingApprovals, Transcript } from "../components/Conversation";
 import { GrantChip, PlansToStart } from "../components/Decisions";
@@ -221,18 +221,20 @@ function SystemSummary() {
  * The orb takes the room it has: beside the conversation when Home is wide enough, above it otherwise. It grows when
  * the side panel or the sidebar is put away; the viewer's size choice (ORB_STEPS) is a share of that room.
  */
-function useStage(ref: RefObject<HTMLDivElement | null>, step: number): { wide: boolean; size: number } {
-  const [stage, setStage] = useState({ wide: true, size: 300 });
+const LATEST = 2; // Home shows the latest exchange; the Chat page has all of it
+
+function useStage(ref: RefObject<HTMLDivElement | null>, step: number, room_for: "orb" | "talk" | "card"): { size: number } {
+  const [stage, setStage] = useState({ size: 300 });
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const measure = () => {
       const w = el.clientWidth || window.innerWidth;
       const h = el.clientHeight || window.innerHeight - 56;
-      const wide = w >= 760 && h >= 460;
-      const room = wide ? Math.min(w * 0.44 - 40, h - 150) : Math.min(w - 32, h * 0.4);
-      const size = Math.round(Math.max(120, room * (ORB_STEPS[step] ?? 1)));
-      setStage((s) => (s.wide === wide && s.size === size ? s : { wide, size }));
+      // the orb has the page until there is something to read under it, and steps back for a picture or a lesson
+      const room = Math.min(w - 32, h * (room_for === "card" ? 0.14 : room_for === "talk" ? 0.34 : 0.52));
+      const size = Math.round(Math.max(room_for === "card" ? 84 : 120, room * (ORB_STEPS[step] ?? 1)));
+      setStage((s) => (s.size === size ? s : { size }));
     };
     measure();
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
@@ -242,7 +244,7 @@ function useStage(ref: RefObject<HTMLDivElement | null>, step: number): { wide: 
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [ref, step]);
+  }, [ref, step, room_for]);
   return stage;
 }
 
@@ -285,7 +287,8 @@ export function HomePage() {
   const layout = useLayout();
   const root = useRef<HTMLDivElement>(null);
   const main = useRef<HTMLDivElement>(null);
-  const stage = useStage(main, layout.orbStep);
+  const roomFor = useAppState((s) => (s.conversation.slice(-LATEST).some((m) => m.attachments?.length) ? "card" : s.conversation.length || s.streaming ? "talk" : "orb"));
+  const stage = useStage(main, layout.orbStep, roomFor);
   useGsap(root, (r) => { arrive(".home-side .section", r, 0.06); }, [layout.side]);
   const background = assistant?.background;
   const paused = Boolean(assistant?.paused);
@@ -296,7 +299,7 @@ export function HomePage() {
   return (
     <div className={`home ${layout.side ? "" : "home--focus"}`} ref={root}
       style={{ "--side-w": `${layout.sideWidth}px` } as CSSProperties}>
-      <div className={`home-main ${stage.wide ? "home-main--wide" : ""}`} ref={main}>
+      <div className="home-main" ref={main}>
         <section className="home-hero" aria-labelledby="home-state">
           <div className="home-orb">
             <Orb state={orb.state} label={orb.label} size={stage.size} detail={detail} reducedMotion={reduced} level={orb.level}
@@ -321,13 +324,13 @@ export function HomePage() {
         </section>
         <section className="home-chat" aria-label="Conversation">
           <div className="home-chat__head">
-            <h2 className="home-chat__title">Conversation</h2>
+            <a className="home-chat__open" href={href("chat")}><MessagesSquare size={14} aria-hidden="true" /> Open the full chat</a>
             <IconButton label={paused ? "Resume XENIO" : "Pause XENIO"} icon={paused ? Play : Pause}
               onClick={() => void app.api.setPaused(!paused)} />
             <IconButton label="New conversation" icon={MessageSquarePlus} onClick={newConversation} />
           </div>
           <div className="home-chat__scroll">
-            <Transcript limit={40} />
+            <Transcript limit={LATEST} />
           </div>
           <div className="decision-tray" aria-label="Needs your decision">
             <GrantChip />

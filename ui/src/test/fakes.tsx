@@ -72,11 +72,24 @@ export class FakeApi implements XenioApi {
     reminders?: import("../api/types").Reminder[]; note?: string }> => ({ available: true, jobs: [], ticking: true, reminders: [] }));
   memory = vi.fn(async (_q: string): Promise<import("../api/types").MemoryList> => ({ available: true, editable: false, entries: [] }));
   changeMemory = vi.fn(async (c: import("../api/types").MemoryChange) => ({ ok: true, store: "user", action: c.action }));
+  image = vi.fn(async (id: string): Promise<import("../api/types").ImageJob> => ({ id, state: "generating", prompt: "a boat", size: "1024x1024" }));
+  imageFile = vi.fn(async (_id: string): Promise<ArrayBuffer> => new ArrayBuffer(8));
+  changeImage = vi.fn(async (id: string, _c: Record<string, unknown>): Promise<import("../api/types").ImageJob & { jobs?: import("../api/types").ImageJob[]; saved?: string }> => ({ id, state: "generating", prompt: "a boat", size: "1024x1024" }));
+  upload = vi.fn(async (f: File): Promise<import("../api/types").UploadedFile> => ({ id: "f1", name: f.name, size: f.size, kind: "text", mime: "" }));
+  learning = vi.fn(async (): Promise<import("../api/types").LearningOverview> => ({ topics: [], modes: { teach: "Teach me" }, default_mode: "teach", writer: true, style: "", due: [] }));
+  learningTopic = vi.fn(async (_id: number): Promise<import("../api/types").LearningTopic> => { throw new Error("no topic"); });
+  lesson = vi.fn(async (_id: number): Promise<import("../api/types").Lesson> => { throw new Error("no lesson"); });
+  changeLearning = vi.fn(async (_c: Record<string, unknown>): Promise<import("../api/client").LearningResult> => ({ ok: true }));
+  profile = vi.fn(async (): Promise<import("../api/types").ProfileData> => ({ available: true, protected_by: "the macOS Keychain", categories: { identity: "Identity and contact" }, suggestions: [], entries: [], last_form: null }));
+  changeProfile = vi.fn(async (_c: import("../api/types").ProfileChange): Promise<{ ok: boolean; value?: string; deleted?: boolean }> => ({ ok: true }));
   context = vi.fn(async (): Promise<import("../api/types").ContextBrief> => ({ focus: null, ambiguous: false, candidates: [],
     project: null, work: [], tasks: [], fix_next: [], problems: [], not_included: [], ms: 1 }));
   activity = vi.fn(async (_limit?: number, _signal?: AbortSignal, _offset?: number, _kind?: string):
     Promise<{ events: XenioEvent[]; more?: boolean; next_offset?: number }> => ({ events: [] as XenioEvent[] }));
   audit = vi.fn(async (): Promise<{ calls: import("../api/types").ToolCall[] }> => ({ calls: [] }));
+  desktopStats = vi.fn(async (): Promise<import("../api/types").DesktopStats> => ({ stages: {}, perception_levels: {}, looks: 0,
+    answered_without_a_model: 0, vision_answers_reused: 0,
+    actions: { total: 0, failed: 0, verified: 0, unverified: 0, not_as_expected: 0, recovered: 0, cancelled: 0 } }));
   setSkill = vi.fn(async (name: string, enabled: boolean) => ({ name, enabled }));
   runDiff = vi.fn(async (id: string): Promise<import("../api/types").RunDiff> => ({ run: id, files: [], diff: "" }));
   startRun = vi.fn(async () => ({ status: "started", note: "Planning in the background" }));

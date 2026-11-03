@@ -6,7 +6,7 @@ import type { StreamStatus } from "../api/client";
 import type { Approval, AssistantSnapshot, Message, Snapshot, ToolActivity, UiSettings, VoiceInfo, XenioEvent } from "../api/types";
 import { IDLE_VOICE, type LocalVoice } from "../orb/machine";
 
-export type Topic = "runs" | "tasks" | "approvals" | "activity" | "schedules" | "health" | "agents" | "memory" | "skills";
+export type Topic = "runs" | "tasks" | "approvals" | "activity" | "schedules" | "health" | "agents" | "memory" | "profile" | "learning" | "skills";
 
 export interface Notice {
   id: string;
@@ -20,6 +20,8 @@ export interface AppState {
   snapshot: Snapshot | null;
   assistant: AssistantSnapshot | null;
   conversation: Message[];
+  /** the state of each picture, as XENIO reports it */
+  images: Record<string, import("../api/types").ImageJob>;
   streaming: { turn: string; text: string } | null;
   tools: ToolActivity[];
   approvals: Approval[];
@@ -33,9 +35,9 @@ export interface AppState {
 }
 
 export const initialState: AppState = {
-  stream: "connecting", snapshot: null, assistant: null, conversation: [], streaming: null, tools: [], approvals: [],
+  stream: "connecting", snapshot: null, assistant: null, conversation: [], images: {}, streaming: null, tools: [], approvals: [],
   voice: IDLE_VOICE, voiceError: null, notices: [], settings: null,
-  revision: { runs: 0, tasks: 0, approvals: 0, activity: 0, schedules: 0, health: 0, agents: 0, memory: 0, skills: 0 },
+  revision: { runs: 0, tasks: 0, approvals: 0, activity: 0, schedules: 0, health: 0, agents: 0, memory: 0, profile: 0, learning: 0, skills: 0 },
   loadError: null,
   lastEventAt: null,
 };
@@ -109,7 +111,7 @@ export class Store {
         const conversation = s.conversation.some((x) => x.id === m.id) ? s.conversation : [...s.conversation, m];
         // a turn may have changed tasks, reminders or memory through tools that run inside Hermes, where no event is
         // published: the views that show them re-read XENIO's records (only those on screen fetch)
-        this.set({ ...at, conversation, streaming: null, ...this.bump("activity", "tasks", "schedules", "memory") });
+        this.set({ ...at, conversation, streaming: null, ...this.bump("activity", "tasks", "schedules", "memory", "profile", "learning") });
         return;
       }
       case "chat.reset":
@@ -141,6 +143,17 @@ export class Store {
         return;
       case "task.changed":
         this.set({ ...at, ...this.bump("tasks", "activity") });
+        return;
+      case "image.job": {
+        const job = d as unknown as import("../api/types").ImageJob;
+        this.set({ ...at, images: { ...s.images, [job.id]: job } });
+        return;
+      }
+      case "learning.changed":
+        this.set({ ...at, ...this.bump("learning") });
+        return;
+      case "profile.changed":
+        this.set({ ...at, ...this.bump("profile", "activity") });
         return;
       case "memory.changed":
         this.set({ ...at, ...this.bump("memory", "activity", "health") });
@@ -181,7 +194,7 @@ export class Store {
   loadSnapshot(snapshot: Snapshot): void {
     this.set({ snapshot, assistant: snapshot.assistant, conversation: snapshot.conversation, approvals: snapshot.approvals,
       streaming: snapshot.assistant.turn ? { turn: snapshot.assistant.turn, text: "" } : null, loadError: null,
-      ...this.bump("runs", "tasks", "approvals", "activity", "schedules", "health", "agents", "memory", "skills") });
+      ...this.bump("runs", "tasks", "approvals", "activity", "schedules", "health", "agents", "memory", "profile", "learning", "skills") });
   }
 }
 

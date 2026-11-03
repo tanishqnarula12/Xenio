@@ -80,15 +80,15 @@ export class AppController {
   // ---- text ---------------------------------------------------------------------------------------------------
 
   /** quiet: typed in the quick chat - the reply stays on screen, never read aloud */
-  async send(text: string, via: "text" | "voice" = "text", quiet = false): Promise<boolean> {
+  async send(text: string, via: "text" | "voice" = "text", quiet = false, files: string[] = []): Promise<boolean> {
     const clean = text.trim();
-    if (!clean) {
+    if (!clean && !files.length) {
       this.store.notify({ tone: "attention", title: "Nothing to send", message: "Type or say something first." });
       return false;
     }
     void unlockAudio(); // inside the click: lets the reply be spoken later
     try {
-      const { turn } = await this.api.chat(clean, via, quiet);
+      const { turn } = files.length ? await this.api.chat(clean, via, quiet, files) : await this.api.chat(clean, via, quiet);
       if (via === "voice") this.voiceTurns.add(turn);
       return true;
     } catch (error) {

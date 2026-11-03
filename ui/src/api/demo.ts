@@ -153,11 +153,25 @@ export class DemoApi implements XenioApi {
   }
   async memory() { return { available: true, editable: false, entries: [{ id: "demo-m1", store: "user" as const, text: "Prefers short answers. (demo)" }] }; }
   async changeMemory(): Promise<{ ok: boolean; store: string; action: string }> { throw new Error("memory cannot be changed in demo mode"); }
+  async image(): Promise<never> { throw new Error("pictures are not available in demo mode"); }
+  async imageFile(): Promise<never> { throw new Error("pictures are not available in demo mode"); }
+  async changeImage(): Promise<never> { throw new Error("pictures are not available in demo mode"); }
+  async upload(): Promise<never> { throw new Error("files cannot be added in demo mode"); }
+  async learning() { return { topics: [], modes: { teach: "Teach me" }, default_mode: "teach", writer: false, style: "", due: [] }; }
+  async learningTopic(): Promise<never> { throw new Error("lessons are not available in demo mode"); }
+  async lesson(): Promise<never> { throw new Error("lessons are not available in demo mode"); }
+  async changeLearning(): Promise<never> { throw new Error("lessons are not available in demo mode"); }
+  async profile() { return { available: false, reason: "The profile is not available in demo mode.", categories: {}, suggestions: [], entries: [], last_form: null }; }
+  async changeProfile(): Promise<{ ok: boolean }> { throw new Error("the profile cannot be changed in demo mode"); }
   async context() {
     return { focus: { kind: "run" as const, name: DEMO_RUN.id, why: "demo" }, ambiguous: false, candidates: [], project: null,
       work: [], tasks: [], fix_next: [], problems: [], not_included: [], ms: 0 };
   }
   async audit() { return { calls: [] }; }
+  async desktopStats() {
+    return { stages: {}, perception_levels: {}, looks: 0, answered_without_a_model: 0, vision_answers_reused: 0,
+      actions: { total: 0, failed: 0, verified: 0, unverified: 0, not_as_expected: 0, recovered: 0, cancelled: 0 } };
+  }
   async setSkill(): Promise<{ name: string; enabled: boolean }> { throw new Error("skills cannot be changed in demo mode"); }
   async runDiff(): Promise<{ run: string; files: { status: string; path: string }[]; diff: string }> { throw new Error("no diff in demo mode"); }
   async startRun(): Promise<{ status: string }> { throw new Error("the engineering team is not available in demo mode"); }

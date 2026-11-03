@@ -53,3 +53,50 @@ class AXClient:
     def press(self, hwnd: int, name: str) -> dict:
         """Press the button named exactly ``name`` through accessibility (wherever it is on the page)."""
         return self._call("press", timeout=8, id=int(hwnd), name=str(name))
+
+    # ---- forms (app.autofill) --------------------------------------------------------------------------------------
+
+    def form_scan(self, hwnd: int) -> dict:
+        return self._call("form_scan", timeout=8, id=int(hwnd))
+
+    def form_read(self, token: int, index: int) -> dict:
+        return self._call("form_read", timeout=3, token=int(token), index=int(index))
+
+    def form_set(self, token: int, index: int, text: str, blur: bool = False) -> dict:
+        return self._call("form_set", timeout=4, token=int(token), index=int(index), text=str(text), blur=bool(blur))
+
+    def form_press(self, token: int, index: int) -> dict:
+        return self._call("form_press", timeout=4, token=int(token), index=int(index))
+
+    def form_type_ahead(self, token: int, index: int, text: str) -> dict:
+        return self._call("form_type_ahead", timeout=4, token=int(token), index=int(index), text=str(text))
+
+    def form_date(self, token: int, index: int, year: int, month: int, day: int) -> dict:
+        return self._call("form_date", timeout=5, token=int(token), index=int(index), year=int(year), month=int(month), day=int(day))
+
+    def form_point(self, token: int, index: int) -> dict:
+        return self._call("form_point", timeout=3, token=int(token), index=int(index))
+
+    def form_space(self, token: int, index: int) -> dict:
+        return self._call("form_space", timeout=3, token=int(token), index=int(index))
+
+    def form_list_point(self, token: int, index: int) -> dict:
+        return self._call("form_list_point", timeout=3, token=int(token), index=int(index))
+
+    def form_list_pick(self, token: int, index: int, values: list[str]) -> dict:
+        return self._call("form_list_pick", timeout=4, token=int(token), index=int(index), values=list(values))
+
+    def form_list_value(self, token: int, index: int) -> dict:
+        return self._call("form_list_value", timeout=3, token=int(token), index=int(index))
+
+    def form_is_focused(self, token: int, index: int) -> dict:
+        return self._call("form_is_focused", timeout=2, token=int(token), index=int(index))
+
+    def browser_tabs(self, hwnd: int) -> dict:
+        return self._call("browser_tabs", timeout=4, id=int(hwnd))
+
+    def browser_tab(self, hwnd: int, name: str) -> dict:
+        return self._call("browser_tab", timeout=4, id=int(hwnd), name=str(name))
+
+    def browser_button(self, hwnd: int, action: str) -> dict:
+        return self._call("browser_button", timeout=4, id=int(hwnd), action=str(action))

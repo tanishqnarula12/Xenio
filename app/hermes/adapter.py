@@ -465,6 +465,7 @@ def guard_environment(settings: HermesSettings, data_dir: Path | None) -> dict[s
         # browser.headed is not in its config). Off by default: xenio_open_url shows pages to the user.
         **({"AGENT_BROWSER_HEADED": "1"} if settings.show_browser else {}),
         **(settings.vision.env() if settings.vision else {}),
+        **(settings.nabh.env() if settings.nabh else {}),
         **_host_app_env(),
     }
 

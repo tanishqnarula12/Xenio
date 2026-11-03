@@ -1,6 +1,8 @@
-import { ArrowUp, Mic, MicOff, Square, Volume2, VolumeX } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import type { Message, ToolActivity } from "../api/types";
+import { ArrowUp, FileText, Mic, MicOff, Paperclip, Square, Volume2, VolumeX, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import type { Message, ToolActivity, UploadedFile } from "../api/types";
+import { ImageCard } from "../images/ImageCard";
+import { LessonCard } from "../teach/LessonView";
 import { useApp, useAppState } from "../state/context";
 import { friendlyTool } from "../orb/machine";
 import { ApprovalCard } from "./ApprovalCard";
@@ -8,11 +10,11 @@ import { RichText, safeUrl } from "./RichText";
 import { Status } from "./ui";
 
 function ActionLine({ line }: { line: string }) {
-  const m = /^\s*\[(done|FAILED|declined)\]\s*(.*)$/i.exec(line);
+  const m = /^\s*\[(done|FAILED|declined|NOT CONFIRMED)\]\s*(.*)$/i.exec(line);
   if (!m) return <li className="meta">{line}</li>;
   const kind = m[1]!.toLowerCase();
-  const tone = kind === "done" ? "ok" : kind === "failed" ? "danger" : "neutral";
-  const word = kind === "done" ? "Done" : kind === "failed" ? "Failed" : "Declined";
+  const tone = kind === "done" ? "ok" : kind === "failed" ? "danger" : kind === "not confirmed" ? "attention" : "neutral";
+  const word = kind === "done" ? "Done" : kind === "failed" ? "Failed" : kind === "not confirmed" ? "Not confirmed" : "Declined";
   return <li><Status tone={tone}>{word}</Status> <span className="action-text">{m[2]}</span></li>;
 }
 
@@ -21,6 +23,7 @@ function MessageView({ message }: { message: Message }) {
     return (
       <div className="msg msg--user">
         <p>{message.text}</p>
+        {!!message.files?.length && <ul className="msg__files" aria-label="Files added">{message.files.map((f) => <li key={f.id} className="file-chip"><FileText size={13} aria-hidden="true" /><span>{f.name}</span></li>)}</ul>}
         {message.via === "voice" && <span className="meta">Said aloud</span>}
       </div>
     );
@@ -30,6 +33,7 @@ function MessageView({ message }: { message: Message }) {
       {message.cancelled && <Status tone="neutral">Stopped</Status>}
       {message.ok === false && !message.cancelled && <Status tone="danger">This request failed</Status>}
       {message.text ? <RichText text={message.text} /> : !message.cancelled && <p className="meta">No answer came back.</p>}
+      {message.attachments?.map((card) => (card.kind === "lesson" ? <LessonCard key={`l${card.id}`} id={Number(card.id)} /> : <ImageCard key={`i${card.id}`} id={String(card.id)} />))}
       {!!message.actions?.length && <ul className="actions" aria-label="What XENIO did">{message.actions.map((a, i) => <ActionLine key={i} line={a} />)}</ul>}
       {!!message.sources?.length && (
         <ul className="sources" aria-label="Sources">
@@ -50,8 +54,8 @@ function LiveTools({ tools }: { tools: ToolActivity[] }) {
     <ul className="live-tools" aria-label="What XENIO is doing">
       {tools.slice(-4).map((t) => (
         <li key={t.id}>
-          <Status tone={t.status === "failed" ? "danger" : t.status === "completed" ? "ok" : "running"}>
-            {friendlyTool(t.title.split(":")[0] ?? t.title)}
+          <Status tone={t.status === "failed" ? "danger" : t.unconfirmed ? "attention" : t.status === "completed" ? "ok" : "running"}>
+            {friendlyTool(t.title.split(":")[0] ?? t.title)}{t.unconfirmed ? " (not confirmed)" : ""}
           </Status>
         </li>
       ))}
@@ -121,6 +125,11 @@ export function Composer({ autoFocus = false, quiet = false, idleHint }: { autoF
   const voiceInfo = useAppState((s) => s.snapshot?.voice);
   const speakReplies = useAppState((s) => s.settings?.speak_replies ?? false);
   const input = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [uploading, setUploading] = useState<string[]>([]);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [dropping, setDropping] = useState(false);
   const busy = Boolean(assistant?.turn);
   const engine = voiceInfo?.engine === true;
   const sttReady = engine || (voiceInfo?.stt ?? false);
@@ -137,12 +146,35 @@ export function Composer({ autoFocus = false, quiet = false, idleHint }: { autoF
 
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
-    if (!text.trim() || sending) return;
+    if ((!text.trim() && !files.length) || sending || uploading.length) return;
     setSending(true);
-    const ok = await app.send(text, "text", quiet);
+    const ok = await app.send(text, "text", quiet, files.map((f) => f.id));
     setSending(false);
-    if (ok) setText("");
+    if (ok) { setText(""); setFiles([]); }
     input.current?.focus();
+  };
+
+  const addFiles = async (list: File[]) => {
+    if (!list.length) return;
+    setFileError(null);
+    for (const file of list.slice(0, Math.max(0, 5 - files.length))) {
+      setUploading((u) => [...u, file.name]);
+      try {
+        const saved = await app.api.upload(file);
+        setFiles((f) => [...f, saved]);
+      } catch (error) {
+        setFileError(`${file.name}: ${(error as Error).message}`);
+      } finally {
+        setUploading((u) => u.filter((n) => n !== file.name));
+      }
+    }
+    if (list.length + files.length > 5) setFileError("At most 5 files in one message.");
+  };
+  const onPick = (e: ChangeEvent<HTMLInputElement>) => { const list = Array.from(e.target.files ?? []); e.target.value = ""; void addFiles(list); };
+  const onDrop = (e: DragEvent<HTMLFormElement>) => { e.preventDefault(); setDropping(false); void addFiles(Array.from(e.dataTransfer.files)); };
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = Array.from(e.clipboardData.files);
+    if (pasted.length) { e.preventDefault(); void addFiles(pasted); }
   };
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -157,14 +189,24 @@ export function Composer({ autoFocus = false, quiet = false, idleHint }: { autoF
     : busy ? "XENIO is answering. Stop it, or wait for the answer." : null;
 
   return (
-    <form className="composer" onSubmit={submit} aria-label="Talk to XENIO">
+    <form className={`composer ${dropping ? "composer--drop" : ""}`} onSubmit={submit} aria-label="Talk to XENIO"
+      onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDropping(true); } }} onDragLeave={() => setDropping(false)} onDrop={onDrop}>
       {voiceError && <p className="voice-error" role="alert">{voiceError}</p>}
+      {fileError && <p className="voice-error" role="alert">{fileError}</p>}
+      {(files.length > 0 || uploading.length > 0) && (
+        <ul className="composer__files" aria-label="Files to send">
+          {files.map((f) => <li key={f.id} className="file-chip"><FileText size={13} aria-hidden="true" /><span>{f.name}</span><button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles((all) => all.filter((x) => x.id !== f.id))}><X size={13} aria-hidden="true" /></button></li>)}
+          {uploading.map((name) => <li key={name} className="file-chip file-chip--busy" role="status"><span>Adding {name}…</span></li>)}
+        </ul>
+      )}
       {hint && <p className="meta composer__hint" id="composer-hint">{hint}</p>}
       <div className="composer__row">
         <label htmlFor="composer-input" className="sr-only">Message XENIO</label>
         <textarea id="composer-input" ref={input} rows={1} value={text} placeholder="Ask or tell XENIO…"
-          onChange={(e) => setText(e.target.value)} onKeyDown={onKey} maxLength={4000}
+          onChange={(e) => setText(e.target.value)} onKeyDown={onKey} onPaste={onPaste} maxLength={4000}
           aria-describedby={hint ? "composer-hint" : undefined} />
+        <input ref={picker} type="file" multiple hidden aria-label="Add files" onChange={onPick} />
+        <button type="button" className="icon-btn" onClick={() => picker.current?.click()} aria-label="Add files" title="Add files: PDFs, documents, photos, code"><Paperclip size={18} aria-hidden="true" /></button>
         {speaking ? (
           <button type="button" className="icon-btn" onClick={() => app.stopSpeaking()} aria-label="Stop speaking" title="Stop speaking">
             <VolumeX size={18} aria-hidden="true" />
@@ -183,7 +225,7 @@ export function Composer({ autoFocus = false, quiet = false, idleHint }: { autoF
             <Square size={16} aria-hidden="true" />
           </button>
         ) : (
-          <button type="submit" className="send-btn" disabled={!text.trim() || sending || !connected || paused} aria-label="Send">
+          <button type="submit" className="send-btn" disabled={(!text.trim() && !files.length) || uploading.length > 0 || sending || !connected || paused} aria-label="Send">
             <ArrowUp size={18} aria-hidden="true" />
           </button>
         )}

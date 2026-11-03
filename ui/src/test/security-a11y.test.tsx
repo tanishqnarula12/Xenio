@@ -70,7 +70,7 @@ describe("accessibility", () => {
     await renderApp(new FakeApi(), "agents");
     const nav = screen.getByRole("navigation", { name: "Mission Control" });
     expect(screen.getByRole("link", { name: "Agents" })).toHaveAttribute("aria-current", "page");
-    expect(nav.querySelectorAll("a[href^='#/']").length).toBe(13); // wordmark + 12 pages
+    expect(nav.querySelectorAll("a[href^='#/']").length).toBe(16); // wordmark + 15 pages
   });
 
   it("opens the assistant from the orb, closes on Escape and gives focus back", async () => {

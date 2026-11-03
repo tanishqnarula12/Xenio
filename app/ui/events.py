@@ -31,14 +31,14 @@ VERSION = 1
 # what the Activity page keeps across restarts (never chat text: requests are recorded by size only)
 ACTIVITY_TYPES = {"request.received", "engineering.milestone", "engineering.run", "approval.requested",
                   "approval.settled", "notification", "health.changed", "assistant.error", "schedule.result",
-                  "task.changed", "memory.changed", "skill.changed", "settings.changed", "system.event"}
+                  "task.changed", "memory.changed", "profile.changed", "learning.changed", "image.job", "skill.changed", "settings.changed", "system.event"}
 # the Activity page's filters, decided here so that paging works per filter
 ACTIVITY_KINDS = {
     "requests": {"request.received"},
     "engineering": {"engineering.milestone", "engineering.run"},
     "approvals": {"approval.requested", "approval.settled"},
     "scheduled": {"notification", "schedule.result"},
-    "changes": {"task.changed", "memory.changed", "skill.changed", "settings.changed"},
+    "changes": {"task.changed", "memory.changed", "profile.changed", "learning.changed", "skill.changed", "settings.changed"},
     "system": {"health.changed", "assistant.error", "system.event"},
 }
 MAX_LOG_BYTES = 2_000_000

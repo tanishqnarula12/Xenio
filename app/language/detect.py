@@ -193,6 +193,128 @@ def _clean_target(text: str) -> str:
     return text
 
 
+# One deterministic action on the window in front, said as one sentence: "click Compile and Run", "scroll down", "press
+# enter", "Run pe click karo", "neeche scroll karo", "enter dabao". Never split on "and": it is part of control names.
+_UI_CLICK = (re.compile(r"^(?:please\s+)?(?:click|tap)(?:\s+on)?\s+(?:the\s+)?(?P<t>.+?)(?:\s+button)?$", re.IGNORECASE),
+             re.compile(r"^(?P<t>.+?)(?:\s+button)?\s+(?:pe|par|per)\s+click\s+(?:karo|kar\s+do|kijiye)$", re.IGNORECASE))
+_UI_SCROLL = {"down": re.compile(r"^(?:please\s+)?(?:scroll\s+down|neeche\s+scroll\s+(?:karo|kar\s+do)|nach\s+unten\s+scrollen)$",
+                                 re.IGNORECASE),
+              "up": re.compile(r"^(?:please\s+)?(?:scroll\s+up|upar\s+scroll\s+(?:karo|kar\s+do)|nach\s+oben\s+scrollen)$",
+                               re.IGNORECASE)}
+_UI_KEYS = {"enter": "enter", "return": "enter", "escape": "esc", "esc": "esc", "tab": "tab", "space": "space",
+            "page down": "pagedown", "page up": "pageup"}
+_UI_PRESS = (re.compile(r"^(?:please\s+)?(?:press|hit)\s+(?:the\s+)?(?P<t>[a-z ]{2,12}?)(?:\s+key)?$", re.IGNORECASE),
+             re.compile(r"^(?P<t>[a-z ]{2,12}?)(?:\s+key)?\s+(?:dabao|daba\s+do)$", re.IGNORECASE))
+
+
+# "fill this form", "autofill", "form bhar do", "ye form fill karo", "Formular ausfüllen": the whole job, with no model.
+_FORM_FILL = (
+    re.compile(r"^(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:auto\s*-?fill|fill(?:\s+(?:out|in|up))?)(?:\s+(?:this|the|my|that))?\s+"
+               r"(?:form|application|page)(?:\s+(?:out|in|up))?(?:\s+for\s+me)?(?:\s+with\s+my\s+(?:details|info|information|profile|data))?(?:\s+please)?$", re.IGNORECASE),
+    re.compile(r"^(?:please\s+)?auto\s*-?fill(?:\s+(?:this|it|here))?(?:\s+please)?$", re.IGNORECASE),
+    re.compile(r"^(?:(?:ye|yeh|is|iss|ye\s+wala)\s+)?form(?:\s+ko)?\s+(?:fill|bhar)\s*(?:karo|kar\s+do|kardo|kar\s+de|do|de|dena|dijiye)?(?:\s+(?:please|plz))?$", re.IGNORECASE),
+    re.compile(r"^(?:ये\s+|इस\s+|यह\s+)?(?:फ़ॉर्म|फॉर्म)(?:\s+को)?\s+(?:भर|फिल)\s*(?:दो|दीजिए|दे|करो|कर\s+दो)?$"),
+    re.compile(r"^(?:bitte\s+)?(?:das\s+|dieses\s+)?formular\s+ausfüllen(?:\s+bitte)?$", re.IGNORECASE),
+)
+
+
+def parse_form_command(text: str) -> bool:
+    """The user asks, in so many words, for the form in front of them to be filled. Anything more goes to the model."""
+    body = _NAME_PREFIX.sub("", (text or "").strip()).strip(" .!?,;:।")
+    return bool(body) and len(body) <= 70 and any(pattern.match(body) for pattern in _FORM_FILL)
+
+
+# "teach me photosynthesis", "explain binary search with a flowchart", "mind map of the French Revolution", "quiz me on DBMS",
+# "newton ke laws samjhao". A named subject only: "explain this" points at something the model has to work out.
+_REFERS = re.compile(r"\b(?:this|that|it|these|those|here|above|yeh|ye|woh|isko|usko|error|code|screen|page)\b", re.IGNORECASE)
+_TEACH = (
+    (re.compile(r"^(?:please\s+|can\s+you\s+|could\s+you\s+)?teach\s+me(?:\s+about)?\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "teach"),
+    (re.compile(r"^(?:please\s+|can\s+you\s+)?(?:explain|show)(?:\s+me)?\s+(?P<t>.+?)\s+(?:with|using|through|in)\s+(?:a\s+|an\s+|some\s+)?(?:flow\s?charts?|diagrams?|mind\s?maps?|visuals?|pictures?)(?:\s+please)?$", re.IGNORECASE), "visual"),
+    (re.compile(r"^(?:please\s+)?(?:make|draw|show|create|give)(?:\s+me)?\s+(?:a\s+|an\s+)?(?:flow\s?chart|mind\s?map|diagram|concept\s+map)\s+(?:of|for|on|about|explaining)\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "visual"),
+    (re.compile(r"^(?:please\s+)?explain\s+(?P<t>.+?)\s+(?:simply|in\s+simple\s+(?:words|terms)|like\s+i'?m\s+(?:five|5|a\s+kid))(?:\s+please)?$", re.IGNORECASE), "simple"),
+    (re.compile(r"^(?:please\s+)?quiz\s+me\s+(?:on|about)\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "quiz"),
+    (re.compile(r"^(?:please\s+)?test\s+(?:me\s+on|my\s+understanding\s+of)\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "test"),
+    (re.compile(r"^(?:mujhe\s+)?(?P<t>.+?)\s+(?:ko\s+)?(?:samjhao|samjha\s+do|sikhao|sikha\s+do|padhao|padha\s+do)(?:\s+(?:please|plz))?$", re.IGNORECASE), "teach"),
+    (re.compile(r"^(?:मुझे\s+)?(?P<t>.+?)\s+(?:को\s+)?(?:समझाओ|समझा\s+दो|सिखाओ|पढ़ाओ)$"), "teach"),
+    (re.compile(r"^(?:bitte\s+)?erkläre?\s+mir\s+(?P<t>.+?)(?:\s+bitte)?$", re.IGNORECASE), "teach"),
+)
+
+
+_PICTURE = r"(?:images?|pictures?|photos?|wallpapers?|illustrations?|posters?|logos?|icons?|drawings?|paintings?|artworks?|renders?|sketch(?:es)?|portraits?)"
+_COUNTS = {"one": 1, "a": 1, "an": 1, "two": 2, "three": 3, "four": 4, "ek": 1, "do": 2, "teen": 3, "char": 4, "2": 2, "3": 3, "4": 4}
+_IMAGE_MAKE = re.compile(rf"^(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:generate|create|make|draw|paint|design|produce)(?:\s+me)?\s+(?P<body>.*\b{_PICTURE}\b.*)$", re.IGNORECASE)
+_IMAGE_DRAW = re.compile(r"^(?:please\s+|can\s+you\s+)?(?:draw|paint|sketch)(?:\s+me)?\s+(?P<body>.{3,})$", re.IGNORECASE)
+_IMAGE_ILLUSTRATE = re.compile(r"^(?:please\s+)?(?:illustrate|create\s+a\s+visual\s+explanation\s+of|make\s+a\s+visual\s+explanation\s+of)\s+(?P<body>.{3,})$", re.IGNORECASE)
+_IMAGE_HINGLISH = re.compile(rf"^(?P<body>.+?)\s+(?:ki|ka|ke)\s+(?:image|picture|photo|tasveer|chitra|wallpaper|drawing|poster)\s+(?:banao|bana\s+do|bana\s+de|generate\s+karo|dikhao)(?:\s+(?:please|plz))?$", re.IGNORECASE)
+_IMAGE_HINDI = re.compile(r"^(?P<body>.+?)\s+(?:की|का)\s+(?:तस्वीर|चित्र|फोटो|इमेज)\s+(?:बनाओ|बना\s+दो)$")
+_IMAGE_MORE = re.compile(r"^(?:please\s+)?(?:make|give\s+me|create|generate|show\s+me)\s+(?P<n>\w+)?\s*(?:more\s+)?variations?(?:\s+of\s+(?:this|that|it|the\s+(?:image|picture|idea)|this\s+(?:image|picture|idea)|that\s+(?:image|picture|idea)))?(?:\s+please)?$", re.IGNORECASE)
+_DIAGRAM_WORDS = re.compile(r"\b(?:flow\s?chart|mind\s?map|diagram|concept\s+map|chart|graph|table|spreadsheet)\b", re.IGNORECASE)
+
+
+def parse_image_command(text: str) -> dict | None:
+    """A request for a picture, in so many words: {"prompt", "count"}, or {"variations": n} for more of the last one. "Illustrate this concept" points at
+    something the model has to work out, and a flowchart is a job for the Teacher: Stable Diffusion cannot spell."""
+    body = _NAME_PREFIX.sub("", (text or "").strip()).strip(" .!?,;:।")
+    if not body or len(body) > 600 or _DIAGRAM_WORDS.search(body):
+        return None
+    more = _IMAGE_MORE.match(body)
+    if more:
+        word = (more.group("n") or "").lower()
+        return {"variations": _COUNTS.get(word, 1)} if not word or word in _COUNTS else None
+    for pattern in (_IMAGE_HINGLISH, _IMAGE_HINDI):
+        match = pattern.match(body)
+        if match:
+            subject = match.group("body").strip()
+            return None if _REFERS.search(subject) else {"prompt": subject, "count": 1}
+    match = _IMAGE_ILLUSTRATE.match(body)
+    if match:
+        subject = match.group("body").strip(" .")
+        return None if _REFERS.search(subject) else {"prompt": f"A clear, beautiful educational illustration of {subject}", "count": 1}
+    match = _IMAGE_MAKE.match(body) or _IMAGE_DRAW.match(body)
+    if match:
+        words = match.group("body").strip()
+        if _REFERS.search(words):  # "an image of this": what "this" is, the model has to work out
+            return None
+        first = words.split()[0].lower()
+        count = _COUNTS.get(first, 1) if first in _COUNTS else 1
+        return {"prompt": words, "count": min(count, 4)}
+    return None
+
+
+def parse_teach_command(text: str) -> dict | None:
+    """A request to learn a named subject, in so many words: {"topic", "mode"}."""
+    body = _NAME_PREFIX.sub("", (text or "").strip()).strip(" .!?,;:।")
+    if not body or len(body) > 140:
+        return None
+    for pattern, mode in _TEACH:
+        match = pattern.match(body)
+        if match:
+            topic = match.group("t").strip(" .!?,;:।")
+            if 2 <= len(topic) <= 100 and not _REFERS.search(topic):
+                return {"topic": topic, "mode": mode}
+    return None
+
+
+def parse_ui_command(text: str) -> dict | None:
+    """One deterministic action in xenio_gui's terms, or None. Only short, complete commands: anything else is a job for
+    the model, which understands the rest."""
+    body = _NAME_PREFIX.sub("", (text or "").strip()).strip(" .!?,;:।")
+    if not body or len(body) > 60:
+        return None
+    for direction, pattern in _UI_SCROLL.items():
+        if pattern.match(body):
+            return {"action": "scroll", "amount": -5 if direction == "down" else 5}
+    for pattern in _UI_PRESS:
+        m = pattern.match(body)
+        if m and m.group("t").lower().strip() in _UI_KEYS:
+            return {"action": "key", "keys": _UI_KEYS[m.group("t").lower().strip()]}
+    for pattern in _UI_CLICK:
+        m = pattern.match(body)
+        if m and 1 <= len(m.group("t").split()) <= 5 and not re.search(r"\b(?:it|this|that|there|here|yeh|woh)\b", m.group("t"), re.I):
+            return {"action": "click", "element": m.group("t").strip()}
+    return None
+
+
 def parse_command(text: str) -> tuple[list[Intent], bool]:
     """Language-independent intents of a request, in order, and whether EVERY clause was understood (the fast path
     acts only on fully understood requests; anything else goes to Hermes, which understands the rest)."""

@@ -1,8 +1,5 @@
 import { gsap } from "gsap";
-import {
-  Activity, Bot, CalendarClock, CheckSquare, Cpu, Database, GitBranch, Home, Maximize2, MessageSquare, PanelLeftClose,
-  PanelLeftOpen, PanelRightClose, PanelRightOpen, PlugZap, Settings, ShieldCheck, Wrench, X, type LucideIcon,
-} from "lucide-react";
+import { Activity, Bot, CalendarClock, CheckSquare, Cpu, Database, GitBranch, GraduationCap, Home, Maximize2, MessageSquare, MessagesSquare, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, PlugZap, Settings, ShieldCheck, UserRound, Wrench, X, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MOTION, useReducedMotion } from "../motion/motion";
 import { Orb } from "../orb/Orb";
@@ -14,8 +11,8 @@ import { IconButton, Status, Time } from "./ui";
 import { useOrbState } from "./useOrbState";
 
 const ICONS: Record<PageId, LucideIcon> = {
-  home: Home, agents: Bot, orchestration: GitBranch, tasks: CheckSquare, schedules: CalendarClock, tools: Wrench,
-  memory: Database, activity: Activity, approvals: ShieldCheck, integrations: PlugZap, system: Cpu, settings: Settings,
+  home: Home, chat: MessagesSquare, agents: Bot, orchestration: GitBranch, tasks: CheckSquare, schedules: CalendarClock, tools: Wrench,
+  memory: Database, learn: GraduationCap, profile: UserRound, activity: Activity, approvals: ShieldCheck, integrations: PlugZap, system: Cpu, settings: Settings,
 };
 
 function ConnectionStatus() {
@@ -216,9 +213,9 @@ export function Shell({ page, children }: { page: PageId; children: ReactNode })
       <div className="main-col">
         <TopBar page={page} onMenu={() => setNavOpen((o) => !o)} />
         <StaleBanner />
-        <main id="main" className={`content ${page === "home" ? "content--home" : ""}`} tabIndex={-1}>{children}</main>
+        <main id="main" className={`content ${page === "home" || page === "chat" ? "content--home" : ""}`} tabIndex={-1}>{children}</main>
       </div>
-      {page !== "home" && <FloatingAssistant />}
+      {page !== "home" && page !== "chat" && <FloatingAssistant />}
       <Notices />
     </div>
   );

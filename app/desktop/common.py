@@ -91,7 +91,8 @@ def rank_windows(query: str, windows: list[WindowInfo]) -> list[WindowInfo]:
 
 def score_name(query: str, name: str) -> float:
     """How well a control's accessible name matches what the model asked for ("send" ~ "Send")."""
-    q, n = query.lower().strip(), name.lower().strip()
+    # "Compile and Run" is how the button "Compile & Run" is said
+    q, n = (" ".join(t.lower().replace("&", " and ").split()) for t in (query, name))
     if not q or not n:
         return 0.0
     if q == n:

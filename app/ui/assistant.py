@@ -64,6 +64,8 @@ class AssistantState:
     background: dict = field(default_factory=lambda: {"state": None, "runs": 0, "agents": 0})
     voice: str = ""  # the talk engine: listening | transcribing | speaking ("" = not using the mic or speaker)
     voice_since: float = 0.0  # when that phase began (epoch ms): the orb measures how fast it appeared
+    action: dict | None = None  # what XENIO's hands are doing inside the running tool (looking, acting, verifying...)
+    running: dict = field(default_factory=dict)  # the tool calls under way in this turn: id -> (name, phase)
     clock: object = time.monotonic
 
     def derive(self) -> str:
@@ -95,27 +97,38 @@ class AssistantState:
         return {"state": self.derive(), "connection": self.connection, "paused": self.paused,
                 "approvals": self.approvals, "turn": self.turn, "tool": self.tool or None,
                 "error": self.error or None, "background": dict(self.background), "voice": self.voice or None,
-                "voice_since": int(self.voice_since) or None}
+                "voice_since": int(self.voice_since) or None, "action": self.action}
 
     # ---- transitions (each returns nothing; the controller publishes the new snapshot) -------------------------
 
     def turn_started(self, turn_id: str) -> None:
         self.turn, self.phase, self.tool, self.error, self.completed_at = turn_id, "PROCESSING", "", "", 0.0
+        self.running = {}
 
     def first_output(self) -> None:
         if self.turn is not None and self.phase == "PROCESSING":
             self.phase = "THINKING"
 
-    def tool_changed(self, title: str, kind: str, status: str) -> None:
+    def tool_changed(self, title: str, kind: str, status: str, call_id: str = "") -> None:
+        """Followed by call, not by name: a call that finishes under another title still ends, and with tools running side by side the orb shows
+        one that is really still running."""
         if self.turn is None:
             return
+        key, name = call_id or tool_name(title), tool_name(title)
         if status in ("pending", "in_progress"):
-            self.phase, self.tool = phase_for_tool(title, kind), tool_name(title)
-        elif status in ("completed", "failed") and tool_name(title) == self.tool:
-            self.phase, self.tool = "THINKING", ""
+            known = self.running.get(key)
+            self.running[key] = (name, phase_for_tool(title, kind)) if name or not known else known  # an update without a title changes nothing
+            self.tool, self.phase = self.running[key]
+        elif status in ("completed", "failed"):
+            self.running.pop(key, None)
+            self.action = None
+            if self.running:
+                self.tool, self.phase = list(self.running.values())[-1]
+            else:
+                self.phase, self.tool = "THINKING", ""
 
     def turn_finished(self, ok: bool, error: str = "", cancelled: bool = False) -> None:
-        self.turn, self.tool = None, ""
+        self.turn, self.tool, self.action, self.running = None, "", None, {}
         if cancelled:
             self.error, self.completed_at = "", 0.0
         elif ok:

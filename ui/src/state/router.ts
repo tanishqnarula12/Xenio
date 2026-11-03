@@ -2,12 +2,15 @@ import { useEffect, useState } from "react";
 
 export const PAGES = [
   { id: "home", label: "Home" },
+  { id: "chat", label: "Chat" },
   { id: "agents", label: "Agents" },
   { id: "orchestration", label: "Orchestration" },
   { id: "tasks", label: "Tasks & projects" },
   { id: "schedules", label: "Schedules" },
   { id: "tools", label: "Skills & tools" },
   { id: "memory", label: "Memory" },
+  { id: "learn", label: "Learn" },
+  { id: "profile", label: "Profile" },
   { id: "activity", label: "Activity" },
   { id: "approvals", label: "Approvals" },
   { id: "integrations", label: "Integrations" },
