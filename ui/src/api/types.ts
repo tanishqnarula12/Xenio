@@ -546,3 +546,40 @@ export interface UiSettings {
   activity_retention_days?: 7 | 30 | 90 | 365;
   text_size?: "default" | "large";
 }
+
+// ---- The Foundry -----------------------------------------------------------------------------------------------------
+
+export interface FoundryPerformance { runs: number; succeeded: number; failed: number; workflows: number; average_score: number | null; seconds: number; last: string }
+export interface FoundryPermissions { tools: string[]; terminal: string; writes: boolean; writes_code: boolean }
+export interface FoundryAgent {
+  id: string; name: string; role: string; description: string; instructions: string; expertise: string[]; responsibilities: string[];
+  provider: string; model: string; capabilities: string[]; skills: string[]; kind: string; state: string; source: string; version: number;
+  permissions: FoundryPermissions; performance: FoundryPerformance;
+}
+export interface FoundryFinding { severity: string; kind: string; why: string; file: string; line: number; excerpt: string }
+export interface FoundrySkill {
+  id: string; name: string; description: string; kind: string; state: string; risk: string; version?: string; source_text: string;
+  permissions: string[]; agents: string[]; wanted_by?: string[]; assessment?: { findings: FoundryFinding[]; files: number; dependencies: Record<string, string>; bins: Record<string, string>; install_scripts: Record<string, string> };
+  incoming?: { version: string; license: string; homepage: string }; why_blocked?: string; update_refused?: string; failure?: string; pinned?: boolean; tested?: string;
+  versions?: { version: string; installed: string }[]; disabled_because?: string; updated?: string; universal?: boolean; already_here?: boolean; use?: { used: number; added: number; by: string[] }; for_work?: string[];
+  contains?: { folder: string; name: string; description: string; risk: string; permissions: string[]; files: number; findings: FoundryFinding[]; already: boolean }[];
+  installed?: { id?: string; name: string; state: string; why?: string }[];
+}
+export interface FoundryBudget { calls: number; max_calls: number; tokens_estimated: number; max_tokens: number; seconds: number; max_seconds: number }
+export interface FoundryLine { budget?: FoundryBudget; size?: string; id: string; goal: string; status: string; created: string; updated: string; outcome: string; attention: string; milestone: number; autonomy: string; project: string; delivered: string; summary: string; paused: boolean; pause_reason: string }
+export interface FoundryOverview { available: boolean; reason?: string; can_think?: boolean; workflows: FoundryLine[]; agents: FoundryAgent[]; skills: FoundrySkill[]; seats?: string[]; judge?: string }
+export interface FoundryMember { agent: string; name: string; role: string; reused: boolean; why: string; work: string; kind: string; source: string; model: string; state: string; task: string; since: string; tools_used: number; permissions: FoundryPermissions; skills: string[]; performance: FoundryPerformance }
+export interface FoundryNode { id: string; type: string; title: string; status: string; agent: string; deps: string[]; inputs: string[]; outputs: Record<string, unknown>; error: string; started: string; finished: string; priority: number; writes: boolean; detail: string; payload: Record<string, unknown>; budget: Record<string, unknown>; retries: number; max_retries: number; history: { status: string; at: string; note?: string }[] }
+export interface FoundryMessage { id: string; seq: number; workflow: string; sender: string; recipient: string; type: string; content: string; task: string; correlation: string; reply_to: string; evidence: string[]; artifacts: string[]; model: string; at: string }
+export interface FoundryOption { agent: string; name: string; model: string; position: string; reasoning: string; evidence: { text: string; checked: boolean }[]; tradeoffs: string[]; risks: string[]; validation: string[]; confidence: number; history: string[]; why_changed?: string; label: string }
+export interface FoundryResponse { from: string; name: string; to: string; stance: string; point: string; severity: string; evidence: string[] }
+export interface FoundryDecision {
+  id: string; workflow: string; question: string; status: string; participants: { agent: string; name: string; role: string; model: string }[]; options: FoundryOption[]; rounds: { number: number; responses: FoundryResponse[] }[];
+  human: { text: string; at: string }[]; constraints: string[]; selected?: string; decision?: string; reasons?: string[]; rejected?: Record<string, string>; risks?: string[]; required_validation?: string[]; confidence?: number; uncertainties?: string[];
+  dissent?: { agent: string; name: string; position: string; why: string; why_not_chosen?: string }[]; decided_by?: string; provisional?: boolean; why_provisional?: string[]; question_for_human?: string; why_human?: string[]; open_challenges?: string[]; judge_model?: string;
+}
+export interface FoundryEventRow { id: string; seq: number; type: string; workflow: string; agent: string; task: string; at: string; data: Record<string, unknown> }
+export interface FoundryIntervention { id: string; kind: string; text: string; to: string; effect: string[]; at: string }
+export interface FoundryWorkflow extends FoundryLine { greenfield?: boolean; constraints: string[]; require_evidence: boolean; run_id: string; report?: string; verified?: boolean; model_use?: Record<string, number> }
+export interface FoundryPreview { state: string; url?: string; command?: string; kind?: string; detail?: string; log?: string; since?: number }
+export interface FoundryState { workflow: FoundryWorkflow; team: FoundryMember[]; graph: FoundryNode[]; counts: Record<string, number>; messages: FoundryMessage[]; decisions: FoundryDecision[]; interventions: FoundryIntervention[]; loop: { iteration: number; stage: string; outcome: string; issues?: { summary: string; severity: string }[] }[]; events: FoundryEventRow[]; live: boolean; seq: number; preview?: FoundryPreview }

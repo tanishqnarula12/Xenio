@@ -5,10 +5,11 @@ import { Loading } from "./components/ui";
 import { arrive, useGsap, useReducedMotion } from "./motion/motion";
 import { HomePage } from "./pages/Home";
 import { useAppState } from "./state/context";
-import { useRoute, type Route } from "./state/router";
+import { useRoute, type Route, PAGES } from "./state/router";
 
 // Home is the first screen; every other page loads when it is first opened.
 const ChatPage = lazy(() => import("./pages/Chat").then((m) => ({ default: m.ChatPage })));
+const WarRoomPage = lazy(() => import("./pages/WarRoom").then((m) => ({ default: m.WarRoomPage })));
 const AgentsPage = lazy(() => import("./pages/Agents").then((m) => ({ default: m.AgentsPage })));
 const OrchestrationPage = lazy(() => import("./pages/Orchestration").then((m) => ({ default: m.OrchestrationPage })));
 const TasksPage = lazy(() => import("./pages/Tasks").then((m) => ({ default: m.TasksPage })));
@@ -28,6 +29,7 @@ function Page({ route }: { route: Route }) {
     case "home": return <HomePage />;
     case "chat": return <ChatPage />;
     case "agents": return <AgentsPage />;
+    case "warroom": return <WarRoomPage workflowId={route.param} />;
     case "orchestration": return <OrchestrationPage runId={route.param} />;
     case "tasks": return <TasksPage />;
     case "schedules": return <SchedulesPage />;
@@ -54,7 +56,7 @@ export function App() {
   useEffect(() => { document.documentElement.dataset.textSize = textSize; }, [textSize]);
   useGsap(page, (reduced) => { if (page.current) arrive(page.current, reduced); }, [route.page]);
   useEffect(() => {
-    document.title = route.page === "home" ? "XENIO" : `${route.page[0]!.toUpperCase()}${route.page.slice(1)} · XENIO`;
+    document.title = route.page === "home" ? "XENIO" : `${PAGES.find((p) => p.id === route.page)?.label ?? route.page} · XENIO`;
     document.getElementById("main")?.focus({ preventScroll: true });
   }, [route.page]);
 

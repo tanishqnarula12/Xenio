@@ -447,6 +447,52 @@ def redact_secrets(text: str, known_values: Iterable[str] = ()) -> str:
     return text
 
 
+# Source code is not a log. "query_tokens = tokenize(q)" is a variable holding a list, and masking it hands whoever reads the file code that no longer
+# parses. (On a real run a reviewer then reported "invalid Python" in an app whose tests all passed.) In code only a value written out literally is a secret.
+_SECRET_LITERAL_IN_CODE = re.compile(r"(?i)(\b[A-Za-z0-9_]*(?:api[_-]?key|access[_-]?key|token|secret|password|passwd|credential)[A-Za-z0-9_]*[\"']?\s*[=:]\s*[bBrRuUfF]?)([\"'])(?![0-9.]+\2)(?!\[)(?!\{)(?!\$)([^\"'\s]{8,})\2")
+_SECRET_ENV_LINE = re.compile(r"(?m)^(\s*(?:export\s+)?[A-Z0-9_]*(?:API_?KEY|ACCESS_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_]*=)(?![0-9.]+\s*$)(?!\[)(?!\$)[^\s\"',;]{6,}")
+_PLACEHOLDER_SECRET = re.compile(r"(?i)^(?:x{3,}|your[_-].*|example.*|placeholder.*|changeme.*|dummy.*|test.*|fake.*|<.*>|none|null|undefined|secret|password|token)$")
+_CODE_FILE = re.compile(r"\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|go|rs|java|kt|swift|rb|php|c|h|cc|cpp|hpp|cs|scala|sh|bash|zsh|vue|svelte|html|css|scss|sql|md|mdx|txt|rst)$", re.IGNORECASE)
+
+
+def redact_code_secrets(text: str, known_values: Iterable[str] = ()) -> str:
+    """Secrets out of source code, leaving the code itself as it was written."""
+    if not text:
+        return text
+    for value in known_values:
+        if value and len(value) >= 8:
+            text = text.replace(value, "[REDACTED]")
+    for pattern, keep_prefix in _SECRET_VALUE_PATTERNS[:-1]:
+        text = pattern.sub(lambda m, k=keep_prefix: (m.group(1) if k else "") + "[REDACTED]", text)
+
+    def literal(match: re.Match) -> str:
+        return match.group(0) if _PLACEHOLDER_SECRET.match(match.group(3)) else f"{match.group(1)}{match.group(2)}[REDACTED]{match.group(2)}"
+
+    return _SECRET_ENV_LINE.sub(lambda m: m.group(1) + "[REDACTED]", _SECRET_LITERAL_IN_CODE.sub(literal, text))
+
+
+def is_code_file(path: str) -> bool:
+    return bool(_CODE_FILE.search(str(path or "")))
+
+
+def redact_for_file(path: str, text: str, known_values: Iterable[str] = ()) -> str:
+    """A settings file gets the full treatment. Code keeps its meaning."""
+    return redact_code_secrets(text, known_values) if is_code_file(path) else redact_secrets(text, known_values)
+
+
+def has_code_secret(text: str) -> bool:
+    return any(value in text for value in secret_env_values()) or redact_code_secrets(text) != text
+
+
+def redact_tool_output(tool: str, args: dict | None, text: str, known_values: Iterable[str] = ()) -> str:
+    """What a tool returned, before a model reads it. A file being read keeps its code intact; anything else, such as a command's output, gets the full treatment."""
+    if tool == "read_file":
+        return redact_for_file(str((args or {}).get("path") or ""), text, known_values)
+    if tool == "search_files":
+        return redact_code_secrets(text, known_values)
+    return redact_secrets(text, known_values)
+
+
 # =============================================================================
 # Terminal commands (Hermes runs them with bash, also on Windows)
 # =============================================================================
@@ -2913,9 +2959,34 @@ def classify_engineering_tool(a: dict) -> Decision:
     return Decision(RiskLevel.CONFIRM_REQUIRED, f"engineering.{action}", words[action] + run)
 
 
+FOUNDRY_READ = {"status", "list", "state", "overview", "skill_history", "skill_search"}
+FOUNDRY_WORK = {"start", "message", "change", "preview_start", "preview_stop", "pause", "resume", "stop", "stop_all", "skill_request", "skill_disable", "skill_pin", "skill_update", "require_evidence", "constraints", "priority", "cancel_task", "review"}
+FOUNDRY_YOURS = {"approve": "approve this step of the team's work", "reject": "reject this step of the team's work", "decide": "settle this decision for the team", "discuss": "add this to the team's decision", "reassign": "hand this task to another agent", "extend_budget": "give the team more budget", "skill_install": "install this skill, sandboxed", "skill_everyone": "change which agents have this skill", "skill_reject": "reject this skill", "skill_assign": "give these agents this skill", "skill_unassign": "take this skill away from these agents", "skill_enable": "switch this skill on", "skill_rollback": "roll this skill back", "skill_uninstall": "uninstall this skill", "agent_create": "add an agent", "agent_update": "change this agent", "agent_promote": "keep this agent permanently", "agent_delete": "delete this agent", "agent_enable": "switch this agent on", "agent_disable": "switch this agent off", "agent_archive": "archive this agent", "agent_restore": "restore this agent", "delete": "delete this piece of work"}
+
+
+def classify_foundry_tool(a: dict) -> Decision:
+    """The team runs on one command. What it may not do on its own is approve anything or gain power: those always ask, and that answer is the only thing the service accepts as yours."""
+    command = str(a.get("command") or "status").lower()
+    if command in FOUNDRY_READ:
+        return read(f"foundry.{command}", "show how the team's work stands")
+    if command == "start":
+        goal = " ".join(str(a.get("goal") or a.get("request") or "").split())[:120]
+        if not goal:
+            return blocked("foundry.start", "start the team", "the 'goal' argument is missing: call it again with what to build")
+        return Decision(RiskLevel.SAFE_WRITE, "foundry.start", f"start the engineering team on: {goal}")
+    if command in FOUNDRY_WORK:
+        return Decision(RiskLevel.SAFE_WRITE, f"foundry.{command}", f"{command.replace('_', ' ')} the team's work")
+    if command in FOUNDRY_YOURS:
+        target = str(a.get("skill") or a.get("agent") or a.get("node") or a.get("decision") or "").strip()[:80]
+        return Decision(RiskLevel.CONFIRM_REQUIRED, f"foundry.{command}", FOUNDRY_YOURS[command] + (f" ({target})" if target else ""))
+    return blocked("foundry.command", f"{command} on the team", "unknown command")
+
+
 def _classify_xenio_tool(tool: str, a: dict, paths: PathPolicy, cwd) -> Decision:
     if tool == "xenio_engineering":
         return classify_engineering_tool(a)
+    if tool == "xenio_foundry":
+        return classify_foundry_tool(a)
     if tool == "xenio_media":
         return classify_media_tool(a)
     if tool in DESKTOP_TOOLS:  # without the plugin's live probe: text-only rules (secret typing stays blocked)

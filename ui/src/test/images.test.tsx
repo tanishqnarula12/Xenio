@@ -84,7 +84,7 @@ describe("a finished picture", () => {
     await userEvent.click(screen.getByRole("button", { name: /Variation/ }));
     expect(api.changeImage).toHaveBeenCalledWith("img_1", { action: "variation", count: 1 });
     await waitFor(() => expect(api.image).toHaveBeenCalledWith("img_2"));
-    expect(await screen.findAllByRole("img", { name: "a boat at dawn" })).toHaveLength(2); // the original is still there, with the new one under it
+    await waitFor(() => expect(screen.getAllByRole("img", { name: "a boat at dawn" })).toHaveLength(2)); // the original is still there, with the new one under it
   });
 
   it("refining takes the words, and a double click makes one request", async () => {

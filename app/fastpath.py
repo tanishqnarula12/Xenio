@@ -128,6 +128,7 @@ class FastPath:
         self._autofill = autofill
         self._teacher = teacher
         self._images = images
+        self.handoff = ""  # what a quick plan already did before handing the request back to the main model
         self.on_tool = None  # tells the orb what a long job is really doing (set by the orchestrator per request)
         self.progress = None  # words to show at once before something that takes a while (set by the orchestrator per request)
 
@@ -190,7 +191,7 @@ class FastPath:
             return await self._ui(ui, text)
         intents, complete = parse_command(text)
         if not complete or any(i.kind not in FAST_KINDS for i in intents):
-            return None
+            return await self._quick_plan(text)
         lang = detect_language(text).code
         say = _SAY.get(lang, _SAY["en"])
         started = time.monotonic()
@@ -264,6 +265,35 @@ class FastPath:
         title = f"{args['action']} {what}".strip()
         return FastReply(line, True, [ToolActivity("fast-0", f"fast: {title}", "fast", "completed")],
                          f"[XENIO did this itself just now, without you: {title}]", ms)
+
+    async def _quick_plan(self, text: str) -> FastReply | None:
+        """A job on what is on the screen: the window as JSON, one plan from a fast model, run with no model turn between the steps (app/desktop/quickplan.py)."""
+        from app.desktop import metrics, quickplan
+        from app.integrations import nabh
+
+        self.handoff = ""
+        if not quickplan.wants_plan(text) or getattr(getattr(self.desktop, "uia", None), "read_text", None) is None:
+            return None
+        try:
+            client = nabh.client()
+        except nabh.NabhError:
+            client = None
+        if client is None:
+            return None
+        try:
+            out = await asyncio.to_thread(quickplan.run, self.desktop, client, text)
+        except Exception as exc:  # noqa: BLE001 - the main model can look further or ask
+            event(log, "FAST_PATH_DEFERRED", reason=str(exc)[:80])
+            return None
+        if out.get("handed_back"):
+            event(log, "FAST_PATH_DEFERRED", reason=f"quick plan: {out.get('why')}")
+            if out.get("done"):  # some of it has happened: the main model must not start again from the top
+                self.handoff = "[XENIO already did this much of the request itself just now: " + "; ".join(out["done"]).replace("]", " ")[:300] + "]"
+            return None
+        metrics.record("quick_plan", out["ms"], getattr(self.desktop, "_data_dir", None), steps=len(out["done"]), rounds=out["rounds"], model_ms=out["model_ms"])
+        event(log, "FAST_PATH", steps=len(out["done"]), ok=True, ms=out["ms"], action="quick_plan", rounds=out["rounds"])
+        title = "; ".join(out["done"])[:150]
+        return FastReply(out["say"], True, [ToolActivity("fast-0", f"fast: {title}", "fast", "completed")], f"[XENIO did this itself just now, without you: {title.replace(']', ' ')}]", out["ms"])
 
     @property
     def autofill(self):

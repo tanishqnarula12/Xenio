@@ -55,6 +55,26 @@ vision by itself.
   says only what the screen confirmed.
 * **XENIO's own windows are never the target** unless named: the quick chat holds the keyboard while it is open.
 
+## One look, one plan, done
+
+Looking stopped being the slow part: reading a window takes about 40 ms, and only pictures need the vision model's 13 to 34 s. Whole tasks still took about 19 s, because a slow model took a turn before and after every step. So a
+job on what is on the screen ("open the plans page and choose the cheapest plan") now goes differently (`app/desktop/quickplan.py`, tried by `app/fastpath.py`):
+
+```
+the window as JSON (text + controls with ids)   about 0.2 s, no screenshot
+one call to Nabh's glm-5-2: the whole plan      1 to 3 s
+the plan runs as one batch                      no model turn between steps; every step judged by the policy right before it runs
+a new page?                                     read it, plan again, at most 3 times
+```
+
+| Real local pages, real WebKit, real clicks, real model | Time |
+|---|---|
+| Open a page and choose the cheapest plan (2 pages, 2 plans) | 4.5 s |
+| Scroll down a bit | 1.8 s |
+
+It stays out of anything consequential (`pay`, `send`, `delete`, `submit`, `log in`...) so the main model can ask first. A plan that heads for such a button anyway stops before it: tested on a real "Place order" button, nothing was ordered. If it cannot plan, or needs a yes, the main
+model takes over and is told what already happened. It is refused on running tests like every other look. The smallest Nabh model produced no usable plans, so it uses `glm-5-2`. The window's text goes to Nabh, with passwords never read and secrets masked.
+
 ## Rules that did not change
 
 Consent for looking at the screen, masked secrets, untrusted-content marking, one input action at a time, the emergency

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -12,7 +12,8 @@ import { ActivityView, Calculator, Flashcards, Frames, GraphExplorer, MatchGame,
 import { CodeBlock, CodeRunner, highlight } from "../teach/code";
 import { compile, format } from "../teach/expression";
 import { DiagramView, LessonPlayer, QuestionCard } from "../teach/LessonView";
-import { cleanSvg, MermaidView } from "../teach/Mermaid";
+import { cleanSvg, MermaidView, repairDiagram, styleDiagram } from "../teach/Mermaid";
+import { parseQuiz, QuizBlock } from "../teach/Quiz";
 import { FakeApi, renderApp } from "./fakes";
 
 function within_app(api: FakeApi, node: React.ReactNode) {
@@ -473,5 +474,308 @@ describe("files in the chat", () => {
     await userEvent.upload(await screen.findByLabelText("Add files", { selector: "input" }), Array.from({ length: 7 }, (_, i) => file(`f${i}.txt`)));
     expect(await screen.findByText(/At most 5 files/)).toBeInTheDocument();
     expect(api.upload).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe("drawing a diagram", () => {
+  // what Mermaid really returns for a box with two lines, from the real browser engine: HTML, with <br> left open
+  const REAL = '<svg id="d" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><style>.a{fill:red}</style><g class="node"><foreignObject width="120" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display:table"><span class="nodeLabel"><p>one<br>two</p></span></div></foreignObject></g></svg>';
+
+  it("keeps a box with more than one line", () => {
+    const out = cleanSvg(REAL);
+    expect(out).toContain("<svg");
+    expect(out).toContain("one<br>two");
+    expect(out).toContain('viewBox="0 0 100 100"');
+    expect(out).toContain("foreignObject");
+  });
+
+  it.each([
+    ['<svg><script>alert(1)</script><g/></svg>', "<script"],
+    ['<svg><g onclick="alert(1)"/></svg>', "onclick"],
+    ['<svg onload="alert(1)"><g/></svg>', "onload"],
+    ['<svg><a href="javascript:alert(1)"><text>x</text></a></svg>', "javascript:"],
+    ['<svg><image href="https://evil.example/x.png"/></svg>', "evil.example"],
+    ['<svg><foreignObject><iframe src="https://evil.example"></iframe></foreignObject></svg>', "<iframe"],
+    ['<svg><foreignObject><div onmouseover="alert(1)">x</div></foreignObject></svg>', "onmouseover"],
+    ['<svg><foreignObject><img src="x" onerror="alert(1)"></foreignObject></svg>', "onerror"],
+    ['<svg><style>@import "https://evil.example/x.css";</style></svg>', "evil.example"],
+    ['<svg><style>a{background:url(https://evil.example/x)}</style></svg>', "evil.example"],
+    ['<svg><use href="https://evil.example/x.svg#a"/></svg>', "evil.example"],
+    ['<svg><style><img src=x onerror=alert(1)></style></svg>', "onerror"],
+    ['<svg><title><img src=x onerror=alert(1)></title></svg>', "onerror"],
+    ['<svg></svg><script>alert(1)</script>', "<script"],
+    ['<svg><animate attributeName="href" to="javascript:alert(1)"/></svg>', "javascript:"],
+  ])("still takes the dangerous part out of %s", (dirty, banned) => {
+    expect(cleanSvg(dirty).toLowerCase()).not.toContain(banned);
+  });
+
+  it("what comes out stays clean when the page parses it again", () => {
+    const box = document.createElement("div");
+    box.innerHTML = cleanSvg('<svg><foreignObject><div><img src=x onerror=alert(1)></div></foreignObject><style><img src=x onerror=alert(2)></style></svg>');
+    expect(box.querySelector("[onerror]")).toBeNull();
+    expect(box.querySelector("img")).toBeNull();
+  });
+
+  it("no drawing at all gives nothing", () => {
+    expect(cleanSvg("<div>not a drawing</div>")).toBe("");
+    expect(cleanSvg("")).toBe("");
+  });
+
+  it.each([
+    ["flowchart TD\n    A[call f(x)] --> B[done]", 'A["call f(x)"] --> B[done]'],
+    ["graph LR\n    A --> B{is x > 1?}", 'B{"is x > 1?"}'],
+    ["flowchart TD\n    A -->|yes (x > 1)| B", '|"yes (x > 1)"|'],
+    ['flowchart TD\n    A["say "hi" now"] --> B', 'A["say #quot;hi#quot; now"]'],
+    ["```mermaid\nflowchart TD\n    A --> B\n```", "flowchart TD\n    A --> B"],
+  ])("repairs what models get wrong: %s", (source, expected) => {
+    expect(repairDiagram(source)).toContain(expected);
+  });
+
+  it.each([
+    ['flowchart TD\n    A["fine (ok)"] --> B["two"]'],
+    ["flowchart TD\n    A[plain words] --> B[done]"],
+    ["flowchart TD\n    A((round)) --> B[(store)]"],
+    ["flowchart TD\n    A[[sub]] --> B"],
+    ["sequenceDiagram\n    A->>B: x < y"],
+    ["pie title Pets\n    \"Dogs\" : 3"],
+  ])("leaves alone what is already right: %s", (source) => {
+    expect(repairDiagram(source)).toBe(source);
+  });
+});
+
+describe("visual hierarchy in a diagram", () => {
+  const classOf = (out: string, look: string) => new RegExp(`class ([\\w,]+) ${look}`).exec(out)?.[1]?.split(",") ?? [];
+
+  it("marks where it starts, where it branches and where it ends", () => {
+    const out = styleDiagram('flowchart TD\n    S["Start"] --> C{"ok?"}\n    C -->|"yes"| D["Done"]\n    C -->|"no"| E["Stop"]');
+    expect(classOf(out, "root")).toEqual(["S"]);
+    expect(classOf(out, "decide")).toEqual(["C"]);
+    expect(classOf(out, "leaf")).toEqual(["D", "E"]);
+    expect(out).toContain("classDef root");
+  });
+
+  it("the diagram from the real chat gets it too", () => {
+    const out = styleDiagram('flowchart TD\n    A["lo=0, hi=9\\nmid=4 → 19\\n19 < 23 → go right"] --> B["lo=5"]\n    B --> C["found!"]');
+    expect(classOf(out, "root")).toEqual(["A"]);
+    expect(classOf(out, "leaf")).toEqual(["C"]);
+  });
+
+  it("does not overrule what the writer marked", () => {
+    const out = styleDiagram('flowchart TD\n    A["a"]:::key --> B["b"]:::good');
+    expect(classOf(out, "root")).toEqual([]);
+    expect(classOf(out, "leaf")).toEqual([]);
+    expect(out).toContain("classDef key");
+  });
+
+  it("a cycle still has a start", () => {
+    expect(classOf(styleDiagram("flowchart LR\n    A --> B\n    B --> A"), "root")).toEqual(["A"]);
+  });
+
+  it("an arrow inside a label is not an arrow, and a subgraph is not a node", () => {
+    const out = styleDiagram('flowchart TD\n    subgraph One["x --> y"]\n      A["p --> q"] --> B["r"]\n    end');
+    expect(classOf(out, "root")).toEqual(["A"]);
+    expect(classOf(out, "leaf")).toEqual(["B"]);
+  });
+
+  it("several at once", () => {
+    const out = styleDiagram("flowchart TD\n    A & B --> C");
+    expect(classOf(out, "root")).toEqual(["A", "B"]);
+    expect(classOf(out, "leaf")).toEqual(["C"]);
+  });
+
+  it.each(["sequenceDiagram\n    A->>B: hi", "mindmap\n  root((x))", "pie\n  \"a\" : 1", "flowchart TD\n    A"])("leaves alone what it should: %s", (source) => {
+    expect(styleDiagram(source)).toBe(source);
+  });
+});
+
+describe("a quiz in the chat", () => {
+  const option = (text: string, why = `${text} because`) => ({ text, why });
+  const one = (over = {}) => ({ level: "Hard", question: "Which index is checked first?", code: "", options: [option("Index 4"), option("Index 0"), option("Index 9"), option("Index 5")], answer: 0, multi: false, hint: "Think about the middle.", explain: "It starts from the middle.", ...over });
+  const source = (questions: unknown[], title = "Binary search") => JSON.stringify({ title, questions });
+  const keep = () => { try { localStorage.clear(); } catch { /* fine */ } };
+
+  describe("reading what the model wrote", () => {
+    it("takes the answer as a position, a letter, a list, or a mark on the option", () => {
+      const right = (q: object) => parseQuiz(source([q]))!.questions[0]!.options.filter((o) => o.right).map((o) => o.text);
+      expect(right(one({ answer: 1 }))).toEqual(["Index 0"]);
+      expect(right(one({ answer: "C" }))).toEqual(["Index 9"]);
+      expect(right(one({ answer: "b) Index 0" }))).toEqual(["Index 0"]);
+      expect(right(one({ answer: "2" }))).toEqual(["Index 9"]);
+      expect(right(one({ answer: [0, 3], multi: true })).sort()).toEqual(["Index 4", "Index 5"]);
+      expect(right(one({ answer: undefined, options: [{ text: "x", correct: true }, { text: "y" }] }))).toEqual(["x"]);
+    });
+
+    it("more than one right answer makes it choose-all, whatever it said", () => {
+      expect(parseQuiz(source([one({ answer: [0, 1], multi: false })]))!.questions[0]!.multi).toBe(true);
+    });
+
+    it.each([["not json"], ['{"questions": []}'], [source([one({ answer: 99 })])], [source([one({ options: [option("only one")] })])], [source([one({ question: "" })])], [source([one({ answer: [0, 1, 2, 3] })])], ["null"], ["3"]])("refuses what is not a real quiz: %s", (bad) => {
+      expect(parseQuiz(bad)).toBeNull();
+    });
+
+    it("keeps the good questions when one is broken", () => {
+      expect(parseQuiz(source([one(), one({ answer: 99 })]))!.questions).toHaveLength(1);
+    });
+
+    it("mixes the options so the answer is not always in the same place, the same way each time", () => {
+      const positions = Array.from({ length: 24 }, (_, i) => parseQuiz(source([one({ question: `Question number ${i}?` })]))!.questions[0]!.options.findIndex((o) => o.right));
+      expect(new Set(positions).size).toBeGreaterThan(1);
+      expect(parseQuiz(source([one()]))!.questions[0]!.options.map((o) => o.text)).toEqual(parseQuiz(source([one()]))!.questions[0]!.options.map((o) => o.text));
+    });
+
+    it("does not mix options that refer to each other", () => {
+      const options = [option("One"), option("Two"), option("Both of the above"), option("Three")];
+      expect(parseQuiz(source([one({ options })]))!.questions[0]!.options.map((o) => o.text)).toEqual(["One", "Two", "Both of the above", "Three"]);
+    });
+  });
+
+  const render1 = (questions: unknown[]) => { keep(); return render(<QuizBlock source={source(questions)} finished />); };
+
+  it("hides the answer and every explanation until you commit", () => {
+    render1([one()]);
+    expect(screen.queryByText("Index 4 because")).toBeNull();
+    expect(screen.queryByText("It starts from the middle.")).toBeNull();
+    expect(screen.queryByText("That's right.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Check answer" })).toBeDisabled();
+  });
+
+  it("right: says so, and explains every option", () => {
+    render1([one()]);
+    fireEvent.click(screen.getByRole("radio", { name: /Index 4/ }));
+    expect(screen.getByRole("radio", { name: /Index 4/ })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    expect(screen.getByText("That's right.")).toBeInTheDocument();
+    for (const text of ["Index 4", "Index 0", "Index 9", "Index 5"]) expect(screen.getByText(`${text} because`)).toBeInTheDocument();
+    expect(screen.getByText("It starts from the middle.")).toBeInTheDocument();
+  });
+
+  it("wrong: marks yours and shows the right one", () => {
+    render1([one()]);
+    fireEvent.click(screen.getByRole("radio", { name: /Index 0/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    expect(screen.getByText("Not quite.")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Index 0/ }).className).toContain("is-wrong");
+    expect(screen.getByRole("radio", { name: /Index 4/ }).className).toContain("is-right");
+  });
+
+  it("you can change your mind until you commit, and not after", () => {
+    render1([one()]);
+    fireEvent.click(screen.getByRole("radio", { name: /Index 0/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Index 4/ }));
+    expect(screen.getByRole("radio", { name: /Index 0/ })).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    fireEvent.click(screen.getByRole("radio", { name: /Index 0/ }));
+    expect(screen.getByRole("radio", { name: /Index 4/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("That's right.")).toBeInTheDocument();
+  });
+
+  it("a hint waits to be asked for", () => {
+    render1([one()]);
+    expect(screen.queryByText("Think about the middle.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Hint/ }));
+    expect(screen.getByText("Think about the middle.")).toBeInTheDocument();
+  });
+
+  it("choose-all needs all of them, and only them", () => {
+    render1([one({ answer: [0, 1], multi: true })]);
+    expect(screen.getByText("Choose all that apply.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Index 4/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    expect(screen.getByText("Not quite.")).toBeInTheDocument();
+  });
+
+  it("choose-all, right", () => {
+    render1([one({ answer: [0, 1], multi: true })]);
+    fireEvent.click(screen.getByRole("checkbox", { name: /Index 4/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Index 0/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    expect(screen.getByText("That's right.")).toBeInTheDocument();
+  });
+
+  it("works from the keyboard", () => {
+    render1([one()]);
+    const card = screen.getByRole("group", { name: /Quiz/ });
+    const target = screen.getAllByRole("radio").findIndex((b) => /Index 4/.test(b.textContent ?? ""));
+    fireEvent.keyDown(card, { key: String(target + 1) });
+    fireEvent.keyDown(card, { key: "Enter" });
+    expect(screen.getByText("That's right.")).toBeInTheDocument();
+  });
+
+  it("walks through several, then scores what really happened", async () => {
+    const two = one({ question: "Second question?", options: [option("Yes"), option("No")], answer: 0, explain: "" });
+    render1([one(), two]);
+    expect(screen.getByText(/Question 1 of 2/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /Index 4/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next question" }));
+    expect(screen.getByText(/Question 2 of 2/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /No/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    fireEvent.click(screen.getByRole("button", { name: "See how I did" }));
+    expect(screen.getByText("1 of 2 right")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "What you missed" })).getByText("Second question?")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "What you missed" })).getByText(/The answer: Yes/)).toBeInTheDocument();
+  });
+
+  it("retry brings back only what you missed", () => {
+    const two = one({ question: "Second question?", options: [option("Yes"), option("No")], answer: 0 });
+    render1([one(), two]);
+    fireEvent.click(screen.getByRole("radio", { name: /Index 4/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next question" }));
+    fireEvent.click(screen.getByRole("radio", { name: /No/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    fireEvent.click(screen.getByRole("button", { name: "See how I did" }));
+    fireEvent.click(screen.getByRole("button", { name: /Retry the one I missed/ }));
+    expect(screen.getByText(/Question 2 of 2/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /Yes/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    fireEvent.click(screen.getByRole("button", { name: "See how I did" }));
+    expect(screen.getByText("2 of 2 right")).toBeInTheDocument();
+  });
+
+  it("while it is still being written there is no half-made card", () => {
+    render(<QuizBlock source={'{"title": "x", "questions": [{"question": "half'} finished={false} />);
+    expect(screen.getByText("Writing your questions…")).toBeInTheDocument();
+  });
+
+  it("what cannot be read is shown as written, not hidden", () => {
+    render(<QuizBlock source="the model wrote prose" finished />);
+    expect(screen.getByText(/in a form the card cannot read/)).toBeInTheDocument();
+    expect(screen.getByText(/the model wrote prose/)).toBeInTheDocument();
+  });
+
+  it("a question can carry code", () => {
+    render1([one({ code: "print(1 + 1)" })]);
+    expect(screen.getByText(/print/)).toBeInTheDocument();
+  });
+
+  it("markup in a question is only text", () => {
+    render1([one({ question: "<img src=x onerror=alert(1)> what?" })]);
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByText(/onerror/)).toBeInTheDocument();
+  });
+
+  it("comes through the normal answer text, and a code block is still a code block", () => {
+    keep();
+    render(<RichText text={"Here you go.\n\n```quiz\n" + source([one()]) + "\n```\n\n```python\nprint(1)\n```"} />);
+    expect(screen.getByRole("radio", { name: /Index 4/ })).toBeInTheDocument();
+    expect(screen.getByText("Here you go.")).toBeInTheDocument();
+    expect(screen.queryByText(/"questions"/)).toBeNull();
+  });
+
+  it("the answer is not leaked by a half-written block in the stream", () => {
+    render(<RichText text={'```quiz\n{"questions": [{"question": "q", "answer": 2, "options"'} />);
+    expect(screen.queryByText(/"answer"/)).toBeNull();
+    expect(screen.getByText("Writing your questions…")).toBeInTheDocument();
+  });
+
+  it("comes back as you left it", () => {
+    render1([one()]);
+    fireEvent.click(screen.getByRole("radio", { name: /Index 4/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Check answer" }));
+    cleanup();
+    render(<QuizBlock source={source([one()])} finished />);
+    expect(screen.getByText("That's right.")).toBeInTheDocument();
   });
 });

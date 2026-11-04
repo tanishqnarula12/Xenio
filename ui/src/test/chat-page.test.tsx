@@ -78,8 +78,8 @@ describe("Home", () => {
 });
 
 describe("your chats", () => {
-  const today = new Date().toISOString().slice(0, 19);
-  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 19);
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000 - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 19); // local time, as XENIO writes it: in UTC this failed every night until 05:30 in India
+  const today = daysAgo(0);
   const chat = (id: string, title: string, updated = today) => ({ id, title, created: updated, updated, messages: 2, imported: false });
   const list = () => within(screen.getByRole("complementary", { name: "Your chats" }));
 

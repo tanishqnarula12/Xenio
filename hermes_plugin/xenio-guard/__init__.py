@@ -93,14 +93,14 @@ def _load():
         if not origin.startswith(root):
             raise ImportError(f"a different package named 'app' shadows XENIO ({origin})")
         from app.safety import policy
-        from app.tools import autofill, base, desktop, engineering, filesystem, images, media, personal, teacher, vision, web
+        from app.tools import autofill, base, desktop, engineering, filesystem, foundry, images, media, personal, teacher, vision, web
 
         base.AUDIT = lambda event, fields: _audit(event, **fields)
         _state.update(policy=policy, base=base, desktop=desktop, autofill=autofill,
                       tools=[*filesystem.xenio_tools(), *web.xenio_tools(), *personal.xenio_tools(),
                              *vision.xenio_tools(), *(desktop.xenio_tools() if _DESKTOP_PLATFORM else []),
                              *(autofill.xenio_tools() if sys.platform == "darwin" else []), *teacher.xenio_tools(), *images.xenio_tools(),
-                             *media.xenio_tools(), *engineering.xenio_tools()],
+                             *media.xenio_tools(), *engineering.xenio_tools(), *foundry.xenio_tools()],
                       paths=policy.default_path_policy(), secrets=policy.secret_env_values())
         _memory_at_start.update(_memory_entries())
         return True
@@ -573,7 +573,10 @@ def _transform_tool_result(tool_name="", args=None, result=None, **kwargs):
                    (re.match(r"[A-Z][A-Z_ ]{2,}(?=:)", str(data.get("error") or "")) or [None])[0])
     except Exception as exc:  # bookkeeping must never break a tool result
         _audit("OBSERVE_FAILED", tool=tool_name, error=repr(exc))
-    cleaned = _redact(result)
+    try:
+        cleaned = policy.redact_tool_output(tool_name, kwargs.get("args") if isinstance(kwargs.get("args"), dict) else kwargs, result, _state["secrets"]) if policy is not None and isinstance(result, str) else _redact(result)
+    except Exception:  # never let a masking problem pass text through unmasked
+        cleaned = _redact(result)
     filled = sys.modules.get("app.autofill.engine")
     if filled is not None:  # a sensitive detail XENIO just put in a form must not come back through a read of that page
         cleaned = filled.mask_filled(cleaned)
@@ -924,8 +927,8 @@ def _system_prompt(_info=None):
            if sys.platform == "darwin" else
            "The terminal tool runs BASH (Git Bash) even on Windows: bash syntax only, never cmd syntax.\n")
         + _desktop_prompt() +
-        "ENGINEERING TEAM: anything about XENIO's engineering team or its runs ('is the team working on anything?', "
-        "'what did they find?') = xenio_engineering status / report / list. Work on a repository by the team = "
+        "ENGINEERING TEAM: anything about the team or its runs ('is it working on anything?') = xenio_engineering "
+        "status / report / list. Build something big = xenio_foundry start. Work on a repository by the team = "
         "xenio_engineering start with 'request' (what to do), 'path' or 'project', and 'mode' (explain | review | test | "
         "plan | change).\n"
         "Every tool returns a result. Tell the user an action succeeded ONLY if its result reports success. If a "

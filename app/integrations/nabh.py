@@ -57,6 +57,7 @@ class _Answer(str):
     """A model's words, and whether its length limit stopped them."""
 
     cut = False
+    usage: dict = {}
 
     def __new__(cls, text: str, cut: bool = False):
         made = super().__new__(cls, text)
@@ -131,7 +132,7 @@ class Nabh:
             raise NabhError("bad_response", "Nabh sent an answer of an unknown shape")
         return data
 
-    def stream_text(self, payload: dict, timeout: float = 240.0) -> str:
+    def stream_text(self, payload: dict, timeout: float = 240.0, on_piece=None) -> str:
         """A long answer, as it is written (measured: Nabh ends a request at about 100 s with a 504 unless it is streamed). ``timeout``
         is for the whole answer; a pause between pieces gets at most 90 s."""
         request = urllib.request.Request(self.base_url + "/chat/completions", data=json.dumps({**payload, "stream": True}).encode("utf-8"), method="POST", headers={
@@ -139,6 +140,7 @@ class Nabh:
         end = time.monotonic() + timeout
         pieces: list[str] = []
         finish = ""
+        usage: dict = {}
         try:
             with self._open(request, min(timeout, 90.0)) as response:
                 for raw in response:
@@ -151,13 +153,17 @@ class Nabh:
                     if body == "[DONE]":
                         break
                     try:
-                        choice = (json.loads(body).get("choices") or [{}])[0]
+                        chunk = json.loads(body)
+                        usage = chunk.get("usage") or usage
+                        choice = (chunk.get("choices") or [{}])[0]
                         delta = choice.get("delta") or {}
                     except (ValueError, AttributeError, IndexError):
                         continue
                     finish = choice.get("finish_reason") or finish
                     if isinstance(delta.get("content"), str):
                         pieces.append(delta["content"])
+                        if on_piece is not None and delta["content"] and on_piece(delta["content"]) is False:  # the user stopped it
+                            break
         except urllib.error.HTTPError as exc:
             raise self._http_error(exc) from None
         except TimeoutError:
@@ -171,7 +177,61 @@ class Nabh:
         text = "".join(pieces)
         if not text.strip():
             raise NabhError("bad_response", "Nabh's answer was empty")
-        return _Answer(text, cut=finish == "length")
+        answer = _Answer(text, cut=finish == "length")
+        answer.usage = usage if isinstance(usage, dict) else {}
+        return answer
+
+    def stream_message(self, payload: dict, timeout: float = 240.0, keep_going=None) -> dict:
+        """One assistant turn that may call tools, streamed for the same reason as ``stream_text``. ``{"content", "tool_calls", "cut"}``. ``keep_going`` returning False ends it early."""
+        request = urllib.request.Request(self.base_url + "/chat/completions", data=json.dumps({**payload, "stream": True}).encode("utf-8"), method="POST", headers={
+            "Authorization": f"Bearer {self._key}", "Content-Type": "application/json", "Accept": "text/event-stream", "User-Agent": _USER_AGENT})
+        end = time.monotonic() + timeout
+        pieces: list[str] = []
+        calls: dict[int, dict] = {}
+        finish = ""
+        usage: dict = {}
+        try:
+            with self._open(request, min(timeout, 90.0)) as response:
+                for raw in response:
+                    if time.monotonic() > end:
+                        raise NabhError("timeout", f"the answer took longer than {int(timeout)} s")
+                    if keep_going is not None and keep_going() is False:
+                        break
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    body = line[5:].strip()
+                    if body == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(body)
+                        usage = chunk.get("usage") or usage
+                        choice = (chunk.get("choices") or [{}])[0]
+                        delta = choice.get("delta") or {}
+                    except (ValueError, AttributeError, IndexError):
+                        continue
+                    finish = choice.get("finish_reason") or finish
+                    if isinstance(delta.get("content"), str):
+                        pieces.append(delta["content"])
+                    for part in delta.get("tool_calls") or []:
+                        if not isinstance(part, dict):
+                            continue
+                        slot = calls.setdefault(int(part.get("index") or 0), {"id": "", "name": "", "arguments": ""})
+                        slot["id"] = part.get("id") or slot["id"]
+                        function = part.get("function") or {}
+                        slot["name"] = function.get("name") or slot["name"]
+                        slot["arguments"] += function.get("arguments") or ""
+        except urllib.error.HTTPError as exc:
+            raise self._http_error(exc) from None
+        except TimeoutError:
+            raise NabhError("timeout", "Nabh stopped answering part way through") from None
+        except urllib.error.URLError as exc:
+            if isinstance(getattr(exc, "reason", None), TimeoutError):
+                raise NabhError("timeout", "Nabh stopped answering part way through") from None
+            raise NabhError("network", "Nabh could not be reached: check the internet connection") from None
+        except OSError:
+            raise NabhError("network", "the connection to Nabh was lost part way through") from None
+        return {"content": "".join(pieces), "tool_calls": [calls[i] for i in sorted(calls)], "cut": finish == "length", "usage": usage if isinstance(usage, dict) else {}}
 
     @staticmethod
     def _http_error(exc: urllib.error.HTTPError) -> NabhError:

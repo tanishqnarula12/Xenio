@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import { CodeBlock } from "../teach/code";
 import { MermaidView } from "../teach/Mermaid";
+import { QuizBlock } from "../teach/Quiz";
 
 // Safe rendering of XENIO's answers (and of anything that came from outside: web pages, mail, reports). The text is
 // turned into React elements - never into HTML - so markup in it shows as text and cannot run. Only http(s) links
@@ -83,11 +84,14 @@ export function RichText({ text, className }: { text: string; className?: string
       const code: string[] = [];
       i += 1;
       while (i < lines.length && !lines[i]!.startsWith("```")) { code.push(lines[i]!); i += 1; }
+      const closed = i < lines.length;
       i += 1;
       const body = code.join("\n");
       blocks.push(language === "mermaid"
-        ? <MermaidView key={`b${blocks.length}`} source={body} alt="A diagram from the answer" showSource />
-        : <CodeBlock key={`b${blocks.length}`} code={body} language={language} />);
+        ? (closed ? <MermaidView key={`b${blocks.length}`} source={body} alt="A diagram from the answer" showSource /> : <p key={`b${blocks.length}`} className="meta">Drawing the diagram…</p>)
+        : language === "quiz"
+          ? <QuizBlock key={`b${blocks.length}`} source={body} finished={closed} />
+          : <CodeBlock key={`b${blocks.length}`} code={body} language={language} />);
       continue;
     }
     const heading = HEADING.exec(line);

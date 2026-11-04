@@ -14,6 +14,11 @@ export function AppProvider({ store, app, children }: Ctx & { children: ReactNod
   return <AppContext.Provider value={{ store, app }}>{children}</AppContext.Provider>;
 }
 
+/** For parts that also appear outside the app (a lesson's text in a test): null when there is no app around them. */
+export function useOptionalApp(): Ctx | null {
+  return useContext(AppContext);
+}
+
 export function useApp(): Ctx {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error("useApp outside <AppProvider>");

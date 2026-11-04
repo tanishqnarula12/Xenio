@@ -98,8 +98,10 @@ def build_orchestrator(settings: Settings, gate: PermissionGate) -> Orchestrator
         from app.integrations import nabh
 
         nabh.configure(settings.hermes.nabh.env())
+    from app.teacher.tutor import Tutor
+
     orchestrator = Orchestrator(hermes, gate, paths, sources_file=settings.data_dir / "sources.jsonl",
-                                fast_path=build_fast_path(settings, paths))
+                                fast_path=build_fast_path(settings, paths), tutor=Tutor())
     orchestrator.gateway_restarted = restarted  # the UI records it in Activity
     orchestrator.stop_dir = settings.data_dir  # a stop (Ctrl+C, the UI's stop) also ends XENIO's typing at once
     return orchestrator
@@ -130,6 +132,16 @@ def build_engineering(settings: Settings, gate: PermissionGate, paths, notificat
     return EngineeringService(settings, gate, paths, notifications)
 
 
+def build_foundry(settings: Settings, gate: PermissionGate, paths, engineering, publish=None):
+    """The team you command: it sits on top of the engineering core, and is off when that is."""
+    if engineering is None:
+        return None
+    from app.foundry.service import FoundryService
+
+    engineering.foundry = FoundryService(settings, gate, paths, engineering, publish=publish)
+    return engineering.foundry
+
+
 async def _with_engineering(settings: Settings, gate: PermissionGate, orchestrator, notifications, body):
     """Run a mode with the engineering service available to the chat's Hermes (its tool reaches it by socket)."""
     engineering = build_engineering(settings, gate, orchestrator.paths, notifications)
@@ -137,10 +149,12 @@ async def _with_engineering(settings: Settings, gate: PermissionGate, orchestrat
         return await body()
     if hasattr(orchestrator.hermes, "extra_env"):
         orchestrator.hermes.extra_env = engineering.endpoint_env()
+    foundry = build_foundry(settings, gate, orchestrator.paths, engineering)
     await engineering.serve()
     try:
         return await body()
     finally:
+        await foundry.close()
         await engineering.close()
 
 
@@ -243,6 +257,7 @@ async def _run_ui(settings: Settings, args: argparse.Namespace) -> int:
     notifications, proactive = build_proactive(settings, orchestrator.hermes)
     team_notes = _UiNotifications(notifications, hub.publish)
     engineering = build_engineering(settings, gate, orchestrator.paths, team_notes)
+    foundry = build_foundry(settings, gate, orchestrator.paths, engineering, hub.publish)
     ctl = UiController(settings, orchestrator, gate, confirmer, hub, state, engineering, notifications, proactive,
                        MemoryManager(orchestrator.hermes), create_stt(settings.stt), create_tts(settings.tts))
     holder["ctl"] = ctl
@@ -312,6 +327,8 @@ async def _run_ui(settings: Settings, args: argparse.Namespace) -> int:
         if ctl.overlay is not None:
             ctl.overlay.stop()
         server.stop()
+        if foundry is not None:
+            await foundry.close()
         if engineering is not None:
             await engineering.close()
         await orchestrator.close()

@@ -50,6 +50,9 @@ export class FakeApi implements XenioApi {
   seq = 1;
   snap = snapshot();
   snapshot = vi.fn(async () => this.snap);
+  foundry = vi.fn(async (_s?: AbortSignal): Promise<import("../api/types").FoundryOverview> => ({ available: true, can_think: true, workflows: [], agents: [], skills: [], seats: ["glm-5-2"] }));
+  foundryState = vi.fn(async (_id: string, _s?: AbortSignal): Promise<import("../api/types").FoundryState> => { throw new Error("no workflow"); });
+  foundryDo = vi.fn(async (_c: string, _b?: Record<string, unknown>): Promise<Record<string, unknown>> => ({ id: "w1" }));
   chat = vi.fn(async (_text: string, _via: "text" | "voice", _quiet?: boolean) => ({ turn: "t1" }));
   cancel = vi.fn(async () => ({ cancelled: true }));
   newConversation = vi.fn(async () => ({ ok: true }));

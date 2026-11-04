@@ -207,8 +207,11 @@ class XenioResponse:
 
 class Orchestrator:
     def __init__(self, hermes: HermesClient, gate: PermissionGate | None, paths: PathPolicy | Path,
-                 sources_file: Path | None = None, fast_path=None):
+                 sources_file: Path | None = None, fast_path=None, tutor=None):
         self.hermes = hermes
+        self.tutor = tutor  # app.teacher.tutor.Tutor: someone wanting to understand something gets a real teacher
+        self._talk: list[dict] = []  # the conversation so far, for the teacher
+        self._taught_last = False
         self.fast = fast_path  # app.fastpath.FastPath: simple commands without the model (None = always Hermes)
         self.pending_reminders: Callable[[], int] = _pending_reminders  # XENIO reminders waiting in Hermes' scheduler
         self._local_notes: list[str] = []  # what the fast path did since Hermes' last turn
@@ -286,8 +289,15 @@ class Orchestrator:
                         self._local_notes = [*self._local_notes, fast.note][-5:]
                     if on_chunk is not None:
                         on_chunk(fast.text)
+                    self._remember(text, fast.text, taught=False)
                     # a failed step is a normal reply ("That didn't work: ..."), marked [FAILED] in the action list
                     return XenioResponse(fast.text, ok=True, tool_calls=fast.actions, attachments=list(fast.attachments))
+                handoff = getattr(self.fast, "handoff", "")
+                if isinstance(handoff, str) and handoff:
+                    self._local_notes = [*self._local_notes, handoff][-5:]
+            taught = await self._teach(text, context, on_chunk, has_file=not allow_fast)
+            if taught is not None:
+                return taught
             # V5.5: the language this request was spoken in (reply in it) and its language-independent intents
             local, self._local_notes = "\n".join(self._local_notes), []
             notes = "\n".join(n for n in (context, local, language_note(text)) if n)
@@ -347,9 +357,12 @@ class Orchestrator:
                     return XenioResponse(correction, ok=True, **extra)
                 return XenioResponse(f"{followups.split(reply.text)[0]}\n\n{correction}", ok=True, **extra)
             words, offered = followups.split(reply.text)
+            self._remember(text, words, taught=False)
             return XenioResponse(words, ok=True, next=offered, **extra)
 
     async def interrupt(self) -> None:
+        if self.tutor is not None:
+            self.tutor.stop()
         """Stop the Hermes turn in progress, if any (barge-in, Ctrl+C, the UI's stop) - and XENIO's hands with it:
         Hermes abandons a running tool call on a stop, but the thread typing it would go on."""
         if self.busy:
@@ -359,7 +372,40 @@ class Orchestrator:
                 request_stop("cancel", self.stop_dir)
             await self.hermes.cancel()
 
+    def _remember(self, said: str, answered: str, taught: bool) -> None:
+        self._talk = [*self._talk, {"role": "user", "content": said[:6000]}, {"role": "assistant", "content": answered[:6000]}][-14:]
+        self._taught_last = taught
+
+    async def _teach(self, text: str, context: str | None, on_chunk: ChunkHandler | None, has_file: bool) -> XenioResponse | None:
+        """A typed question about understanding something, answered by the teacher. Spoken requests stay with the main model, which is made for being heard."""
+        from app.teacher.tutor import wants_teaching
+
+        if self.tutor is None or (context and "XENIO voice mode" in context) or not wants_teaching(text, self._taught_last, has_file) or not self.tutor.available():
+            return None
+        visible = followups.StreamFilter()
+        started = time.monotonic()
+
+        def shown(piece: str) -> None:
+            words = visible.feed(piece)
+            if words and on_chunk is not None:
+                on_chunk(words)
+
+        out = await self.tutor.answer(text, self._talk, context, shown)
+        if out is None:
+            event(log, "TUTOR_DEFERRED", reason="the teacher could not answer: the main model takes it")
+            return None
+        written, stopped = out
+        if on_chunk is not None and (rest := visible.flush()):
+            on_chunk(rest)
+        words, offered = followups.split(written)
+        event(log, "TUTOR_ANSWERED", ms=int((time.monotonic() - started) * 1000), words=len(words.split()), diagram="```mermaid" in words, stopped=stopped)
+        self._remember(text, words, taught=True)
+        about = " ".join(text.split())[:160].replace("]", " ")
+        self._local_notes = [*self._local_notes, f"[XENIO taught this itself just now, in the chat: {about}]"][-5:]
+        return XenioResponse(words, ok=True, cancelled=stopped, next=[] if stopped else offered)
+
     async def new_session(self) -> bool:
+        self._talk, self._taught_last = [], False
         try:
             await self.hermes.new_session()
             return True

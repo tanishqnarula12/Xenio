@@ -22,7 +22,7 @@ import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from app.safety.policy import contains_secret, redact_secrets
+from app.safety.policy import contains_secret, has_code_secret, is_code_file, redact_secrets
 
 
 @dataclass
@@ -122,7 +122,8 @@ def scan_diff(diff: str, changed: list[str]) -> list[Finding]:
             continue
         suffix = Path(file).suffix.lower()
         stripped = text.strip()
-        if contains_secret(text, strict=True) and not re.search(r"(example|placeholder|dummy|changeme|xxx)", text, re.I):
+        found_secret = has_code_secret(text) if is_code_file(file) else contains_secret(text, strict=True)  # "query_tokens = tokenize(q)" holds no secret
+        if found_secret and not re.search(r"(example|placeholder|dummy|changeme|xxx)", text, re.I):
             findings.append(Finding("secret", "high", file, line, redact_secrets(stripped)[:120],
                                     "remove the secret; load it from the environment or a secret store"))
         for rule, severity, pattern, advice, suffixes in _LINE_RULES:

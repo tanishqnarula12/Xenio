@@ -1,17 +1,18 @@
 import { gsap } from "gsap";
-import { Activity, Bot, CalendarClock, CheckSquare, Cpu, Database, GitBranch, GraduationCap, Home, Maximize2, MessageSquare, MessagesSquare, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, PlugZap, Settings, ShieldCheck, UserRound, Wrench, X, type LucideIcon } from "lucide-react";
+import { Activity, Bot, CalendarClock, CheckSquare, Cpu, Database, GitBranch, GraduationCap, Home, Maximize2, MessageSquare, MessagesSquare, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, PlugZap, Settings, ShieldCheck, UserRound, Wrench, X, type LucideIcon, Swords } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MOTION, useReducedMotion } from "../motion/motion";
 import { Orb } from "../orb/Orb";
 import { useApp, useAppState } from "../state/context";
 import { setLayout, useLayout } from "../state/layout";
 import { href, PAGES, type PageId } from "../state/router";
+import { XenioMark } from "./XenioMark";
 import { Composer, PendingApprovals, Transcript } from "./Conversation";
 import { IconButton, Status, Time } from "./ui";
 import { useOrbState } from "./useOrbState";
 
 const ICONS: Record<PageId, LucideIcon> = {
-  home: Home, chat: MessagesSquare, agents: Bot, orchestration: GitBranch, tasks: CheckSquare, schedules: CalendarClock, tools: Wrench,
+  home: Home, chat: MessagesSquare, warroom: Swords, agents: Bot, orchestration: GitBranch, tasks: CheckSquare, schedules: CalendarClock, tools: Wrench,
   memory: Database, learn: GraduationCap, profile: UserRound, activity: Activity, approvals: ShieldCheck, integrations: PlugZap, system: Cpu, settings: Settings,
 };
 
@@ -58,11 +59,11 @@ function Sidebar({ page, rail }: { page: PageId; rail: boolean }) {
   return (
     <nav className="sidebar" aria-label="Mission Control">
       <a className="wordmark" href={href("home")} aria-label={name.toUpperCase()}>
+        <XenioMark size={22} className="wordmark__mark" />
         <span className="wordmark__full" aria-hidden={rail}>{name.toUpperCase()}</span>
-        <span className="wordmark__short" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
       </a>
       <ul>
-        {PAGES.map((p) => {
+        {PAGES.filter((p) => !("hidden" in p)).map((p) => {
           const Icon = ICONS[p.id];
           const current = p.id === page;
           return (

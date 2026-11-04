@@ -37,3 +37,6 @@ ui/dist/
 
 # Built native helpers (from native/*/build.sh)
 native/build/
+
+# tools run from the repository root
+/node_modules/

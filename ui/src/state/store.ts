@@ -6,7 +6,7 @@ import type { StreamStatus } from "../api/client";
 import type { Approval, AssistantSnapshot, Message, Snapshot, ToolActivity, UiSettings, VoiceInfo, XenioEvent } from "../api/types";
 import { IDLE_VOICE, type LocalVoice } from "../orb/machine";
 
-export type Topic = "runs" | "tasks" | "approvals" | "activity" | "schedules" | "health" | "agents" | "memory" | "profile" | "learning" | "skills" | "chats";
+export type Topic = "runs" | "tasks" | "approvals" | "activity" | "schedules" | "health" | "agents" | "memory" | "profile" | "learning" | "skills" | "chats" | "foundry";
 
 export interface Notice {
   id: string;
@@ -37,7 +37,7 @@ export interface AppState {
 export const initialState: AppState = {
   stream: "connecting", snapshot: null, assistant: null, conversation: [], images: {}, streaming: null, tools: [], approvals: [],
   voice: IDLE_VOICE, voiceError: null, notices: [], settings: null,
-  revision: { runs: 0, tasks: 0, approvals: 0, activity: 0, schedules: 0, health: 0, agents: 0, memory: 0, profile: 0, learning: 0, skills: 0, chats: 0 },
+  revision: { runs: 0, tasks: 0, approvals: 0, activity: 0, schedules: 0, health: 0, agents: 0, memory: 0, profile: 0, learning: 0, skills: 0, chats: 0, foundry: 0 },
   loadError: null,
   lastEventAt: null,
 };
@@ -131,6 +131,9 @@ export class Store {
       }
       case "approval.settled":
         this.set({ ...at, approvals: s.approvals.filter((x) => x.id !== d.id), ...this.bump("approvals", "activity") });
+        return;
+      case "foundry.event":
+        this.set({ ...at, ...this.bump("foundry") });
         return;
       case "engineering.run":
         this.set({ ...at, ...this.bump("runs", "agents") });

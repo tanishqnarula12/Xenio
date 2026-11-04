@@ -742,6 +742,25 @@ class UiController:
             raise UiError(str(exc), 409) from None
         return json.loads(self.redact(json.dumps(out, default=str)))
 
+    def foundry_overview(self) -> dict:
+        foundry = getattr(self.engineering, "foundry", None)
+        if foundry is None:
+            return {"available": False, "reason": "the engineering team is switched off", "workflows": [], "agents": [], "skills": []}
+        return json.loads(self.redact(json.dumps(foundry.overview(), default=str)))
+
+    def foundry_command(self, command: str, payload: dict) -> dict:
+        """What you do in the War Room. Coming through your signed-in session is what makes it yours: agents have no way in here."""
+        foundry = getattr(self.engineering, "foundry", None)
+        if foundry is None:
+            raise UiError("the engineering team is switched off", 503)
+        from app.foundry.engine import FoundryError
+
+        try:
+            out = self.run(foundry.dispatch(command, payload, confirmed=True), timeout=600.0)
+        except FoundryError as exc:
+            raise UiError(str(exc), exc.status) from None
+        return json.loads(self.redact(json.dumps(out, default=str)))
+
     def agents(self) -> dict:
         """The V6 roles (configured, enforced) and what each is really doing now."""
         svc = self.engineering

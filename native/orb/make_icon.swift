@@ -1,5 +1,5 @@
 // Draws XENIO's app icon (the Dock and Command-Tab show it while Mission Control is open): a graphite square with
-// XENIO's xenon orb. Run by build.sh: `make_icon <out.png>` writes a 1024 px PNG; build.sh turns it into XENIO.icns.
+// XENIO's X. Run by build.sh: `make_icon <out.png>` writes a 1024 px PNG; build.sh turns it into XENIO.icns.
 
 import AppKit
 
@@ -33,50 +33,26 @@ ctx.restoreGState()
 ctx.saveGState()
 ctx.addPath(shape)
 ctx.clip()
-ctx.drawLinearGradient(gradient([rgb(0x22252b), rgb(0x0b0c0e)], [0, 1]), start: CGPoint(x: 512, y: 924),
+ctx.drawLinearGradient(gradient([rgb(0x17191d), rgb(0x08090b)], [0, 1]), start: CGPoint(x: 512, y: 924),
                        end: CGPoint(x: 512, y: 100), options: [])
-let centre = CGPoint(x: 512, y: 512)
-let radius: CGFloat = 268
-// the glow the orb casts on the graphite
-ctx.drawRadialGradient(gradient([rgb(0xa9c8ff, 0.26), rgb(0xa9c8ff, 0.06), rgb(0xa9c8ff, 0)], [0, 0.55, 1]),
-                       startCenter: centre, startRadius: 0, endCenter: centre, endRadius: 420, options: [])
-// XENIO's orb as the app draws it: a sphere of fine points (a Fibonacci lattice), the near side brighter, lit from
-// the upper left; the far side shows faintly through
-let count = 1700
-let golden = Double.pi * (3 - 5.squareRoot())
-let light = (x: -0.45, y: 0.55, z: 0.70)
-var dots: [(x: CGFloat, y: CGFloat, z: Double, lit: Double)] = []
-for i in 0..<count {
-    let y = 1 - (Double(i) + 0.5) / Double(count) * 2
-    let r = (1 - y * y).squareRoot()
-    let theta = golden * Double(i)
-    let x = cos(theta) * r, z = sin(theta) * r
-    // a slight tilt so the lattice does not look like stacked rings
-    let tilt = 0.42
-    let yt = y * cos(tilt) - z * sin(tilt), zt = y * sin(tilt) + z * cos(tilt)
-    let lit = max(0, x * light.x + yt * light.y + zt * light.z)
-    dots.append((centre.x + CGFloat(x) * radius, centre.y + CGFloat(yt) * radius, zt, lit))
+// the X, the same drawing as docs/assets/xenio-logo.svg (its points are on a 512 grid, y pointing down)
+let shapes: [[(CGFloat, CGFloat)]] = [
+    [(112, 40), (222, 74), (400, 472), (290, 438)],
+    [(412, 30), (286.4, 193.5), (296.7, 216.6)],
+    [(100, 482), (225.6, 318.5), (215.3, 295.4)],
+]
+let scale: CGFloat = 1.1
+ctx.setFillColor(rgb(0xf5f5f7))
+for shape in shapes {
+    for (i, point) in shape.enumerated() {
+        let at = CGPoint(x: 512 + (point.0 - 256) * scale, y: 512 - (point.1 - 256) * scale)
+        if i == 0 { ctx.move(to: at) } else { ctx.addLine(to: at) }
+    }
+    ctx.closePath()
 }
-for d in dots.sorted(by: { $0.z < $1.z }) {
-    let near = (d.z + 1) / 2  // 0 far .. 1 near
-    let size = CGFloat(3.0 + 5.5 * near)
-    let alpha = CGFloat(0.10 + 0.55 * near * near + 0.35 * d.lit * near)
-    let tone = d.lit > 0.55 && near > 0.6 ? rgb(0xf2f6ff, min(1, alpha)) : rgb(0xa9c8ff, min(1, alpha))
-    ctx.setFillColor(tone)
-    ctx.fillEllipse(in: CGRect(x: d.x - size / 2, y: d.y - size / 2, width: size, height: size))
-}
-// a soft core of light, as in the app's idle orb
-ctx.drawRadialGradient(gradient([rgb(0xdbe8ff, 0.22), rgb(0xa9c8ff, 0.0)], [0, 1]),
-                       startCenter: CGPoint(x: centre.x - 60, y: centre.y + 70), startRadius: 0,
-                       endCenter: centre, endRadius: radius * 0.95, options: [])
+ctx.fillPath()
 ctx.restoreGState()
 
-// a hairline edge, as on Apple's own dark icons
-ctx.addPath(shape)
-ctx.setStrokeColor(rgb(0xffffff, 0.08))
-ctx.setLineWidth(3)
-ctx.strokePath()
-
 guard let image = ctx.makeImage(),
-      let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { exit(1) }
-try png.write(to: URL(fileURLWithPath: out))
+      let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { exit(1) }
+do { try data.write(to: URL(fileURLWithPath: out)) } catch { exit(1) }

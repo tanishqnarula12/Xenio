@@ -34,7 +34,7 @@ MAX_JSON = 64_000
 UPLOAD_LIMIT = 80 * 1024 * 1024
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
        "media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; "
-       "frame-ancestors 'none'; form-action 'self'")
+       "frame-src http://127.0.0.1:*; frame-ancestors 'none'; form-action 'self'")  # the one thing it may frame: an app the team built, running on this Mac
 SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
                     "Cross-Origin-Opener-Policy": "same-origin", "Permissions-Policy": "camera=(), geolocation=()"}
 KEEPALIVE_SECONDS = 15.0
@@ -298,6 +298,12 @@ def _handler_for(server: UiServer):
             if method == "POST" and (hit := m(r"/engineering/runs/([\w-]{4,40})/(approve|cancel|apply|push|pull_request)",
                                               route)):
                 return self._json(200, ctl.run_action(hit.group(1), hit.group(2)))
+            if method == "GET" and route == "/foundry":
+                return self._json(200, ctl.foundry_overview())
+            if method == "GET" and (hit := m(r"/foundry/workflows/([\w-]{4,40})", route)):
+                return self._json(200, ctl.foundry_command("state", {"workflow": hit.group(1)}))
+            if method == "POST" and (hit := m(r"/foundry/([a-z_]{3,30})", route)):
+                return self._json(200, ctl.foundry_command(hit.group(1), self._payload()))
             if method == "GET" and route == "/agents":
                 return self._json(200, ctl.agents())
             if method == "GET" and route == "/tasks":

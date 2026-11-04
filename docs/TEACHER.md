@@ -29,9 +29,26 @@ Everything else is there for when you pick it, in the chat:
 
 ## How teaching in the chat works
 
-The main model gets a short note on every turn (`TEACHING_NOTE` in `app/teacher/modes.py`) saying how to teach and how to offer next steps, so it decides for itself when someone wants to learn; no list of trigger words can
-do that. It ends a reply with one line, `<<next: A | B | C>>`, which `app/followups.py` takes out everywhere, also while the words stream and before anything is spoken, and which the page shows as buttons under the newest reply. So the quality of
-this teaching is the main model's.
+A typed question about understanding something goes to the teacher (`app/teacher/tutor.py`): Nabh's `glm-5-2`, with clean instructions and the conversation so far, streaming straight into the chat. It has its own head because real chats showed the main model cannot teach: its persona says "replies are read
+aloud: keep them short" and its memory says "brief, Hinglish", which gave 80 words on P vs NP, in Hindi to an English question, with a wrong claim in it.
+
+| The same question, from a real chat | Main model | Teacher |
+|---|---|---|
+| Length | 80 words, 89 after "explain properly" | 649 words |
+| Language | Hindi, to an English question | English |
+| First words | 7.7 s | 2 s |
+| Correct | "P ⊂ NP ⊂ NP-Complete ⊂ NP-Hard" is false | checked by reading; says P vs NP is open |
+
+**Who gets it** is decided from how the message is written (`wants_teaching`), tuned on 529 real messages: questions and requests to understand, a follow-up to something just taught, and questions about an attached file. Anything needing XENIO's hands, the user's own data or today's news stays with the
+main model, and so does everything spoken. If Nabh is limiting or down, the main model answers instead (it also has `TEACHING_NOTE`). A reply ends with one line, `<<next: A | B | C>>`, which `app/followups.py` takes out everywhere and the page shows as buttons. The main model is told what was taught, so a later turn knows.
+
+## Diagrams and practice questions in the chat
+
+Diagrams have a clear hierarchy: the main idea stands out, decisions and outcomes have their own look, and steps can carry a small second line. If a model's diagram does not parse, XENIO tries the plain version, then a repaired one, and only then shows the source.
+
+Asking for multiple-choice questions gives a real practice card: progress, letters and keyboard keys, a check button, a hint, why each option is right or wrong, and at the end your score and a retry of the ones you missed. Your progress on a card stays in that browser.
+
+If `glm-5-2` is out of credit, the chat falls back to `deepseek-v4-1-flash`, then `gpt-oss-120b`, so a low balance slows teaching and does not stop it.
 
 ## How a whole lesson is written
 
@@ -101,6 +118,8 @@ Real lessons through the real pipeline, 2026-11-02 and 03.
 The second reader found real errors each time, such as swapped labels on a diagram, inconsistent currency, and "the vaccine cannot multiply" when live vaccines do.
 
 ## Limits
+
+* **Chat teaching does not update the Learn page's progress yet.** Lessons and their questions do.
 
 * **A whole lesson takes one to two minutes.** Teaching in the chat answers like any other message.
 * **Whole lessons:** The chat says it is writing and the orb says "writing the lesson", but it does not appear piece by piece yet. After 140 s it comes with whichever parts are ready, and says which are missing; only the explanation can take longer. A part cut off by the length limit is asked for once more with more room.

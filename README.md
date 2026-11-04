@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="docs/assets/xenio-logo.svg" alt="XENIO" width="112">
+</p>
+
+<p align="center">
   <img src="docs/assets/xenio-banner.svg?v=4" alt="XENIO — a voice-first control layer for Hermes Agent" width="100%">
 </p>
 
@@ -115,6 +119,7 @@ docs/                architecture, setup, security, and capability guides
 - [Architecture](docs/ARCHITECTURE.md) · [Hermes integration](docs/HERMES_INTEGRATION.md)
 - [UI and local API](docs/UI.md)
 - [Real-time desktop engine](docs/REALTIME_DESKTOP.md)
+- [The Foundry: your engineering organization](docs/FOUNDRY.md) · [security](docs/FOUNDRY_SECURITY.md) · [API](docs/FOUNDRY_API.md) · [acceptance results](docs/FOUNDRY_ACCEPTANCE.md)
 - [Profile vault, forms and browser work](docs/AUTOFILL.md)
 - [The Teacher](docs/TEACHER.md)
 - [Image Studio](docs/IMAGE_STUDIO.md)

@@ -79,6 +79,7 @@ class EngineeringService:
                                             max_parallel=e.max_parallel, test_timeout=e.test_timeout,
                                             sandbox=e.sandbox_tests)
         self._projects = projects
+        self.foundry = None  # set by XENIO when The Foundry starts
         self.runs: dict[str, Run] = {}
         self._jobs: dict[str, asyncio.Task] = {}
         self._server: asyncio.AbstractServer | None = None
@@ -400,6 +401,15 @@ class EngineeringService:
 
     async def dispatch(self, action: str, a: dict, confirmed: bool = False):
         run_id = str(a.get("run_id") or "")
+        if action == "foundry":
+            if self.foundry is None:
+                raise EngineeringError("the team is not running")
+            try:
+                return await self.foundry.dispatch(str(a.get("command") or "status"), a, confirmed=confirmed)
+            except Exception as exc:
+                if type(exc).__name__ == "FoundryError":
+                    raise EngineeringError(str(exc)) from None
+                raise
         if action == "start":
             return await self.start(str(a.get("request") or ""), str(a.get("project") or ""), str(a.get("path") or ""),
                                     str(a.get("mode") or ""), bool(a.get("auto_run")))

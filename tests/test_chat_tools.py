@@ -131,7 +131,7 @@ def test_real_hermes_gateway_shows_xenios_tools_only_with_tool_search_off(tmp_pa
     script.write_text(_GATEWAY_VIEW)
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(Path.home()), "HERMES_HOME": str(home), "XENIO_GUARD": "1",
            "XENIO_ROOT": str(PROJECT_ROOT), "XENIO_TOOL_SEARCH": "off", "XENIO_DATA_DIR": str(tmp_path / "data")}
-    out = subprocess.run([_hermes_python(), "-I", str(script)], env=env, capture_output=True, text=True, timeout=240)
+    out = subprocess.run([_hermes_python(), "-I", str(script)], env=env, capture_output=True, text=True, timeout=540)  # Hermes installs its dependencies the first time it sees a data folder, and this is a new one each run
     view = json.loads(out.stdout.strip().splitlines()[-1])
     if visible:
         assert view["tool_search"] == "off"

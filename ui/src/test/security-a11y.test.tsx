@@ -67,10 +67,12 @@ describe("accessibility", () => {
   });
 
   it("marks the current page and moves between pages by keyboard", async () => {
-    await renderApp(new FakeApi(), "agents");
+    await renderApp(new FakeApi(), "warroom");
     const nav = screen.getByRole("navigation", { name: "Mission Control" });
-    expect(screen.getByRole("link", { name: "Agents" })).toHaveAttribute("aria-current", "page");
-    expect(nav.querySelectorAll("a[href^='#/']").length).toBe(16); // wordmark + 15 pages
+    expect(screen.getByRole("link", { name: "War Room" })).toHaveAttribute("aria-current", "page");
+    expect(nav.querySelectorAll("a[href^='#/']").length).toBe(16); // wordmark + 15 pages (Agents moved into the War Room)
+    expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
+    expect(nav.querySelector(".wordmark svg")).not.toBeNull(); // XENIO's X
   });
 
   it("opens the assistant from the orb, closes on Escape and gives focus back", async () => {

@@ -64,7 +64,7 @@ def test_registers_tools_hooks_and_prompt(monkeypatch, tmp_path):
                               # music and sound (the fast path's player)
                               "xenio_media", "xenio_profile", "xenio_form", "xenio_browser", "xenio_teach", "xenio_image",
                               # V6 engineering team
-                              "xenio_engineering"}
+                              "xenio_engineering", "xenio_foundry"}
     assert not any("send" in name for name in ctx.tools)  # V4: no tool can send email
     # V5: it only observes, and the model cannot point it anywhere else (no file path, no screen region)
     assert set(ctx.tools["xenio_look_at_screen"][1]["parameters"]["properties"]) == {"question", "target", "need_pixels", "fresh"}

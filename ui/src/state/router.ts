@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 export const PAGES = [
   { id: "home", label: "Home" },
   { id: "chat", label: "Chat" },
-  { id: "agents", label: "Agents" },
+  { id: "warroom", label: "War Room" },
+  { id: "agents", label: "Agents", hidden: true }, // they live in the War Room now; old links still work
   { id: "orchestration", label: "Orchestration" },
   { id: "tasks", label: "Tasks & projects" },
   { id: "schedules", label: "Schedules" },
