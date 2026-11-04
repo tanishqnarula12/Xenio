@@ -39,6 +39,20 @@ _KEYLIKE = re.compile(r"\bnbh_[A-Za-z0-9]{6,}|(?i:bearer\s+)[A-Za-z0-9._~+/=-]{8
 _defaults: dict[str, str] = {}
 
 
+RATE_WAIT_SECONDS = 70.0  # the longest a request waits for Nabh's limit to pass
+
+
+def _wait_of(headers) -> int | None:
+    """How long Nabh wants us to wait: its Retry-After, or else the moment its limit resets (measured: 120 requests a minute, on all kinds of request together)."""
+    try:
+        wait = int(headers.get("Retry-After") or 0)
+        if not wait and headers.get("X-RateLimit-Reset"):
+            wait = int(headers["X-RateLimit-Reset"]) - int(time.time()) + 1
+    except (TypeError, ValueError):
+        return None
+    return wait if 0 < wait <= 3600 else None
+
+
 class _Answer(str):
     """A model's words, and whether its length limit stopped them."""
 
@@ -173,10 +187,7 @@ class Nabh:
         if code == 402:
             return NabhError("quota", said or "the Nabh account has no balance left")
         if code == 429:
-            try:
-                wait = int(exc.headers.get("Retry-After") or 0) or None
-            except (TypeError, ValueError):
-                wait = None
+            wait = _wait_of(exc.headers)
             return NabhError("rate_limit", "Nabh is limiting requests right now" + (f": try again in {wait} s" if wait else ": try again in a moment"), wait)
         if code in (400, 404, 413, 422):
             return NabhError("rejected", said or "Nabh rejected the request")
@@ -215,7 +226,12 @@ class Nabh:
                 failure = exc
                 if attempt >= retries or exc.kind not in ("bad_response", "provider", "rate_limit", "timeout"):
                     break
-                time.sleep(self.retry_pause * (attempt + 1))
+                pause = self.retry_pause * (attempt + 1)
+                if exc.kind == "rate_limit":  # Nabh said how long: a sooner try would only be refused again
+                    pause = max(pause, exc.retry_after or 0)
+                    if pause > (end - time.monotonic() - 10 if end else RATE_WAIT_SECONDS):
+                        break
+                time.sleep(pause)
                 last = ""
                 continue
             failure = None

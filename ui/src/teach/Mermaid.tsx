@@ -49,7 +49,7 @@ export function cleanSvg(svg: string): string {
 
 const squeeze = (text: string) => text.replace(/\s+/g, "").toLowerCase();
 
-export function MermaidView({ source, alt, notes }: { source: string; alt?: string; notes?: Record<string, string> }) {
+export function MermaidView({ source, alt, notes, showSource }: { source: string; alt?: string; notes?: Record<string, string>; showSource?: boolean }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [picked, setPicked] = useState<string | null>(null);
@@ -89,6 +89,7 @@ export function MermaidView({ source, alt, notes }: { source: string; alt?: stri
   };
 
   if (failed) {
+    if (showSource) return <div className="diagram diagram--failed"><p className="meta">This diagram could not be drawn, so here is what it says:</p><pre className="diagram__source">{source}</pre></div>;
     return <div className="diagram diagram--failed"><p className="meta">This diagram could not be drawn, so here it is in words:</p><p>{alt}</p></div>;
   }
   const pickedNote = picked ? notes?.[picked] : null;

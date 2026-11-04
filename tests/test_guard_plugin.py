@@ -144,28 +144,35 @@ def test_retry_note_names_a_declined_terminal_command_cleanly(monkeypatch, tmp_p
     assert "push code to a remote repository: git push -u origin main." in note and "key:" not in note
 
 
+def note_of(out):
+    """What a turn is told besides how to teach, which is there every turn."""
+    from app.teacher.modes import TEACHING_NOTE
+
+    return ((out or {}).get("context") or "").replace(TEACHING_NOTE, "").strip() or None
+
+
 def test_retry_note_is_scoped_to_open_recent_declines(monkeypatch, tmp_path):
     _m, ctx, _ws = load(monkeypatch, tmp_path)
     hook = ctx.hooks["pre_llm_call"]
     declined = user() + call(*DELETE, DECLINES[0], "c1")
     # tried again later (asked again, whatever the answer): that decline is settled - no note any more
     retried = declined + user() + call(*DELETE, '{"success": true}', "c2") + user("what's the time?")
-    assert hook(conversation_history=retried) is None
+    assert note_of(hook(conversation_history=retried)) is None
     # only for a few user messages after the decline
     later = declined + user("thanks") + user("what's the weather") + user("tell me a joke")
-    assert hook(conversation_history=later) is not None
+    assert note_of(hook(conversation_history=later)) is not None
     much_later = later + user("and another one")
-    assert hook(conversation_history=much_later) is None
+    assert note_of(hook(conversation_history=much_later)) is None
 
 
 def test_no_retry_note_without_a_decline(monkeypatch, tmp_path):
     _m, ctx, _ws = load(monkeypatch, tmp_path)
     hook = ctx.hooks["pre_llm_call"]
-    assert hook(conversation_history=user() + call(*DELETE, '{"success": true}', "c1") + user()) is None
+    assert note_of(hook(conversation_history=user() + call(*DELETE, '{"success": true}', "c1") + user())) is None
     blocked = call("read_file", {"path": ".env"}, "Blocked by XENIO policy: secret file", "c1")
-    assert hook(conversation_history=user() + blocked + user()) is None  # policy blocks stay blocked
-    assert hook(conversation_history=[{"role": "user", "content": "BLOCKED: User denied"}]) is None
-    assert hook(conversation_history=None) is None
+    assert note_of(hook(conversation_history=user() + blocked + user())) is None  # policy blocks stay blocked
+    assert note_of(hook(conversation_history=[{"role": "user", "content": "BLOCKED: User denied"}])) is None
+    assert note_of(hook(conversation_history=None)) is None
 
 
 def test_browser_page_labels_decide_clicks(monkeypatch, tmp_path):

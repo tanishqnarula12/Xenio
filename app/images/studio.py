@@ -36,6 +36,9 @@ ACTIVE = ("preparing", "sending", "generating", "receiving")
 SAME_REQUEST_SECONDS = 20
 MAX_PROMPT = 1500
 MAX_PARALLEL = 2
+RATE_TRIES = 3  # when Nabh says it is limiting requests, the picture waits and goes again instead of failing
+RATE_LONGEST_WAIT = 120
+RATE_DEFAULT_WAIT = 15
 REFINE_SECONDS = 8.0  # the person's own words go if the quick model is slower than this: the picture matters more than the polish
 ABANDONED_SECONDS = 420  # a job still "running" after this belonged to a process that has gone
 CARD_TAG = "[xenio-card image {}]"
@@ -94,13 +97,14 @@ def _framing(size: str) -> str:
 
 
 class ImageStudio:
-    def __init__(self, folder: Path | None = None, provider_factory=None, refiner=None, notify=None, clock=time.time, background: bool = True):
+    def __init__(self, folder: Path | None = None, provider_factory=None, refiner=None, notify=None, clock=time.time, background: bool = True, pause=None):
         self.folder = Path(folder) if folder else data_dir() / "images"
         self._provider = provider_factory or configured
         self._refiner = refiner
         self.notify = notify
         self._clock = clock
         self._background = background
+        self._pause = pause or self._wait_out
         self._slots = threading.BoundedSemaphore(MAX_PARALLEL)
         self._lock = threading.Lock()
 
@@ -137,7 +141,7 @@ class ImageStudio:
     @staticmethod
     def public(job: dict) -> dict:
         """What the page and the model may see. Never a key, and never the file's place on disk."""
-        return {k: job.get(k) for k in ("id", "state", "prompt", "size", "kind", "parent", "conversation", "turn", "seed", "model", "error", "created", "updated", "ms", "refined", "group", "saved", "cropped_from")} | {"has_image": job.get("state") == "complete"}
+        return {k: job.get(k) for k in ("id", "state", "prompt", "size", "kind", "parent", "conversation", "turn", "seed", "model", "error", "created", "updated", "ms", "refined", "group", "saved", "cropped_from", "note")} | {"has_image": job.get("state") == "complete"}
 
     def list(self, limit: int = 40, conversation: str = "") -> list[dict]:
         if not self.folder.is_dir():
@@ -230,6 +234,12 @@ class ImageStudio:
             self._write(job)
         return self.public(job)
 
+    def _wait_out(self, seconds: float, job_id: str) -> None:
+        """Nabh's limit passing. A cancel ends the wait."""
+        end = time.monotonic() + seconds
+        while time.monotonic() < end and not self._cancelled(job_id):
+            time.sleep(0.25)
+
     def _cancelled(self, job_id: str) -> bool:
         return (self._home(job_id) / "cancel").exists()
 
@@ -280,7 +290,20 @@ class ImageStudio:
             try:
                 can_make = tuple(getattr(provider, "sizes", ()) or ())
                 asked = job["size"] if not can_make or job["size"] in can_make else can_make[0]
-                made: Generated = provider.generate(sent, asked, seed=job.get("seed"))
+                made: Generated | None = None
+                for attempt in range(RATE_TRIES):
+                    try:
+                        made = provider.generate(sent, asked, seed=job.get("seed"))
+                        break
+                    except ImageError as exc:
+                        wait = (exc.retry_after if exc.retry_after is not None else RATE_DEFAULT_WAIT) if exc.kind == "rate_limit" else None
+                        if wait is None or wait > RATE_LONGEST_WAIT or attempt == RATE_TRIES - 1:
+                            raise
+                        if not self._step(job, "sending", note=f"Nabh is limiting requests: trying again in {int(wait)} s"):
+                            return
+                        self._pause(wait, job_id)
+                        if not self._step(job, "generating", note=""):
+                            return
             except ImageError as exc:
                 if not self._cancelled(job_id):
                     self._step(job, "failed", error={"kind": exc.kind, "message": str(exc), "retry_after": exc.retry_after}, ms=int((time.monotonic() - started) * 1000))

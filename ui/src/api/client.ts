@@ -62,6 +62,9 @@ export interface XenioApi {
   changeLearning(change: Record<string, unknown>): Promise<LearningResult>;
   cancel(): Promise<{ cancelled: boolean }>;
   newConversation(): Promise<{ ok: boolean }>;
+  chats(query: string, signal?: AbortSignal): Promise<{ chats: import("./types").ChatSummary[]; current: string | null }>;
+  changeChat(id: string, action: "open" | "delete"): Promise<{ ok: boolean }>;
+  deleteAllChats(): Promise<{ ok: boolean; removed: number }>;
   setPaused(paused: boolean): Promise<unknown>;
   dismissError(): Promise<unknown>;
   approvals(signal?: AbortSignal): Promise<{ pending: Approval[]; history: Approval[] }>;
@@ -199,6 +202,9 @@ export class HttpApi implements XenioApi {
   }
   cancel() { return this.request<{ cancelled: boolean }>("POST", "/chat/cancel", { body: {} }); }
   newConversation() { return this.request<{ ok: boolean }>("POST", "/chat/new", { body: {}, timeout: 70_000 }); }
+  chats(query: string, signal?: AbortSignal) { return this.request<{ chats: import("./types").ChatSummary[]; current: string | null }>("GET", `/chats?q=${encodeURIComponent(query)}`, { signal }); }
+  changeChat(id: string, action: "open" | "delete") { return this.request<{ ok: boolean }>("POST", `/chats/${encodeURIComponent(id)}`, { body: { action } }); }
+  deleteAllChats() { return this.request<{ ok: boolean; removed: number }>("POST", "/chats", { body: { action: "delete_all" } }); }
   setPaused(paused: boolean) { return this.request("POST", "/assistant/pause", { body: { paused } }); }
   dismissError() { return this.request("POST", "/assistant/dismiss", { body: {} }); }
   approvals(signal?: AbortSignal) { return this.request<{ pending: Approval[]; history: Approval[] }>("GET", "/approvals", { signal }); }

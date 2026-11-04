@@ -153,6 +153,9 @@ export class DemoApi implements XenioApi {
   }
   async memory() { return { available: true, editable: false, entries: [{ id: "demo-m1", store: "user" as const, text: "Prefers short answers. (demo)" }] }; }
   async changeMemory(): Promise<{ ok: boolean; store: string; action: string }> { throw new Error("memory cannot be changed in demo mode"); }
+  async chats() { return { chats: [], current: null }; }
+  async changeChat(): Promise<never> { throw new Error("chats are not kept in demo mode"); }
+  async deleteAllChats() { return { ok: true, removed: 0 }; }
   async image(): Promise<never> { throw new Error("pictures are not available in demo mode"); }
   async imageFile(): Promise<never> { throw new Error("pictures are not available in demo mode"); }
   async changeImage(): Promise<never> { throw new Error("pictures are not available in demo mode"); }

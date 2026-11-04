@@ -233,12 +233,12 @@ class TestAWholeTurn:
                 on_tool(activity)
 
             fast.progress, fast.on_tool = on_chunk, tell
-            made = await fast.handle("teach me photosynthesis")
+            made = await fast.handle("make a full lesson on photosynthesis")
             on_chunk(made.text)
             return reply(made.text)
 
         s = stack(script)
-        s.ctl.chat("teach me photosynthesis", quiet=True)
+        s.ctl.chat("make a full lesson on photosynthesis", quiet=True)
         assert wait_until(lambda: s.state.turn is None, 8)
         assert seen == [("xenio_teach: writing the lesson", "in_progress"), ("xenio_teach: writing the lesson", "completed")]
         published = states_published(s.hub)

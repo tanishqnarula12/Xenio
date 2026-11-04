@@ -63,7 +63,7 @@ export function QuickChat({ onClose, onOpenApp, onDragStart }: QuickChatProps) {
         </div>
       </header>
       <div className="qc-scroll">
-        <Transcript limit={30} />
+        <Transcript limit={30} quiet />
       </div>
       <div className="qc-tray" aria-label="Needs your decision">
         <GrantChip />

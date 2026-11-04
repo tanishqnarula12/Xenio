@@ -63,7 +63,19 @@ function LiveTools({ tools }: { tools: ToolActivity[] }) {
   );
 }
 
-export function Transcript({ limit }: { limit?: number }) {
+/** What the reply offers next, one tap away. They go when the next thing starts. */
+function NextSteps({ choices, quiet }: { choices: string[]; quiet: boolean }) {
+  const { app } = useApp();
+  const busy = useAppState((s) => Boolean(s.assistant?.turn));
+  if (busy) return null;
+  return (
+    <div className="next-steps" role="group" aria-label="What next?">
+      {choices.map((choice) => <button type="button" key={choice} className="next-step" onClick={() => void app.send(choice, "text", quiet)}>{choice}</button>)}
+    </div>
+  );
+}
+
+export function Transcript({ limit, quiet = false }: { limit?: number; quiet?: boolean }) {
   const conversation = useAppState((s) => s.conversation);
   const streaming = useAppState((s) => s.streaming);
   const tools = useAppState((s) => s.tools);
@@ -81,12 +93,28 @@ export function Transcript({ limit }: { limit?: number }) {
     if (el && el !== document.body && el !== document.documentElement) el.scrollTop = el.scrollHeight;
   }, [shown.length, streaming?.text]);
 
+  // a diagram or a picture finishes after its words: the newest stays in view, with what the reply offers next, unless you have scrolled up to read
+  const present = shown.length > 0 || Boolean(streaming);
+  useEffect(() => {
+    let el: HTMLElement | null = box.current?.parentElement ?? null;
+    while (el && el !== document.body && !/(auto|scroll)/.test(getComputedStyle(el).overflowY)) el = el.parentElement;
+    if (!box.current || !el || el === document.body) return;
+    const scroller = el;
+    let following = true;
+    const onScroll = () => { following = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80; };
+    const observer = new ResizeObserver(() => { if (following) scroller.scrollTop = scroller.scrollHeight; });
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    observer.observe(box.current);
+    return () => { scroller.removeEventListener("scroll", onScroll); observer.disconnect(); };
+  }, [present]);
+
   if (!shown.length && !streaming) {
     return <p className="transcript__empty">Ask XENIO anything, or tell it what to do on your Mac.</p>;
   }
   return (
     <div className="transcript" ref={box}>
       {shown.map((m) => <MessageView key={m.id} message={m} />)}
+      {!streaming && shown.at(-1)?.role === "assistant" && !!shown.at(-1)?.next?.length && <NextSteps choices={shown.at(-1)!.next!} quiet={quiet} />}
       {streaming && (
         <div className="msg msg--assistant msg--live" aria-live="polite" aria-busy="true">
           <LiveTools tools={tools} />

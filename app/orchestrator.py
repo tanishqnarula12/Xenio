@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app import followups
 from app.hermes.client import (
     ChunkHandler,
     HermesClient,
@@ -197,6 +198,7 @@ class XenioResponse:
     tool_calls: list = field(default_factory=list)  # what Hermes actually did (ToolActivity), for display
     sources: list[Source] = field(default_factory=list)  # web pages this answer used (recorded by the plugin)
     declined: list[str] = field(default_factory=list)  # actions the user said no to (or did not confirm)
+    next: list[str] = field(default_factory=list)  # what the reply offers to do next: buttons under it (app/followups.py)
     attachments: list[dict] = field(default_factory=list)  # cards shown with the reply: {"kind": "lesson" | "image", "id"}
 
     def action_lines(self) -> list[str]:
@@ -294,7 +296,11 @@ class Orchestrator:
             self._declined, self._approved = [], []
             try:
                 extra_args = {"on_tool": on_tool} if on_tool is not None and self._accepts_on_tool() else {}
-                reply = await self.hermes.send_message(message, on_chunk=on_chunk, **extra_args)
+                visible = followups.StreamFilter()
+                shown = None if on_chunk is None else lambda piece: (lambda words: on_chunk(words) if words else None)(visible.feed(piece))
+                reply = await self.hermes.send_message(message, on_chunk=shown, **extra_args)
+                if on_chunk is not None and (rest := visible.flush()):
+                    on_chunk(rest)
             except HermesTimeout as exc:
                 event(log, "Hermes timed out", logging.ERROR, error=str(exc))
                 return XenioResponse(MSG_HERMES_TIMEOUT, ok=False, error="hermes_timeout")
@@ -326,7 +332,7 @@ class Orchestrator:
                 event(log, "Web sources used", count=len(sources), sites=",".join(sorted({s.site for s in sources}))[:200])
             extra = {"tool_calls": tools, "sources": sources, "declined": list(self._declined), "attachments": cards_of(tools)}
             if reply.cancelled:
-                return XenioResponse(reply.text, ok=True, cancelled=True, **extra)
+                return XenioResponse(followups.split(reply.text)[0], ok=True, cancelled=True, **extra)
             if not reply.text:
                 return XenioResponse(MSG_EMPTY_REPLY, ok=False, error="empty_reply", **extra)
             correction, replace = truth_check(reply.text, tools, self._declined, self._approved)
@@ -339,8 +345,9 @@ class Orchestrator:
                 if replace:
                     log.debug("Replaced model reply: %s", reply.text)
                     return XenioResponse(correction, ok=True, **extra)
-                return XenioResponse(f"{reply.text}\n\n{correction}", ok=True, **extra)
-            return XenioResponse(reply.text, ok=True, **extra)
+                return XenioResponse(f"{followups.split(reply.text)[0]}\n\n{correction}", ok=True, **extra)
+            words, offered = followups.split(reply.text)
+            return XenioResponse(words, ok=True, next=offered, **extra)
 
     async def interrupt(self) -> None:
         """Stop the Hermes turn in progress, if any (barge-in, Ctrl+C, the UI's stop) - and XENIO's hands with it:

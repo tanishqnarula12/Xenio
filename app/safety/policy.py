@@ -2131,7 +2131,7 @@ def _live(info: dict) -> bool:
 
 
 LIVE_TEST_REASON = ("this window looks like a test, contest, assessment or interview: XENIO does not read its questions "
-                    "to answer them. Offer to teach the subject with xenio_teach instead, after the test")
+                    "to answer them. Offer to teach the subject in the chat instead, after the test")
 
 
 def screen_look_on_live_test(decision: Decision, windows: list[dict]) -> Decision:

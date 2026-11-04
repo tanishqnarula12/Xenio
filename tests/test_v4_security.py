@@ -253,7 +253,9 @@ def test_plugin_injection_in_a_web_page_document_and_issue(monkeypatch, tmp_path
 def test_plugin_personal_context_line(monkeypatch, tmp_path):
     m, ctx, _ws = load(monkeypatch, tmp_path)
     pre = ctx.hooks["pre_llm_call"]
-    assert pre(conversation_history=[], user_message="hi", session_id="c", turn_id="1") is None  # nothing recorded yet
+    from app.teacher.modes import TEACHING_NOTE
+
+    assert pre(conversation_history=[], user_message="hi", session_id="c", turn_id="1") == {"context": TEACHING_NOTE}  # how to teach, and nothing recorded yet
     from app.notifications import NotificationCenter
     from app.personal.projects import Projects
     from app.personal.tasks import TaskList

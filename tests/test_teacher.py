@@ -629,16 +629,16 @@ class TestMaterial:
         assert p.classify_teach_tool({"action": "add_material", "text": "sk-or-v1-abcdefghijklmnop0123"}, "").blocked
 
 
-@pytest.mark.parametrize("words, want", [("teach me photosynthesis", ("photosynthesis", "teach")), ("Xenio, teach me about the Preamble.", ("the Preamble", "teach")), ("explain binary search with a flowchart", ("binary search", "visual")),
-                                         ("make a mind map of the French Revolution", ("the French Revolution", "visual")), ("quiz me on DBMS", ("DBMS", "quiz")), ("test my understanding of recursion", ("recursion", "test")),
-                                         ("explain gravity simply", ("gravity", "simple")), ("newton ke laws samjhao", ("newton ke laws", "teach")), ("न्यूटन के नियम समझाओ", ("न्यूटन के नियम", "teach"))])
-def test_asking_to_learn_is_understood(words, want):
+@pytest.mark.parametrize("words, want", [("make a full lesson on photosynthesis", "photosynthesis"), ("Xenio, write me a lesson about the French Revolution", "the French Revolution"), ("lesson on DBMS", "DBMS"),
+                                         ("a complete lesson on gravity please", "gravity"), ("newton ke laws ka lesson banao", "newton ke laws"), ("create a detailed lesson for binary search", "binary search")])
+def test_only_a_whole_lesson_asked_for_in_so_many_words_is_a_command(words, want):
     got = parse_teach_command(words)
-    assert (got["topic"], got["mode"]) == want
+    assert got is not None and got["topic"] == want
 
 
-@pytest.mark.parametrize("words", ["explain this error", "teach me", "what is gravity", "explain this", "explain the code here", "teach me this"])
-def test_anything_else_goes_to_the_model(words):
+@pytest.mark.parametrize("words", ["teach me photosynthesis", "explain gravity simply", "quiz me on DBMS", "newton ke laws samjhao", "what is gravity", "explain this error", "make a mind map of the French Revolution",
+                                   "make a lesson on this", "lesson", "i have a lesson tomorrow", "teach me"])
+def test_anything_else_about_learning_is_answered_in_the_reply(words):
     assert parse_teach_command(words) is None
 
 
@@ -654,17 +654,16 @@ class TestFastPath:
         said = []
         fast = self.fast(teacher)
         fast.progress = said.append
-        reply = asyncio.run(fast.handle("teach me photosynthesis"))
-        assert reply.attachments[0]["kind"] == "lesson" and "Plants build food" in reply.text and "Oxygen comes from?" in reply.text
+        reply = asyncio.run(fast.handle("make a full lesson on photosynthesis"))
+        assert reply.attachments[0]["kind"] == "lesson" and "Plants build food" in reply.text
         assert said and "Writing your lesson" in said[0]
-        assert "Water" not in reply.text.split("Oxygen comes from?")[0]
-        assert "question" in teacher.status()["next"]
+        assert "Oxygen comes from?" not in reply.text  # nothing is asked out of nowhere: the questions are in the lesson
 
     def test_if_it_cannot_be_written_the_model_teaches(self, tmp_path):
         import asyncio
 
         t = Teacher(LearningStore(tmp_path / "l.db"), nabh_factory=lambda: None)
-        assert asyncio.run(self.fast(t).handle("teach me gravity")) is None
+        assert asyncio.run(self.fast(t).handle("make a lesson on gravity")) is None
 
 
 class TestUploads:
@@ -900,7 +899,7 @@ class TestNothingMadeUp:
                 return {"unknown": "I do not recognise it."}
 
         t = Teacher(LearningStore(tmp_path / "l.db"), nabh_factory=lambda: Unknown())
-        reply = asyncio.run(FastPath(PATHS, teacher=t).handle("teach me the Zorbium cycle"))
+        reply = asyncio.run(FastPath(PATHS, teacher=t).handle("make a lesson on the Zorbium cycle"))
         assert reply is not None and "without making things up" in reply.text and "add the file" in reply.text and not reply.attachments
 
     @pytest.mark.parametrize("passages,left", [(0, ["see this", "and that"]), (1, ["see this [S1]", "and that"]), (3, ["see this [S1]", "and that [S3]"])])
@@ -1008,6 +1007,45 @@ class TestAnAnswerCutOff:
         made.stream_text, made.retry_pause = stream, 0
         with pytest.raises(NabhError, match="too slow"):
             made.chat_json([{"role": "user", "content": "x"}], retries=1)
+
+
+class TestNabhLimit:
+    def client(self, failures):
+        made = Nabh("k")
+        slept = []
+
+        def stream(payload, timeout=0):
+            if failures:
+                raise failures.pop(0)
+            return '{"ok": 1}'
+
+        made.stream_text, made.retry_pause = stream, 0.01
+        return made, slept
+
+    def test_it_waits_as_long_as_nabh_says(self, monkeypatch):
+        from app.integrations import nabh as module
+
+        slept = []
+        monkeypatch.setattr(module.time, "sleep", slept.append)
+        made, _ = self.client([NabhError("rate_limit", "limited", 7)])
+        assert made.chat_json([{"role": "user", "content": "x"}]) == {"ok": 1} and slept == [7]
+
+    def test_a_wait_longer_than_the_time_left_fails_at_once(self, monkeypatch):
+        from app.integrations import nabh as module
+
+        slept = []
+        monkeypatch.setattr(module.time, "sleep", slept.append)
+        made, _ = self.client([NabhError("rate_limit", "limited", 600)])
+        with pytest.raises(NabhError, match="limited"):
+            made.chat_json([{"role": "user", "content": "x"}], budget=60)
+        assert slept == []
+
+    @pytest.mark.parametrize("headers,want", [({"Retry-After": "12"}, 12), ({"X-RateLimit-Reset": "1000030"}, 31), ({}, None), ({"Retry-After": "soon"}, None), ({"X-RateLimit-Reset": "999990"}, None)])
+    def test_how_long_it_says(self, monkeypatch, headers, want):
+        from app.integrations import nabh as module
+
+        monkeypatch.setattr(module.time, "time", lambda: 1000000)
+        assert module._wait_of(headers) == want
 
 
 class TestALessonHasATimeLimit:

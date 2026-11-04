@@ -57,6 +57,8 @@ export interface VoiceInfo {
   problem?: string | null;
 }
 
+export interface ChatSummary { id: string; title: string; created: string; updated: string; messages: number; imported: boolean; }
+
 export interface Message {
   id: string;
   turn: string;
@@ -70,6 +72,8 @@ export interface Message {
   error?: string | null;
   actions?: string[];
   sources?: { title: string; url: string }[];
+  /** what the reply offers to do next: buttons under the newest one */
+  next?: string[];
   /** cards made in this turn: a lesson, a picture */
   attachments?: { kind: "lesson" | "image"; id: number | string }[];
   /** files the user added to this message */
@@ -361,7 +365,7 @@ export interface ScheduledJob {
   runs: { at: string; result: "message" | "silent" | "failed" | string; message: string }[];
 }
 
-export interface ImageJob { cropped_from?: string | null;
+export interface ImageJob { cropped_from?: string | null; note?: string | null;
   id: string; state: "preparing" | "sending" | "generating" | "receiving" | "complete" | "failed" | "cancelled"; prompt: string; size: string; kind?: string; parent?: string; seed?: number; model?: string;
   error?: { kind: string; message: string; retry_after?: number | null } | null; created?: number; updated?: number; ms?: number; refined?: boolean; has_image?: boolean; saved?: string;
 }

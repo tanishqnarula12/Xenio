@@ -245,6 +245,19 @@ def _handler_for(server: UiServer):
                 return self._json(200, ctl.cancel())
             if method == "POST" and route == "/chat/new":
                 return self._json(200, ctl.new_conversation())
+            if method == "GET" and route == "/chats":
+                return self._json(200, ctl.chat_list(q("q")[:200]))
+            if method == "POST" and route == "/chats":
+                if self._payload().get("action") == "delete_all":
+                    return self._json(200, ctl.chat_delete_all())
+                raise UiError("unknown action", 422)
+            if method == "POST" and (hit := m(r"/chats/(chat_[0-9a-f]{16})", route)):
+                action = self._payload().get("action")
+                if action == "open":
+                    return self._json(200, ctl.chat_open(hit.group(1)))
+                if action == "delete":
+                    return self._json(200, ctl.chat_delete(hit.group(1)))
+                raise UiError("unknown action", 422)
             if method == "POST" and route == "/assistant/pause":
                 return self._json(200, ctl.set_paused(bool(self._payload().get("paused"))))
             if method == "POST" and route == "/assistant/dismiss":

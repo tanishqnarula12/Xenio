@@ -1,7 +1,19 @@
 # The Teacher (V4 phase 3)
 
-Say "teach me binary search", or open **Mission Control > Learn**, and XENIO writes a lesson on any subject that you do things with, not only read: a mind map,
-flowcharts, a graph with sliders, a calculator, code that really runs, games, flashcards, questions. Progress comes only from what you really answered.
+Ask anything in the chat, in your own words and any language. XENIO works out by itself that you want to learn, and teaches you right there: a well-formatted explanation of one idea, with a flowchart
+or diagram wherever one helps, and then buttons for what could come next ("Walk through an example", "Show it as a diagram", "Quiz me"). There is nothing to start, and nothing is asked out of nowhere.
+
+Everything else is there for when you pick it, in the chat:
+
+| You pick | You get |
+|---|---|
+| A diagram | a drawn flowchart, cycle, mind map or sequence, or one you can click for more |
+| Something to try | a graph with sliders, a calculator, code you can run with your own input, a step-through, match, order |
+| Practice | one question at a time, hints before answers, and your real progress kept |
+| Your notes | add a file to the message: it teaches from them |
+| A whole lesson | say "make a full lesson on X", or use More options on the Learn page |
+
+**The Learn page** keeps what you have been learning: your subjects, what is due for review, and your lessons.
 
 | Piece | File | What it does |
 |---|---|---|
@@ -15,7 +27,13 @@ flowcharts, a graph with sliders, a calculator, code that really runs, games, fl
 | Tool | `app/tools/teacher.py` | `xenio_teach` |
 | Page | `ui/src/pages/Learn.tsx`, `ui/src/teach/` | the lesson, its activities, your progress |
 
-## How a lesson is written
+## How teaching in the chat works
+
+The main model gets a short note on every turn (`TEACHING_NOTE` in `app/teacher/modes.py`) saying how to teach and how to offer next steps, so it decides for itself when someone wants to learn; no list of trigger words can
+do that. It ends a reply with one line, `<<next: A | B | C>>`, which `app/followups.py` takes out everywhere, also while the words stream and before anything is spoken, and which the page shows as buttons under the newest reply. So the quality of
+this teaching is the main model's.
+
+## How a whole lesson is written
 
 Nabh's `glm-5-2` writes four parts at once, so a lesson takes as long as its longest part: the explanation, the diagrams, the things to do, the practice. Only the
 explanation is essential; a part that fails leaves the rest, and the lesson says which is missing. A second, fresh reading then checks it in the background,
@@ -84,7 +102,8 @@ The second reader found real errors each time, such as swapped labels on a diagr
 
 ## Limits
 
-* **A lesson takes one to two minutes.** The chat says it is writing and the orb says "writing the lesson", but it does not appear piece by piece yet. After 140 s it comes with whichever parts are ready, and says which are missing; only the explanation can take longer. A part cut off by the length limit is asked for once more with more room.
+* **A whole lesson takes one to two minutes.** Teaching in the chat answers like any other message.
+* **Whole lessons:** The chat says it is writing and the orb says "writing the lesson", but it does not appear piece by piece yet. After 140 s it comes with whichever parts are ready, and says which are missing; only the explanation can take longer. A part cut off by the length limit is asked for once more with more room.
 * **A wrong answer can still get through** two readers, above all in narrow or recent subjects. Look under "What to double-check".
 * **A subject's first visit downloads nothing, but drawing diagrams loads about 5 MB** of Mermaid from XENIO itself the first time a lesson opens.
 * C and C++ need Apple's command line tools; without them Run says so.

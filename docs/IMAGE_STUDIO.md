@@ -35,6 +35,7 @@ answer's first bytes must really be PNG, JPEG or WebP, or the job fails with `ba
 * **Save:** only when asked, to Downloads, never over an existing file. The studio keeps its copy.
 * **Prompt writer slow or down:** after 8 s your own words go instead. It costs nothing but polish.
 * **Two at a time.** More wait their turn; the chat does not.
+* **When Nabh is limiting requests** (120 a minute, on all kinds of request together, voice transcription included), the card says so and the picture waits and goes again, up to three tries, instead of failing. Cancel ends the wait.
 * **After a restart:** finished pictures are still there; a job whose process went away says so after 7 minutes instead of spinning for ever.
 
 ## Shapes

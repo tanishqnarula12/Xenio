@@ -6,7 +6,7 @@ import type { StreamStatus } from "../api/client";
 import type { Approval, AssistantSnapshot, Message, Snapshot, ToolActivity, UiSettings, VoiceInfo, XenioEvent } from "../api/types";
 import { IDLE_VOICE, type LocalVoice } from "../orb/machine";
 
-export type Topic = "runs" | "tasks" | "approvals" | "activity" | "schedules" | "health" | "agents" | "memory" | "profile" | "learning" | "skills";
+export type Topic = "runs" | "tasks" | "approvals" | "activity" | "schedules" | "health" | "agents" | "memory" | "profile" | "learning" | "skills" | "chats";
 
 export interface Notice {
   id: string;
@@ -37,7 +37,7 @@ export interface AppState {
 export const initialState: AppState = {
   stream: "connecting", snapshot: null, assistant: null, conversation: [], images: {}, streaming: null, tools: [], approvals: [],
   voice: IDLE_VOICE, voiceError: null, notices: [], settings: null,
-  revision: { runs: 0, tasks: 0, approvals: 0, activity: 0, schedules: 0, health: 0, agents: 0, memory: 0, profile: 0, learning: 0, skills: 0 },
+  revision: { runs: 0, tasks: 0, approvals: 0, activity: 0, schedules: 0, health: 0, agents: 0, memory: 0, profile: 0, learning: 0, skills: 0, chats: 0 },
   loadError: null,
   lastEventAt: null,
 };
@@ -111,11 +111,17 @@ export class Store {
         const conversation = s.conversation.some((x) => x.id === m.id) ? s.conversation : [...s.conversation, m];
         // a turn may have changed tasks, reminders or memory through tools that run inside Hermes, where no event is
         // published: the views that show them re-read XENIO's records (only those on screen fetch)
-        this.set({ ...at, conversation, streaming: null, ...this.bump("activity", "tasks", "schedules", "memory", "profile", "learning") });
+        this.set({ ...at, conversation, streaming: null, ...this.bump("activity", "tasks", "schedules", "memory", "profile", "learning", "chats") });
         return;
       }
       case "chat.reset":
-        this.set({ ...at, conversation: [], streaming: null, tools: [] });
+        this.set({ ...at, conversation: [], streaming: null, tools: [], ...this.bump("chats") });
+        return;
+      case "chat.opened":
+        this.set({ ...at, conversation: (d.conversation as Message[]) ?? [], streaming: null, tools: [], ...this.bump("chats") });
+        return;
+      case "chats.changed":
+        this.set({ ...at, ...this.bump("chats") });
         return;
       case "approval.requested": {
         const a = d as unknown as Approval;
@@ -194,7 +200,7 @@ export class Store {
   loadSnapshot(snapshot: Snapshot): void {
     this.set({ snapshot, assistant: snapshot.assistant, conversation: snapshot.conversation, approvals: snapshot.approvals,
       streaming: snapshot.assistant.turn ? { turn: snapshot.assistant.turn, text: "" } : null, loadError: null,
-      ...this.bump("runs", "tasks", "approvals", "activity", "schedules", "health", "agents", "memory", "profile", "learning", "skills") });
+      ...this.bump("runs", "tasks", "approvals", "activity", "schedules", "health", "agents", "memory", "profile", "learning", "skills", "chats") });
   }
 }
 

@@ -53,6 +53,9 @@ export class FakeApi implements XenioApi {
   chat = vi.fn(async (_text: string, _via: "text" | "voice", _quiet?: boolean) => ({ turn: "t1" }));
   cancel = vi.fn(async () => ({ cancelled: true }));
   newConversation = vi.fn(async () => ({ ok: true }));
+  chats = vi.fn(async (_query: string, _signal?: AbortSignal) => ({ chats: [] as import("../api/types").ChatSummary[], current: null as string | null }));
+  changeChat = vi.fn(async (_id: string, _action: "open" | "delete") => ({ ok: true }));
+  deleteAllChats = vi.fn(async () => ({ ok: true, removed: 0 }));
   setPaused = vi.fn(async () => ({}));
   dismissError = vi.fn(async () => ({}));
   approvals = vi.fn(async () => ({ pending: [] as Approval[], history: [] as Approval[] }));

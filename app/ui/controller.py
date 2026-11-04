@@ -56,6 +56,7 @@ _IMAGE_CARD = re.compile(r"\[xenio-card image (img_[0-9a-f]{16})\]")
 _CARD_WORDS = re.compile(r"\s*\[xenio-card (?:lesson|image) [\w-]{1,40}\]")
 HANDS_TOOLS = {"xenio_gui", "xenio_look_at_screen", "xenio_find_ui", "xenio_form", "xenio_browser"}
 HANDS_POLL_SECONDS = 0.15
+_STARTUP = "startup"  # the session Hermes resumed by itself when XENIO started
 
 
 class UiError(Exception):
@@ -78,6 +79,9 @@ class UiController:
         self.notifications = notifications
         self.proactive = proactive
         self._images = None
+        self._history = None
+        self.chat_id: str | None = None  # the chat on screen; a chat begins with its first message
+        self._session_for: str | None = _STARTUP  # whose words the Hermes session holds
         self.memory = memory
         self.stt = stt
         self.tts = tts
@@ -126,10 +130,20 @@ class UiController:
         self.publish_state()
         ok = await self.orchestrator.start()
         self.state.connection = "connected" if ok else "disconnected"
+        asyncio.ensure_future(self._bring_in_old_chats())
         if not ok:
             self.state.error = "Hermes could not be started. Run `python -m app.main --health` for details."
             self.hub.publish("assistant.error", {"error": self.state.error})
         self.publish_state()
+
+    async def _bring_in_old_chats(self) -> None:
+        try:
+            made = await asyncio.to_thread(self.history.import_hermes, Path(self.hermes_home) / "state.db")
+        except Exception:  # noqa: BLE001 - the old chats are welcome, never a reason for XENIO not to start
+            log.exception("Could not bring in the chats Hermes has")
+            return
+        if made:
+            self.hub.publish("chats.changed", {})
 
     async def watch(self) -> None:
         """Background: the V6 team's runs (1 s), the Hermes connection, and a COMPLETED that has run its course."""
@@ -239,6 +253,86 @@ class UiController:
         self._turn_task = asyncio.ensure_future(self._turn(turn_id, text, "voice", on_chunk, on_tool, context))
         return await self._turn_task
 
+    # ---- the conversations, kept (app/ui/history.py) -----------------------------------------------------------------------
+
+    @property
+    def history(self):
+        if self._history is None:
+            from app.ui.history import ChatHistory
+
+            self._history = ChatHistory(self.settings.data_dir / "chats.db")
+        return self._history
+
+    def _keep(self, message: dict) -> None:
+        if self.chat_id is None:
+            return
+        try:
+            self.history.add(self.chat_id, message)
+        except Exception:  # noqa: BLE001 - a full disk must not cost the user an answer
+            log.exception("A message could not be kept in the chat history")
+
+    async def _join_chat(self, first_words: str) -> str | None:
+        """Before a message: the chat it belongs to, and what the model needs to carry on one that was reopened. A session holds one chat's words, so another chat gets a
+        fresh session and a record of how it went."""
+        from app.ui.history import recap
+
+        try:
+            if self.chat_id is None:
+                self.chat_id = self.history.start(self.redact(first_words))
+            earlier = self.history.messages(self.chat_id)
+        except Exception:  # noqa: BLE001 - as above
+            log.exception("The chat history could not be read")
+            return None
+        holds, self._session_for = self._session_for, self.chat_id
+        if holds == self.chat_id:
+            return None
+        if earlier or holds not in (None, _STARTUP):
+            try:
+                await self.orchestrator.new_session()
+            except Exception:  # noqa: BLE001 - the record below still carries it
+                log.exception("Could not start a session for the reopened chat")
+        return recap(earlier) or None
+
+    def chat_list(self, query: str = "") -> dict:
+        return {"chats": self.history.list(query), "current": self.chat_id}
+
+    def _require_chat(self, chat_id: str) -> None:
+        if not self.history.exists(chat_id):
+            raise UiError("that chat is not there any more", 404)
+
+    def chat_open(self, chat_id: str) -> dict:
+        """The chat on screen becomes that one. Nothing is sent to a model until the user writes."""
+        self._require_chat(chat_id)
+        if self.turn_running():
+            raise UiError("XENIO is still answering: stop it first", 409)
+        if chat_id != self.chat_id:
+            self.end_grant("another conversation was opened")
+        self.chat_id = chat_id
+        self.conversation = self.history.messages(chat_id)[-200:]
+        shown = self.conversation[-self.ui_settings()["transcript_lines"]:]
+        self.hub.publish("chat.opened", {"id": chat_id, "conversation": shown})
+        return {"ok": True, "id": chat_id}
+
+    def chat_delete(self, chat_id: str) -> dict:
+        self._require_chat(chat_id)
+        if chat_id == self.chat_id:
+            if self.turn_running():
+                raise UiError("XENIO is still answering: stop it first", 409)
+            self.chat_id, self.conversation = None, []
+            self.hub.publish("chat.reset", {})
+        self.history.delete(chat_id)
+        self.hub.publish("chats.changed", {})
+        return {"ok": True}
+
+    def chat_delete_all(self) -> dict:
+        if self.turn_running():
+            raise UiError("XENIO is still answering: stop it first", 409)
+        removed = self.history.delete_all()
+        self.chat_id, self.conversation = None, []
+        self.hub.publish("chat.reset", {})
+        self.hub.publish("chats.changed", {})
+        return {"ok": True, "removed": removed}
+
     async def _read_attached(self, attached: list[dict]) -> str:
         from app.ui.uploads import Uploads, note_for
 
@@ -252,7 +346,10 @@ class UiController:
         message = {"id": turn_id + "-u", "turn": turn_id, "role": "user", "text": self.redact(text), "via": via,
                    "at": datetime.now().isoformat(timespec="seconds"), **({"quiet": True} if quiet else {}),
                    **({"files": [{k: f.get(k) for k in ("id", "name", "size", "kind")} for f in attached]} if attached else {})}
+        earlier = await self._join_chat(text)
+        context = "\n".join(c for c in (context, earlier) if c) or None
         self.conversation.append(message)
+        self._keep(message)
         self.hub.publish("chat.user", message)
         self.hub.publish("request.received", {"turn": turn_id, "via": via, "chars": len(text)})  # no content kept
         self.publish_state()
@@ -309,12 +406,13 @@ class UiController:
             return XenioResponse(text="That request failed; the details are on screen.", ok=False, error="hermes_error")
         self._stop_following()  # a stopped turn never reports its running tool as ended
         reply = {"id": turn_id + "-a", "turn": turn_id, "role": "assistant", "text": self.redact(_CARD_WORDS.sub("", response.text or "").strip()),
-                 "attachments": list(getattr(response, "attachments", None) or []),
+                 "attachments": list(getattr(response, "attachments", None) or []), "next": [self.redact(c) for c in (getattr(response, "next", None) or [])],
                  "ok": response.ok, "cancelled": response.cancelled, "error": response.error,
                  "actions": [self.redact(a.strip()) for a in response.action_lines() if a.strip() not in ("", "actions:")],
                  "sources": [{"title": s.title, "url": s.url} for s in (response.sources or [])][:8],
                  "at": datetime.now().isoformat(timespec="seconds")}
         self.conversation = (self.conversation + [reply])[-200:]
+        self._keep(reply)
         self.state.turn_finished(response.ok, response.text if not response.ok else "", response.cancelled)
         self.hub.publish("chat.done", reply)
         if not response.ok and not response.cancelled:
@@ -410,6 +508,7 @@ class UiController:
         if not ok:
             raise UiError("Hermes could not start a new conversation", 502)
         self.conversation = []
+        self.chat_id, self._session_for = None, None
         self.hub.publish("chat.reset", {})
         return {"ok": True}
 

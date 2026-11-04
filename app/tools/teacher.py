@@ -79,11 +79,11 @@ _L = {"type": "array"}
 
 _TOOLS = [
     Tool("teacher.teach",
-         "The user's personal tutor, for ANY subject (school, college, coding, languages, anything). Use it whenever they want to learn or be tested. It keeps a real record, writes full lessons "
-         "with flowcharts, mind maps and diagrams that appear on their screen as a card, and works from their own notes and PDFs. A typical lesson: start (topic, optionally goal, level, mode, language) -> "
-         "compose (writes the lesson: speak its overview in your own words in a few sentences, do not repeat the card) -> ask (id of one question) -> wait -> answer -> what 'next' says. "
+         "Extras for teaching ANY subject. Teach in your reply first; use this for what words cannot do, one piece at a time, when the user picks it or it clearly helps. It keeps a real record of what they answer, and shows "
+         "diagrams and things to try right in the chat. Never make them start anything. Only if they ask for a whole written lesson: start (topic, optionally goal, level, mode, language) -> "
+         "compose (writes all of it: say its overview in a few sentences, do not repeat the card). "
          "Modes: teach, simple, visual, hints, quiz, test, mistakes, material. Actions: start | status (where things stand and what to do next) | compose (optional concept, mode, fresh) | "
-         "show (spec: one diagram or interactive activity of your own, on any subject, shown in the chat. Do this often, whenever seeing or trying beats reading. A diagram: {kind: flowchart|cycle|mindmap|hierarchy|sequence|timeline|comparison, "
+         "show (spec: one diagram or interactive activity of your own, on any subject, shown in the chat, whenever seeing or trying beats reading. A diagram: {kind: flowchart|cycle|mindmap|hierarchy|sequence|timeline|comparison, "
          "title, caption, and for a flowchart nodes [{id, label, shape: start|step|decision|end, note}] and edges [{from, to, label}]; for a mindmap or hierarchy tree {label, note, children: [...]}; for a sequence participants and messages [{from, to, text}]; "
          "for a timeline events [{when, what}]; for a comparison columns and rows}. An activity: {type: graph, title, prompt, functions [{expr: 'a*x^2+b', label}], params [{name, min, max, step, value}], x {min, max}} (sliders); "
          "{type: calculator, inputs [{name, label, value, unit}], outputs [{label, expr, unit}]} (their own numbers); {type: code, language: python|javascript|c|cpp, code, stdin, prompt, and for an exercise task and checks [{stdin, expected}]} (a terminal they can edit and run); "

@@ -1,4 +1,4 @@
-import { BookOpen, CalendarClock, Check, FileUp, GraduationCap, Plus, Trash2, X } from "lucide-react";
+import { BookOpen, CalendarClock, Check, FileUp, GraduationCap, MessagesSquare, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import type { LearningOverview, LearningTopic } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -29,17 +29,30 @@ function NewLesson({ data, onMade }: { data: LearningOverview; onMade: (topic: n
       if (found && made.lesson) onMade(found.id, Number(made.lesson));
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   };
+  const inChat = (e: FormEvent) => { // the easy way: just ask, and be taught in the chat
+    e.preventDefault();
+    const subject = topic.trim();
+    if (!subject) return;
+    const about = [level.trim() && `my level: ${level.trim()}`, goal.trim() && `my goal: ${goal.trim()}`].filter(Boolean).join(", ");
+    const opening = mode === data.default_mode ? `Teach me ${subject}` : `${data.modes[mode] ?? "Teach me"}: ${subject}`;
+    window.location.hash = href("chat");
+    void app.send(about ? `${opening} (${about})` : opening, "text", true);
+  };
   return (
-    <form className="learn-new" onSubmit={submit} aria-label="Learn something">
+    <form className="learn-new" onSubmit={inChat} aria-label="Learn something">
       <label className="learn-new__topic"><span className="sr-only">What do you want to learn?</span><input value={topic} maxLength={120} placeholder="What do you want to learn? Any subject." onChange={(e) => setTopic(e.target.value)} /></label>
+      <Button variant="primary" type="submit" disabled={busy || !topic.trim()}><MessagesSquare size={15} aria-hidden="true" /> Learn it in chat</Button>
+      <details className="learn-new__more">
+      <summary>More options</summary>
       <div className="learn-new__row">
         <label><span>Your level</span><input value={level} maxLength={80} placeholder="class 10, beginner…" onChange={(e) => setLevel(e.target.value)} /></label>
         <label><span>Your goal</span><input value={goal} maxLength={200} placeholder="exam, curiosity, a project…" onChange={(e) => setGoal(e.target.value)} /></label>
         <label><span>How</span><select value={mode} onChange={(e) => setMode(e.target.value)}>{Object.entries(data.modes).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
       </div>
-      <Button variant="primary" type="submit" disabled={busy || !topic.trim() || !data.writer}>{busy ? "Writing your lesson…" : <><GraduationCap size={15} aria-hidden="true" /> Start learning</>}</Button>
+      <Button variant="secondary" disabled={busy || !topic.trim() || !data.writer} onClick={(e) => void submit(e)}>{busy ? "Writing your lesson…" : <><GraduationCap size={15} aria-hidden="true" /> Write me a whole lesson instead</>}</Button>
       {busy && <p className="meta" role="status">Writing the chapter, diagrams, activities and practice. This usually takes under a minute, and you can use the rest of XENIO meanwhile.</p>}
       {!data.writer && <p className="meta">Writing full lessons needs a Nabh key (NABH_API_KEY). XENIO can still teach you in conversation.</p>}
+      </details>
       {error && <ErrorNote message={error} />}
     </form>
   );
@@ -188,7 +201,7 @@ export function LearnPage({ param }: { param: string | null }) {
   if (topicId) return <><p className="learn-back"><a className="link" href={href("learn")}>All subjects</a></p><TopicView key={`${topicId}-${tick >= 0 ? "" : tick}`} id={topicId} lessonId={lessonId} onChange={refresh} /></>;
   return (
     <>
-      <PageHeader title="Learn" intro="Any subject, your way: read a little, see it, try it yourself, answer. Your progress comes only from what you really answer." />
+      <PageHeader title="Learn" intro="Ask anything in Chat and XENIO teaches you right there, one step at a time. This page keeps what you have been learning." />
       <Loaded resource={overview} what="your learning">
         {(data) => (
           <>

@@ -128,7 +128,7 @@ describe("the orb on the page, from real events", () => {
   });
 
   it("names the new tools in plain words", () => {
-    expect(friendlyTool("xenio_teach")).toBe("writing the lesson");
+    expect(friendlyTool("xenio_teach")).toBe("getting that ready");
     expect(friendlyTool("xenio_image")).toBe("making a picture");
     expect(friendlyTool("xenio_form")).toBe("filling the form");
   });

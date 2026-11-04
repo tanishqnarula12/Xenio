@@ -224,19 +224,14 @@ def parse_form_command(text: str) -> bool:
     return bool(body) and len(body) <= 70 and any(pattern.match(body) for pattern in _FORM_FILL)
 
 
-# "teach me photosynthesis", "explain binary search with a flowchart", "mind map of the French Revolution", "quiz me on DBMS",
-# "newton ke laws samjhao". A named subject only: "explain this" points at something the model has to work out.
+# "make a full lesson on photosynthesis", "lesson on DBMS", "newton ke laws ka lesson banao": a whole written lesson, in so many words. Anything else about learning
+# ("teach me...", "what is...", "samjhao") the model answers in its reply, one step at a time. A named subject only: "a lesson on this" is for the model to work out.
 _REFERS = re.compile(r"\b(?:this|that|it|these|those|here|above|yeh|ye|woh|isko|usko|error|code|screen|page)\b", re.IGNORECASE)
+_LESSON = r"(?:full\s+|complete\s+|whole\s+|proper\s+|detailed\s+)?lesson"
 _TEACH = (
-    (re.compile(r"^(?:please\s+|can\s+you\s+|could\s+you\s+)?teach\s+me(?:\s+about)?\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "teach"),
-    (re.compile(r"^(?:please\s+|can\s+you\s+)?(?:explain|show)(?:\s+me)?\s+(?P<t>.+?)\s+(?:with|using|through|in)\s+(?:a\s+|an\s+|some\s+)?(?:flow\s?charts?|diagrams?|mind\s?maps?|visuals?|pictures?)(?:\s+please)?$", re.IGNORECASE), "visual"),
-    (re.compile(r"^(?:please\s+)?(?:make|draw|show|create|give)(?:\s+me)?\s+(?:a\s+|an\s+)?(?:flow\s?chart|mind\s?map|diagram|concept\s+map)\s+(?:of|for|on|about|explaining)\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "visual"),
-    (re.compile(r"^(?:please\s+)?explain\s+(?P<t>.+?)\s+(?:simply|in\s+simple\s+(?:words|terms)|like\s+i'?m\s+(?:five|5|a\s+kid))(?:\s+please)?$", re.IGNORECASE), "simple"),
-    (re.compile(r"^(?:please\s+)?quiz\s+me\s+(?:on|about)\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "quiz"),
-    (re.compile(r"^(?:please\s+)?test\s+(?:me\s+on|my\s+understanding\s+of)\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "test"),
-    (re.compile(r"^(?:mujhe\s+)?(?P<t>.+?)\s+(?:ko\s+)?(?:samjhao|samjha\s+do|sikhao|sikha\s+do|padhao|padha\s+do)(?:\s+(?:please|plz))?$", re.IGNORECASE), "teach"),
-    (re.compile(r"^(?:मुझे\s+)?(?P<t>.+?)\s+(?:को\s+)?(?:समझाओ|समझा\s+दो|सिखाओ|पढ़ाओ)$"), "teach"),
-    (re.compile(r"^(?:bitte\s+)?erkläre?\s+mir\s+(?P<t>.+?)(?:\s+bitte)?$", re.IGNORECASE), "teach"),
+    (re.compile(rf"^(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:make|write|create|give|prepare|build)(?:\s+me)?\s+(?:a\s+|an\s+)?{_LESSON}\s+(?:on|about|for|of)\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "teach"),
+    (re.compile(rf"^(?:a\s+)?{_LESSON}\s+(?:on|about)\s+(?P<t>.+?)(?:\s+please)?$", re.IGNORECASE), "teach"),
+    (re.compile(rf"^(?P<t>.+?)\s+(?:ka|ki|par|pe)\s+{_LESSON}\s+(?:banao|bana\s+do|do|de\s+do)(?:\s+(?:please|plz))?$", re.IGNORECASE), "teach"),
 )
 
 
@@ -282,7 +277,7 @@ def parse_image_command(text: str) -> dict | None:
 
 
 def parse_teach_command(text: str) -> dict | None:
-    """A request to learn a named subject, in so many words: {"topic", "mode"}."""
+    """A request for a whole written lesson on a named subject, in so many words: {"topic", "mode"}."""
     body = _NAME_PREFIX.sub("", (text or "").strip()).strip(" .!?,;:।")
     if not body or len(body) > 140:
         return None

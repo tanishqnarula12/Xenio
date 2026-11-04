@@ -179,3 +179,12 @@ describe("the mark", () => {
     expect(container.textContent).toBe("");
   });
 });
+
+describe("when Nabh is limiting requests", () => {
+  it("says it is waiting, in place of the usual words", async () => {
+    const api = new FakeApi();
+    api.image.mockResolvedValue(job({ state: "sending", note: "Nabh is limiting requests: trying again in 30 s" }));
+    show(api);
+    expect(await screen.findByText("Nabh is limiting requests: trying again in 30 s")).toBeInTheDocument();
+  });
+});

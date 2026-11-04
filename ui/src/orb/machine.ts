@@ -124,7 +124,7 @@ const TOOL_WORDS: Record<string, string> = {
   xenio_email_read: "reading an email", xenio_calendar_events: "checking your calendar", xenio_look_at_screen: "looking at your screen",
   xenio_find_ui: "reading the window", xenio_open_app: "opening an app", xenio_gui: "using the keyboard and mouse",
   xenio_media: "controlling music", terminal: "running a command", xenio_engineering: "the engineering team",
-  xenio_teach: "writing the lesson", xenio_image: "making a picture", xenio_form: "filling the form", xenio_browser: "working in the browser", xenio_profile: "checking your details",
+  xenio_teach: "getting that ready", xenio_image: "making a picture", xenio_form: "filling the form", xenio_browser: "working in the browser", xenio_profile: "checking your details",
   xenio_open_url: "opening a page", xenio_download_file: "downloading a file", patch: "editing a file", write_file: "writing a file",
 };
 

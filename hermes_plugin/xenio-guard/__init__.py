@@ -721,6 +721,15 @@ def _personal_note():
     return ("[XENIO context] " + "; ".join(parts) + ".") if parts else ""
 
 
+def _teaching_note(session):
+    """How to teach, every turn: the model itself sees when someone wants to learn. Not in a scheduled run, where nobody is there to choose what comes next."""
+    if str(session or "").startswith("cron_") or "app.tools.teacher" not in sys.modules:
+        return ""
+    from app.teacher.modes import TEACHING_NOTE
+
+    return TEACHING_NOTE
+
+
 def _lesson_note():
     """While a lesson is going on: where it stands, so a follow-up keeps its context."""
     tool = sys.modules.get("app.tools.teacher")
@@ -855,6 +864,7 @@ def _pre_llm_call(conversation_history=None, **_kwargs):
     except Exception as exc:  # context is a convenience; never break the turn
         _audit("CONTEXT_NOTE_FAILED", error=repr(exc))
     try:
+        notes.append(_teaching_note(session))
         notes.append(_lesson_note())
     except Exception as exc:  # noqa: BLE001
         _audit("CONTEXT_NOTE_FAILED", error=repr(exc))
@@ -995,7 +1005,7 @@ def _work_prompt(_info=None):
     if sys.platform != "darwin":
         return ""
     return ("FORMS, WEB JOBS: xenio_form, xenio_browser work in the user's signed-in browser; each call returns the page: never look "
-            "at the screen to check. LEARNING: xenio_teach. PICTURES: xenio_image.\n")
+            "at the screen to check. LEARNING: teach in your reply, xenio_teach for extras. PICTURES: xenio_image.\n")
 
 
 def _make_handler(tool):

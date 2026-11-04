@@ -104,6 +104,9 @@ replaced by «…»).
 conversation for when you are not talking: the whole conversation on one page, no orb, and typed replies stay on screen instead of being spoken. Its words above the box say what
 XENIO is doing while it does it. Both are the same conversation, so you can move between them at any time.
 
+**Your chats** are listed on the Chat page, newest first, as in Claude or ChatGPT (`app/ui/history.py`, `chats.db` in XENIO's data folder, readable by you alone, words kept after redaction). Open one and carry on: nothing goes to a model until you write, and then it gets a fresh session
+with a record of how that chat went, marked so that nothing in it can count as a request or a yes today. Search looks through the words as well as the names. Delete one or all; the chats that came over from Hermes the first time stay in Hermes' own record. No chat is created until you write in it.
+
 ## The orb
 
 Sixteen states. The backend decides what XENIO is doing (`app/ui/assistant.py`), including what its talk engine is

@@ -68,7 +68,7 @@ class Provider:
 
 def make(tmp_path, provider=None, background=False, refiner=None, clock=time.time, notify=None):
     made = provider if provider is not None else Provider()
-    return ImageStudio(tmp_path / "images", provider_factory=lambda: made, refiner=refiner or (lambda words: f"vivid {words}"), background=background, clock=clock, notify=notify), made
+    return ImageStudio(tmp_path / "images", provider_factory=lambda: made, refiner=refiner or (lambda words: f"vivid {words}"), background=background, clock=clock, notify=notify, pause=lambda seconds, job: None), made
 
 
 def wait_until(check, seconds=5.0):
@@ -191,6 +191,41 @@ class TestWhenItFails:
         provider.error = None
         again = studio.retry(failed["id"])
         assert again["id"] != failed["id"] and studio.get(again["id"])["state"] == "complete" and studio.get(failed["id"])["state"] == "failed"
+
+
+class TestWhenNabhIsLimiting:
+    def test_it_waits_as_told_and_goes_again(self, tmp_path):
+        provider, waits, seen = Provider(), [], []
+        tries = [ImageError("rate_limit", "limited", 30)]
+        original = provider.generate
+
+        def generate(prompt, size, negative="", seed=None):
+            if tries:
+                raise tries.pop()
+            return original(prompt, size, negative, seed)
+
+        provider.generate = generate
+        studio = ImageStudio(tmp_path / "i", provider_factory=lambda: provider, refiner=lambda w: w, background=False, pause=lambda s, j: waits.append(s), notify=lambda job: seen.append(job.get("note")))
+        job = studio.get(studio.submit("a fox")["id"])
+        assert job["state"] == "complete" and waits == [30] and not job["note"]
+        assert "Nabh is limiting requests: trying again in 30 s" in seen
+
+    def test_after_its_tries_it_says_so(self, tmp_path):
+        studio, provider = make(tmp_path, Provider(error=ImageError("rate_limit", "Nabh is limiting requests right now", 5)))
+        job = studio.get(studio.submit("a fox")["id"])
+        assert job["state"] == "failed" and job["error"]["kind"] == "rate_limit" and len(provider.calls) == 3
+
+    def test_a_very_long_wait_is_not_waited_for(self, tmp_path):
+        studio, provider = make(tmp_path, Provider(error=ImageError("rate_limit", "limited", 3000)))
+        assert studio.get(studio.submit("a fox")["id"])["state"] == "failed" and len(provider.calls) == 1
+
+    def test_cancelling_ends_the_wait(self, tmp_path):
+        provider = Provider(error=ImageError("rate_limit", "limited", 60))
+        holder = {}
+        studio = ImageStudio(tmp_path / "i", provider_factory=lambda: provider, refiner=lambda w: w, background=False, pause=lambda s, j: holder["s"].cancel(j))
+        holder["s"] = studio
+        job = studio.get(studio.submit("a fox")["id"])
+        assert job["state"] == "cancelled" and len(provider.calls) == 1
 
 
 class TestCancelling:

@@ -60,7 +60,7 @@ _SAY = {
            "form_done": "Filled {n} fields and checked them.", "form_none": "Your profile has nothing for this form yet: add your details on the Profile page, or tell me them.",
            "form_failed": "Could not enter {what}.", "form_ask": "Tell me your answers for: {what}.",
            "form_not_sent": "It is not submitted: check it first.",
-           "image_started": "Making it now.", "image_started_many": "Making {n} pictures now.", "lesson_writing": "Writing your lesson on {topic}.", "lesson_unknown": "I don't know {topic} well enough to teach it without making things up. {why} If you have notes on it, add the file and I'll teach from them.", "lesson_first_question": "Let's see what stuck:",
+           "image_started": "Making it now.", "image_started_many": "Making {n} pictures now.", "lesson_writing": "Writing your lesson on {topic}.", "lesson_unknown": "I don't know {topic} well enough to teach it without making things up. {why} If you have notes on it, add the file and I'll teach from them.", 
            "clicked": "Clicked {what}.", "clicked_unconfirmed": "I clicked {what}, but nothing visibly changed.",
            "scrolled": "Scrolled.",
            "fail": "That didn't work: {why}"},
@@ -73,7 +73,7 @@ _SAY = {
            "form_done": "{n} फ़ील्ड भर दिए और जाँच लिए।", "form_none": "इस फ़ॉर्म के लिए आपकी प्रोफ़ाइल में अभी कुछ नहीं है: Profile पेज पर जोड़ दीजिए या मुझे बता दीजिए।",
            "form_failed": "{what} नहीं भर पाया।", "form_ask": "इनके जवाब बता दीजिए: {what}।",
            "form_not_sent": "सबमिट नहीं किया है: पहले देख लीजिए।",
-           "image_started": "बना रहा हूँ।", "image_started_many": "{n} तस्वीरें बना रहा हूँ।", "lesson_writing": "{topic} का पाठ लिख रहा हूँ।", "lesson_unknown": "{topic} के बारे में मुझे इतना नहीं पता कि बिना कुछ गढ़े सिखा सकूँ। {why} आपके पास नोट्स हों तो फ़ाइल जोड़ दीजिए, मैं उन्हीं से सिखाऊँगा।", "lesson_first_question": "चलिए देखते हैं:",
+           "image_started": "बना रहा हूँ।", "image_started_many": "{n} तस्वीरें बना रहा हूँ।", "lesson_writing": "{topic} का पाठ लिख रहा हूँ।", "lesson_unknown": "{topic} के बारे में मुझे इतना नहीं पता कि बिना कुछ गढ़े सिखा सकूँ। {why} आपके पास नोट्स हों तो फ़ाइल जोड़ दीजिए, मैं उन्हीं से सिखाऊँगा।", 
            "clicked": "{what} पर क्लिक कर दिया।", "clicked_unconfirmed": "{what} पर क्लिक किया, पर स्क्रीन पर कुछ नहीं बदला।",
            "scrolled": "स्क्रॉल कर दिया।",
            "time": "अभी {time} हुए हैं।", "fail": "नहीं हो पाया: {why}"},
@@ -86,7 +86,7 @@ _SAY = {
            "form_done": "{n} Felder ausgefüllt und geprüft.", "form_none": "Dein Profil enthält dafür noch nichts: füge es auf der Profilseite hinzu oder sag es mir.",
            "form_failed": "{what} konnte nicht eingetragen werden.", "form_ask": "Sag mir deine Antworten für: {what}.",
            "form_not_sent": "Nicht abgeschickt: prüfe es zuerst.",
-           "image_started": "Ich mache es jetzt.", "image_started_many": "Ich mache jetzt {n} Bilder.", "lesson_writing": "Ich schreibe deine Lektion zu {topic}.", "lesson_unknown": "Ich kenne {topic} nicht gut genug, um es zu unterrichten, ohne etwas zu erfinden. {why} Wenn du Notizen hast, füge die Datei hinzu, dann unterrichte ich danach.", "lesson_first_question": "Mal sehen, was hängen geblieben ist:",
+           "image_started": "Ich mache es jetzt.", "image_started_many": "Ich mache jetzt {n} Bilder.", "lesson_writing": "Ich schreibe deine Lektion zu {topic}.", "lesson_unknown": "Ich kenne {topic} nicht gut genug, um es zu unterrichten, ohne etwas zu erfinden. {why} Wenn du Notizen hast, füge die Datei hinzu, dann unterrichte ich danach.", 
            "clicked": "{what} geklickt.", "clicked_unconfirmed": "Ich habe {what} geklickt, aber nichts hat sich sichtbar geändert.",
            "scrolled": "Gescrollt.",
            "fail": "Das hat nicht geklappt: {why}"},
@@ -299,14 +299,12 @@ class FastPath:
 
         tell("in_progress")
 
-        def run() -> tuple[dict, dict | None]:
+        def run() -> dict:
             self.teacher.start(lesson["topic"], mode=lesson["mode"], language=language)
-            made = self.teacher.compose(lesson["topic"], mode=lesson["mode"])
-            first = made["questions"][0]["id"] if made.get("questions") else None
-            return made, self.teacher.ask(first)["question"] if first else None
+            return self.teacher.compose(lesson["topic"], mode=lesson["mode"])
 
         try:
-            made, question = await asyncio.to_thread(run)
+            made = await asyncio.to_thread(run)
         except UnknownSubject as exc:  # said plainly: a model asked to teach it anyway would make something up
             tell("completed")
             return FastReply(say["lesson_unknown"].format(topic=lesson["topic"], why=str(exc)), True, [], "", int((time.monotonic() - started) * 1000))
@@ -316,14 +314,9 @@ class FastPath:
             return None
         tell("completed")
         line = str(made.get("overview") or made.get("title") or "")
-        if question:
-            line += "\n\n" + say["lesson_first_question"] + " " + question["question"]
-            if question["options"]:
-                line += "\n\n" + "\n".join(f"- {chr(65 + i)}. {o}" for i, o in enumerate(question["options"]))
         ms = int((time.monotonic() - started) * 1000)
         event(log, "FAST_PATH", steps=1, ok=True, ms=ms, action="teach", diagrams=len(made.get("diagrams") or []))
-        note = (f"[XENIO wrote a lesson itself just now, shown as a card with its diagrams: {made.get('title')}. A question is waiting: id {question['id']}.]" if question
-                else f"[XENIO wrote a lesson itself just now, shown as a card: {made.get('title')}.]")
+        note = f"[XENIO wrote a lesson itself just now, shown as a card: {made.get('title')}.]"
         return FastReply(line, True, [ToolActivity("fast-0", "fast: write a lesson", "fast", "completed")], note, ms, [made["card"]])
 
     @property

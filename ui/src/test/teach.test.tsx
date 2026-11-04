@@ -101,6 +101,70 @@ describe("text in a lesson", () => {
   });
 });
 
+describe("a well-formatted answer", () => {
+  it("shows headings as headings, not as words with hashes", () => {
+    render(<RichText text={"## How it works\n\nSome words.\n\n### A detail\nMore words."} />);
+    expect(screen.getByRole("heading", { level: 3, name: "How it works" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 4, name: "A detail" })).toBeInTheDocument();
+    expect(screen.queryByText(/#/)).toBeNull();
+  });
+
+  it("shows a table as a table, its cells formatted", () => {
+    render(<RichText text={"| | TCP | UDP |\n|---|---|---|\n| **Order** | kept | not kept |\n| Speed | slower | faster |\n\nAfter."} />);
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "TCP" })).toBeInTheDocument();
+    expect(screen.getByRole("rowheader", { name: "Order" }).querySelector("strong")).toHaveTextContent("Order");
+    expect(screen.getByRole("cell", { name: "not kept" })).toBeInTheDocument();
+    expect(screen.getByText("After.")).toBeInTheDocument();
+    expect(screen.queryByText(/\|/)).toBeNull();
+  });
+
+  it("leaves a line with a pipe in it as words when it is no table", () => {
+    render(<RichText text={"use a | b for that"} />);
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByText("use a | b for that")).toBeInTheDocument();
+  });
+
+  it("keeps the numbers of steps split by blank lines", () => {
+    const { container } = render(<RichText text={"1. First\n\n2. Second\n\n3. Third"} />);
+    expect(Array.from(container.querySelectorAll("ol")).map((o) => o.getAttribute("start"))).toEqual(["1", "2", "3"]);
+  });
+
+  it("shows quotes and rules, and markup in them stays words", () => {
+    const { container } = render(<RichText text={"> a *wise* <b>saying</b>\n\n---\n\nnext"} />);
+    expect(container.querySelector("blockquote em")).toHaveTextContent("wise");
+    expect(container.querySelector("blockquote b")).toBeNull();
+    expect(container.querySelector("hr")).not.toBeNull();
+  });
+
+  it("shows a formula written in LaTeX as a formula", () => {
+    const { container } = render(<p><Inline text={"Water is $H_2O$, so $6CO_2 + 6H_2O \\rightarrow C_6H_{12}O_6$ and $x^2$"} /></p>);
+    expect(container.textContent).toBe("Water is H2O, so 6CO2 + 6H2O → C6H12O6 and x2");
+    expect(container.querySelectorAll("sub").length).toBe(6);
+    expect(container.querySelector("sup")).toHaveTextContent("2");
+    expect(container.textContent).not.toContain("$");
+  });
+
+  it.each(["It costs $5 and $10 today", "from $5-$10", "pay $20.", "a $ sign", "US$ and $"])("leaves money alone: %s", (words) => {
+    const { container } = render(<p><Inline text={words} /></p>);
+    expect(container.textContent).toBe(words);
+    expect(container.querySelector(".rich__formula")).toBeNull();
+  });
+
+  it("markup inside a formula stays words", () => {
+    const { container } = render(<p><Inline text={"$<img src=x onerror=alert(1)>$"} /></p>);
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("a diagram that cannot be drawn shows what it says, never a blank", async () => {
+    vi.doMock("mermaid", () => ({ default: { initialize() {}, render: async () => { throw new Error("no"); } } }));
+    render(<MermaidView source={"flowchart TD; a-->b"} alt="x" showSource />);
+    expect(await screen.findByText(/could not be drawn/, undefined, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.getByText(/flowchart TD; a-->b/)).toBeInTheDocument();
+    vi.doUnmock("mermaid");
+  }, 10000);
+});
+
 describe("one broken part does not take the page with it", () => {
   function Bomb(): never { throw new Error("boom"); }
 
@@ -330,6 +394,19 @@ describe("a lesson", () => {
     api.lesson.mockRejectedValue(new Error("that lesson is not there any more"));
     within_app(api, <LessonPlayer id={7} />);
     expect(await screen.findByText(/not there any more/)).toBeInTheDocument();
+  });
+});
+
+describe("a lesson's questions", () => {
+  it("are together at the end, never popping up between its sections", async () => {
+    const api = new FakeApi();
+    api.lesson.mockResolvedValue(lesson());
+    within_app(api, <LessonPlayer id={7} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Show it all" }));
+    const question = await screen.findByText("Oxygen comes from?");
+    const heading = screen.getByRole("heading", { name: "Show what you know" });
+    expect(heading.compareDocumentPosition(question) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sugar" }).compareDocumentPosition(question) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 

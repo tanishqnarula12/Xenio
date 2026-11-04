@@ -126,7 +126,6 @@ function stagesOf(lesson: Lesson, refresh: () => void): Stage[] {
   const asks = [...questions];
   (pack.sections ?? []).forEach((section, i) => {
     const d = diagrams.shift(), act = activities.shift();
-    const q = i % 2 === 1 ? asks.shift() : undefined;
     add(`s${i}`, section.heading, (
       <section className="lesson-section">
         <h3>{section.heading}</h3>
@@ -134,7 +133,6 @@ function stagesOf(lesson: Lesson, refresh: () => void): Stage[] {
         <AskMore heading={section.heading} />
         {d && <ErrorBoundary what="This diagram"><DiagramView diagram={d} /></ErrorBoundary>}
         {act && <ErrorBoundary what="This activity"><ActivityView a={act.a} lesson={lesson.id} index={act.index} /></ErrorBoundary>}
-        {q && <ErrorBoundary what="This question"><QuestionCard question={q} onChange={refresh} /></ErrorBoundary>}
       </section>
     ));
   });

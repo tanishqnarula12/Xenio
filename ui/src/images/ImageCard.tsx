@@ -109,7 +109,7 @@ export function ImageCard({ id }: { id: string }) {
       </div>
       <div className="image-card__foot">
         <p className="image-card__prompt" title={job.prompt}>{job.prompt}</p>
-        <p className={`image-state image-state--${job.state}`} role="status" aria-live="polite">{active ? `${WORDS[job.state]}…` : WORDS[job.state]}{job.state === "complete" && job.ms ? ` · ${(job.ms / 1000).toFixed(0)} s` : ""}</p>
+        <p className={`image-state image-state--${job.state}`} role="status" aria-live="polite">{active ? job.note || `${WORDS[job.state]}…` : WORDS[job.state]}{job.state === "complete" && job.ms ? ` · ${(job.ms / 1000).toFixed(0)} s` : ""}</p>
         <div className="image-actions">
           {active && <button type="button" className="btn btn--quiet" disabled={busy} onClick={() => void act("cancel")}><Square size={13} aria-hidden="true" /> Cancel</button>}
           {(job.state === "failed" || job.state === "cancelled") && job.error?.kind !== "config" && <button type="button" className="btn" disabled={busy} onClick={() => void act("retry")}><RotateCcw size={13} aria-hidden="true" /> Try again</button>}
