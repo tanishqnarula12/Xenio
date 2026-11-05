@@ -58,7 +58,8 @@
   <circle cx="1098" cy="215" r="4" fill="#D895FF"><animate attributeName="opacity" values="1;.35;1" dur="4.6s" repeatCount="indefinite"/></circle>
   <circle cx="1070" cy="77" r="2.5" fill="#86F7E5"><animate attributeName="cy" values="77;72;77" dur="5s" repeatCount="indefinite"/></circle>
   <text x="76" y="105" fill="#A6F7E8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" letter-spacing="4">VOICE · TOOLS · SAFETY</text>
-  <text x="72" y="190" fill="#F6F8FF" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="76" font-weight="750" letter-spacing="-3">XENIO</text>
+  <path transform="translate(60.5 130.1) scale(0.127)" fill="#F6F8FF" d="M112 40L222 74L400 472L290 438ZM412 30L286.4 193.5L296.7 216.6ZM100 482L225.6 318.5L215.3 295.4Z"/>
+  <text x="117" y="190" fill="#F6F8FF" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="76" font-weight="750" letter-spacing="-3">ENIO</text>
   <text x="78" y="232" fill="#C7D0EA" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="21">A voice-first control layer for Hermes Agent</text>
   <rect x="78" y="263" width="150" height="1" fill="#536385"/>
   <text x="78" y="289" fill="#9AA8C8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" letter-spacing="1.2">YOUR ASSISTANT. YOUR APPROVAL.</text>

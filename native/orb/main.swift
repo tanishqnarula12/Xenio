@@ -27,6 +27,8 @@ struct Launch: Decodable {
 }
 
 private let postedMark: Int64 = 0x58454E49  // "XENI": events this helper re-posts, which its own tap must let through
+private let openWindowNotice = Notification.Name("local.xenio.orb.open-window")  // carries nothing: all it can do is show the window
+private let usualPort = 8765  // XENIO's default: the Dock has no way to say otherwise
 
 final class OrbPanel: NSPanel {
     /// Only while the quick chat is open: then it takes the keyboard like Spotlight does, without activating XENIO Orb
@@ -113,6 +115,17 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
         applyShortcut("triple_space")
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(openWindowFromOutside), name: openWindowNotice, object: nil)
+    }
+
+    /// Clicking the Dock icon while XENIO is running, with its window closed.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openMissionControl()
+        return false
+    }
+
+    @objc func openWindowFromOutside() {
+        openMissionControl()
     }
 
     func buildPanel() {
@@ -395,8 +408,11 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
                                        completionHandler: nil)
         }
         NSApp.setActivationPolicy(.regular)  // a real window: in the Dock and Command-Tab while it is open
-        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        // Only ever because you asked for it. The newer NSApp.activate() only asks politely: started in the background by
+        // XENIO, the window opened behind whatever you were using, and looked as if nothing had happened
+        NSApp.activate(ignoringOtherApps: true)
         appWindow?.makeKeyAndOrderFront(nil)
+        appWindow?.orderFrontRegardless()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -434,6 +450,8 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         let app = NSMenu(title: "XENIO")
         app.addItem(withTitle: "Hide XENIO", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         app.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        app.addItem(.separator())
+        app.addItem(withTitle: "Quit XENIO", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")  // a clean exit, which XENIO takes as "stop everything"
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
@@ -717,8 +735,68 @@ if CommandLine.arguments.contains("--selftest") {
     exit(failures.isEmpty ? 0 : 1)
 }
 
-guard let line = readLine(), let data = line.data(using: .utf8),
-      let launch = try? JSONDecoder().decode(Launch.self, from: data) else {
+/// Does XENIO answer on its usual port? Its page says who it is, and that needs no session key.
+func xenioAnswers() -> Bool {
+    guard let url = URL(string: "http://127.0.0.1:\(usualPort)/") else { return false }
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 1.5
+    let done = DispatchSemaphore(value: 0)
+    var answered = false
+    URLSession.shared.dataTask(with: request) { data, _, _ in
+        if let data, String(decoding: data.prefix(2000), as: UTF8.self).contains("<title>XENIO") { answered = true }
+        done.signal()
+    }.resume()
+    _ = done.wait(timeout: .now() + 2)
+    return answered
+}
+
+func couldNotStart(_ why: String) -> Never {
+    let application = NSApplication.shared
+    application.setActivationPolicy(.regular)
+    application.activate(ignoringOtherApps: true)
+    let alert = NSAlert()
+    alert.messageText = "XENIO could not start"
+    alert.informativeText = why
+    alert.runModal()
+    exit(1)
+}
+
+/// The Dock or Finder starts this app with nothing on stdin. Only XENIO can give the orb its session key, so this
+/// starts XENIO, which then starts its own orb and opens the window. If XENIO is already running, this shows its window.
+func startedByHand() -> Never {
+    if xenioAnswers() {
+        DistributedNotificationCenter.default().postNotificationName(openWindowNotice, object: nil, userInfo: nil, deliverImmediately: true)
+        Thread.sleep(forTimeInterval: 0.2)
+        exit(0)
+    }
+    let root = Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    guard FileManager.default.isExecutableFile(atPath: root.appendingPathComponent(".venv/bin/python").path) else {
+        couldNotStart("Its Python environment is missing from \(root.path)/.venv.")
+    }
+    let logPath = NSHomeDirectory() + "/Library/Logs/XENIO.log"
+    FileManager.default.createFile(atPath: logPath, contents: nil, attributes: [.posixPermissions: 0o600])
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    // a login shell, because the Dock's own PATH has none of what XENIO needs (hermes, node, npm)
+    process.arguments = ["-lic", "cd \"$1\" && exec .venv/bin/python -m app.main --ui", "xenio", root.path]
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = FileHandle.nullDevice  // XENIO prints its session key there: it must not reach a file
+    process.standardError = FileHandle(forWritingAtPath: logPath) ?? FileHandle.nullDevice
+    do {
+        try process.run()
+    } catch {
+        couldNotStart("It could not be launched: \(error.localizedDescription)")
+    }
+    for _ in 0..<120 {
+        if xenioAnswers() { exit(0) }
+        if !process.isRunning { break }
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+    couldNotStart("It did not come up. What it said is in \(logPath).")
+}
+
+guard let line = readLine() else { startedByHand() }
+guard let data = line.data(using: .utf8), let launch = try? JSONDecoder().decode(Launch.self, from: data) else {
     FileHandle.standardError.write("XENIO Orb: expected one JSON line on stdin\n".data(using: .utf8)!)
     exit(2)
 }

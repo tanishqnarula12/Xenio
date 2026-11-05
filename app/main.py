@@ -223,11 +223,39 @@ class _UiNotifications:
         return self._inner.add(title, message, **kw) if self._inner is not None else None
 
 
+def _xenio_answers(port: int) -> bool:
+    """Is it XENIO that has this port? Its page says so, and that needs no session key."""
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/", timeout=1.5) as page:
+            return b"<title>XENIO" in page.read(2000)
+    except OSError:
+        return False
+
+
+def _show_running_window() -> None:
+    """Asks the running XENIO to show its window, the way clicking its Dock icon does."""
+    import subprocess
+
+    from app.overlay import APP_BUNDLE, supported
+
+    if supported() and APP_BUNDLE.exists():
+        subprocess.run(["/usr/bin/open", str(APP_BUNDLE)], check=False, timeout=10)
+
+
 async def _run_ui(settings: Settings, args: argparse.Namespace) -> int:
     """XENIO's interface in the browser: the same orchestrator, gate, engineering team and scheduler as the other
     modes; the browser answers the PermissionGate's questions (app/ui)."""
     import signal
     import webbrowser
+
+    if _xenio_answers(args.ui_port):  # before anything else starts: a second copy must not touch the first one's Hermes
+        print("XENIO is already running. Showing its window.")
+        if not args.no_browser:
+            _show_running_window()
+        return 0
 
     from app.logging_setup import Redactor
     from app.safety.policy import secret_env_values
@@ -286,6 +314,7 @@ async def _run_ui(settings: Settings, args: argparse.Namespace) -> int:
         if supported():  # the floating orb + summon shortcut (built on first use: ~30 s, in the background)
             ctl.overlay = OrbHelper(f"{server.url}?view=orb#token={server.token}", settings.data_dir / "orb.lock")
             ctl.overlay.on_event = ctl.record_system
+            ctl.overlay.on_quit = lambda: os.kill(os.getpid(), signal.SIGTERM)  # Quit means all of XENIO, by the same way out as a normal stop
 
             def start_orb() -> None:
                 # Mission Control opens in its own Mac window (XENIO Orb's), the browser only when that cannot work

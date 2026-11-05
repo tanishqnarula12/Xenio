@@ -10,7 +10,7 @@ components, and XENIO decides everything.
 ```bash
 cd ~/Desktop/Xenio/"Xenio Personal Ai"
 cd ui && npm install && npm run build && cd ..   # once, and after UI changes
-.venv/bin/python -m app.main --ui                 # opens http://127.0.0.1:8765 with this session's key
+.venv/bin/python -m app.main --ui                 # opens http://127.0.0.1:8765 with this session's key (if XENIO is already running, shows its window)
 ```
 
 Options: `--ui-port 8766`, `--no-browser` (prints the address), `--new-session`, `--ui-no-voice` (leave the Mac's

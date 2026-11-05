@@ -77,6 +77,7 @@ class OrbHelper:
         self.restart_delay = 1.0
         self.status: dict = {}  # what the helper reported (shortcut, permissions, screens)
         self.on_event = None  # (what, tone) -> None: crashes and recoveries, for Activity
+        self.on_quit = None  # () -> None: you quit XENIO from its menu or its Dock icon
 
     @property
     def running(self) -> bool:
@@ -140,6 +141,10 @@ class OrbHelper:
             return
         if code in (-signal.SIGINT, -signal.SIGTERM):
             return  # Control-C (or a stop) sent to XENIO's process group reaches the helper too: nothing crashed
+        if code == 0:  # it only exits cleanly when you quit it: that is not a crash to recover from, it means stop
+            if self.on_quit is not None:
+                self.on_quit()
+            return
         now = time.monotonic()
         self._restarts = [t for t in self._restarts if now - t < RESTART_WINDOW] + [now]
         event(log, "XENIO Orb stopped unexpectedly", logging.WARNING, code=code, error=err.strip()[-200:])

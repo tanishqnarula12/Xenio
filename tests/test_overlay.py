@@ -81,6 +81,31 @@ def test_restarts_after_a_crash_but_not_forever(tmp_path, monkeypatch):
     assert "kept stopping" in h.problem and len(made) == O.MAX_RESTARTS + 1
 
 
+def test_quitting_it_quits_xenio_and_does_not_bring_it_back(tmp_path, monkeypatch):
+    monkeypatch.setattr(O, "supported", lambda: True)
+    h, made = helper(tmp_path, [FakeProc(exits_with=0)])
+    quits = []
+    h.on_quit = lambda: quits.append(True)
+    h.start()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not quits:
+        time.sleep(0.02)
+    time.sleep(0.1)
+    assert quits == [True] and len(made) == 1
+
+
+def test_a_crash_is_not_taken_for_quitting(tmp_path, monkeypatch):
+    monkeypatch.setattr(O, "supported", lambda: True)
+    h, made = helper(tmp_path, [FakeProc(exits_with=1, err="boom"), FakeProc()])
+    quits = []
+    h.on_quit = lambda: quits.append(True)
+    h.start()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and len(made) < 2:
+        time.sleep(0.02)
+    assert quits == [] and len(made) == 2
+
+
 def test_a_second_orb_is_reported_not_restarted(tmp_path, monkeypatch):
     monkeypatch.setattr(O, "supported", lambda: True)
     h, made = helper(tmp_path, [FakeProc(exits_with=3, err="XENIO Orb: already running\n")])

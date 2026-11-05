@@ -1,9 +1,5 @@
 <p align="center">
-  <img src="docs/assets/xenio-logo.svg" alt="XENIO" width="112">
-</p>
-
-<p align="center">
-  <img src="docs/assets/xenio-banner.svg?v=4" alt="XENIO — a voice-first control layer for Hermes Agent" width="100%">
+  <img src="docs/assets/xenio-banner.svg?v=5" alt="XENIO — a voice-first control layer for Hermes Agent" width="100%">
 </p>
 
 <p align="center">
@@ -78,6 +74,8 @@ Add the credentials for the features you want to use to `.env`, then check the s
 python -m app.main --health
 python -m app.main
 ```
+
+On a Mac, once it has been built, click XENIO's Dock icon: that starts it, and shows its window if it is already running. Closing the window leaves XENIO running. **Quit XENIO** (Cmd+Q, or the Dock's Quit) stops all of it.
 
 Launch the interface with `python -m app.main --ui`. Build it once first:
 
