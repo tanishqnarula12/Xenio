@@ -268,14 +268,18 @@ class AgentRegistry:
 
     # ---- the agents XENIO already has ------------------------------------------------------------------------------------
 
+    def _first_model(self, agent_id: str) -> str:
+        rows = self.store.query("SELECT body FROM agent_versions WHERE agent_id = ? ORDER BY version LIMIT 1", (agent_id,))
+        return str(json.loads(rows[0]["body"]).get("model") or "") if rows else ""
+
     def seed_builtin(self, roles: dict[str, Role]) -> None:
         for name, role in roles.items():
             found = self.get(name)
             if found is None:  # no model from the older team's settings: choosing one per agent is the point here, and that file pinned everyone to one heavy route
                 self.create(Agent(id=name, name=role.title, role=name, description=role.responsibilities, instructions=role.rules, responsibilities=[role.responsibilities], expertise=sorted(tokens(role.title, role.responsibilities))[:24],
                                   capabilities=list(role.capabilities), kind="permanent", source="builtin", memory_scope="project"), "system", "one of XENIO's engineering roles")
-            elif found.source == "builtin" and found.version == 1 and (found.model or found.provider):  # seeded with that pin, and never chosen by you
-                self._write(replace(found, model="", provider="", version=2), "released from the older team's single model", "system", new=False)
+            elif found.source == "builtin" and (found.model or found.provider) and (found.version == 1 or self._first_model(name) == found.model):  # seeded with that pin and never chosen by you, however many versions it has had since. A README on it cost 151,000 tokens
+                self._write(replace(found, model="", provider="", version=found.version + 1), "released from the older team's single model", "system", new=False)
 
 
 def new_id(name: str) -> str:

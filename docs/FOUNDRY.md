@@ -69,7 +69,8 @@ No one model carries the work. Each kind of work has its own pool, a task goes t
 | Work | Models | Why |
 |---|---|---|
 | Backend, general building | GLM-5.2, Kimi Code, Qwen 3.5 | Measured on one real tool job: 6 s, 9 s and 8 s |
-| Frontend, tests | Kimi Code, GLM-5.2, Qwen 3.5 | Same measurement, a different one first, so the load spreads |
+| Pages and frontend | GLM-5.2, Kimi Code, Qwen 3.5 | GLM-5.2 made the best page on the same request |
+| Tests | Kimi Code, Qwen 3.5, GLM-5.2 | Same tool-job measurement, a different one first, so the load spreads |
 | Docs and small jobs | Qwen 3.5, Kimi Code, GLM-5.2 | The cheapest that does the job well |
 | Review | DeepSeek V4 Pro, GPT-OSS, GLM-5.2 | Reads a diff and answers once, with no tools |
 | Debating | DeepSeek V4 Flash, GPT-OSS, DeepSeek V4 Pro, Kimi Code | Different models on purpose: 5 to 9 s each |
@@ -80,25 +81,36 @@ The DeepSeek models answered without calling tools at all in that test, so they 
 
 ## What it costs
 
-The first real work through the War Room cost 8.7 million tokens, all of it on one model through Hermes, at about 30,000 tokens a step. That was too much, so the costs were cut at each source:
+A plain page costs about 25,000 tokens. It once cost 990,000, and the first real work through the War Room cost 8.7 million. Each cut below comes from reading where real runs spent their tokens.
 
 | Where tokens went | What it does now |
 |---|---|
-| Every step re-sent the whole conversation through Hermes | Agents run on XENIO's own loop, which sends a short prompt, cuts old tool output and replaces written files with one line |
-| Reviewers explored the repository with tools | One message with the diff, then only what changed since the last round |
-| Every job got debates, rounds and milestones meant for a large one | XENIO sizes the job first: a small one has no debate and two rounds |
-| A false finding sent the team round and round | The false findings are gone (see the security page), and a medium finding gets one pass, not all of them |
-| A crash for a missing package meant an agent reading the traceback | XENIO reads the crash and installs the package itself, at no cost in tokens |
-| A test agent wrote the same two files 16 times and never ran them | A file is written at most 3 times between runs. After that the write is refused and the agent is told to run it |
-| An agent kept trying to fix tests when the bug was in code it may not change (450,000 tokens across two turns) | Failing tests go to the code's owner when the review points there. The same command failing 5 times ends the turn |
-| One turn could spend past the whole budget, because the budget was checked only between turns | Each task has its own limit: 100,000 tokens on a small job, 150,000 medium, 220,000 large. It is told to finish at 70% and stopped at 100% |
+| A goal check that reads only the start of each file said a page had no CSS, and started a second milestone (619,000) | A small job is judged by its checks and its review, and you can ask for a change. Bigger jobs are told that a file they cannot see into is not missing |
+| An agent with tools re-read and rewrote its own page (29,000 to 83,000) | One page is one call with no tools (about 9,000), and XENIO saves what comes back. Anything bigger still gets agents with tools |
+| Flask, tests and a README for a page that needed none | The planner makes a static site one task, with no server, tests or README. XENIO opens the page to check it |
+| Agents told to read every skill tagged for their job (up to 6 at once, kept in context on every step) | The one or two that really fit, distilled once and put in the prompt, so there is nothing to read |
+| The docs agent still on the older team's model through Hermes (151,000 for a README) | Released when XENIO starts. A model you chose yourself stays |
+| A task stopped at its limit was run again (208,000) | A task that hits its limit or gets stuck is not repeated |
+| Python could not start inside the sandbox, so agents spent whole turns on `which python` | Fixed: a project's Python can reach its own files |
+| A test agent wrote the same two files 16 times and never ran them | A file is written at most 3 times between runs |
+| Failing commands retried with small changes each time | 8 failed commands in one turn end it, as do 5 of the same one |
+| An agent kept fixing tests when the bug was in code it may not change | Failing tests go to the code's owner when the review points there |
+| One turn could spend past the whole budget | Each task has a limit: 60,000 tokens on a small job, 120,000 medium, 180,000 large. Fixes get 20,000 to 80,000, and docs 20,000. It is told to finish at 70% and stopped at 100% |
+| Reviewers explored the repository with tools | One message with the diff, then only what changed. A security review is skipped when only static files changed, and the scanner still reads them |
+| Small findings sent back to be fixed | On a small job only what blocks it gets fixed. On a page, that includes anything a visitor would see broken |
 
-Each workflow stops and asks when it reaches its budget: 500,000 tokens for a small job, 1.5 million for a medium one, 4 million for a large one. **Add more budget** on the page doubles it.
+Each workflow stops and asks when it reaches its budget: 200,000 tokens for a small job, 800,000 for a medium one, 2.5 million for a large one. **Add more budget** on the page doubles it.
 
 * The War Room shows real tokens as a bar at the top and, for each model, what it used. Nabh reports real usage at the end of a stream, and that is what is counted. A model that does not report it is estimated from its text.
 * If the account runs out, the work pauses with nothing lost. Add credit and press Resume. Nabh has no balance check, so XENIO learns this only when a request is refused.
 * Voice transcription, the teacher and images share that account. A big build can leave them short.
-* Pinning an agent to a model through Hermes goes back to the expensive route for that agent.
+* Pinning an agent to a model through Hermes goes back to the expensive route for that agent, with no per-task limit.
+
+## How a page gets made
+
+A page is one model call with a strong brief: a concept first, type with character, visuals it can really draw, and nothing covering the text. It runs at a higher temperature than code does, on GLM-5.2. That is what made the best pages on the same request, ahead of Kimi Code and of any agent with tools. XENIO saves the file and opens it, and one reviewer reads it.
+
+Pages vary from run to run. **Nobody looks at a page before you do:** the reviewer reads the code, and XENIO checks that it opens. So a layout problem can still reach you. Tell the team, and it fixes it.
 
 ## People helping each other
 
@@ -137,7 +149,7 @@ Give it a GitHub link, or just `owner/repo`. A repository holding many skills sh
 
 A skill goes by job, as it would on a real team. XENIO works out what a skill is for from what it says about itself: frontend and design, backend, testing, security, docs, review or planning. The design guide reaches the frontend engineer, and a tester cannot even open it. Someone building whatever is needed also gets a skill when their task calls for it, because on a small team that may be the page itself. A skill that names no job, such as a memory skill, is for anyone, and an agent is told to read it only if it fits the task. You can change the jobs on the skill's card, or name particular agents.
 
-Agents see one line about each skill for their job, are told to read it before they start a task (not again for a small fix), and can keep it with the project: `add_to_project` copies its files to `.agents/skills/<name>`. That is files only, in the isolated copy they are working on, so nothing from it runs and you still review it before it reaches your own files. In a project XENIO made, a skill the team really used is kept there automatically when the work is delivered, at no cost in tokens. A large base costs few tokens. Each skill's card says how often agents really used it, and who.
+For each task XENIO picks the one or two skills that really fit, from what you asked for and what each skill says about itself, at no cost in tokens. The first time a skill is used, `gpt-oss-120b` distils it into its craft rules, about 4,400 tokens once. After that its digest goes into the agent's prompt for free, until the skill's files change. An agent can also keep a skill with the project: `add_to_project` copies its files to `.agents/skills/<name>`. That is files only, in the isolated copy they are working on, so nothing from it runs and you still review it before it reaches your own files. In a project XENIO made, a skill the team really used is kept there automatically when the work is delivered, at no cost in tokens. A large base costs few tokens. Each skill's card says how often agents really used it, and who.
 
 `npx skills add owner/repo --skill name` works as you would paste it from skills.sh, and so does a skills.sh link. `skills` in that command is the installer, not the skill: what comes in is the skill you named, under its own name. `npx skills` alone is refused with an explanation.
 

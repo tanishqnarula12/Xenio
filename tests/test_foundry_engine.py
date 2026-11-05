@@ -1881,7 +1881,7 @@ class TestSpendingLess:
             return wf["id"]
 
         wid = asyncio.run(go())
-        assert engine.decisions.list(wid) == [] and engine.flows[wid].budget.max_tokens == 500_000 and not any("design choices" in a for a in thinker.asked)
+        assert engine.decisions.list(wid) == [] and engine.flows[wid].budget.max_tokens == 200_000 and not any("design choices" in a for a in thinker.asked)
 
     def test_a_medium_goal_settles_one_question_not_two(self, tmp_path):
         helper = TestYouAreTheCEO()
@@ -2384,6 +2384,279 @@ class TestSkillsLandInTheProject:
         assert (project / ".agents/skills/warm-design/SKILL.md").is_file()
         assert ".agents" not in subprocess.run(["git", "status", "--porcelain"], cwd=project, capture_output=True, text=True).stdout
         assert any("Kept in the project" in m.content and "warm-design" in m.content for m in engine.bus.history(wid))
+
+
+class TestASmallJobStaysSmall:
+    def run(self, tmp_path, script=None, size="small", previews=None, plans=None, thinker=None, skills=None):
+        helper = TestYouAreTheCEO()
+        thinker = thinker or covering([{"complete": False, "score": 0.1, "done": [], "missing": [{"title": "CSS", "why": "none seen", "severity": "must"}]}] * 6)
+        thinker.topics = []
+        pool = plans or [TestYouAreTheCEO.PLAN1, TestYouAreTheCEO.PLAN2]
+        thinker.plans = pool
+        base, made = helper.script(pool)
+        engine, _, _ = build(tmp_path, thinker, script=script or base, deps_factory=FakeDeps, previews=previews or StubPreviews(), skills=skills)
+        real = engine.factory.assemble
+
+        def sized(*a, **k):
+            team = real(*a, **k)
+            team.size = size
+            return team
+
+        engine.factory.assemble = sized
+
+        async def go():
+            wf = await engine.start("Build a thing", autonomy="supervisor")
+            await until(finished(engine, wf["id"]), 40)
+            return wf["id"]
+
+        return engine, asyncio.run(go()), made, thinker
+
+    def test_a_goal_check_cannot_start_a_second_milestone(self, tmp_path):
+        """It said a real page had no CSS when it did, and the milestone that started cost 619,000 tokens."""
+        engine, wid, made, thinker = self.run(tmp_path)
+        nodes = engine.flows[wid].graph.nodes
+        assert "milestone-2" not in nodes and len(made) == 1 and nodes["coverage-1"].outputs["complete"] is True
+        assert not any("You check independently" in a for a in thinker.asked)
+
+    def test_a_bigger_job_still_gets_it(self, tmp_path):
+        engine, wid, _, thinker = self.run(tmp_path, size="medium")
+        assert any("You check independently" in a for a in thinker.asked) and "milestone-2" in engine.flows[wid].graph.nodes
+
+    def test_it_is_told_every_file_in_the_list_exists(self, tmp_path):
+        _, _, _, thinker = self.run(tmp_path, size="medium")
+        assert any("what you cannot see is not missing" in a for a in thinker.asked if "You check independently" in a)
+
+    def test_a_static_page_that_opens_and_passes_review_is_verified(self, tmp_path):
+        class Static(StubPreviews):
+            def start(self, key, source, work, python, readable=None, keep=True):
+                return {**super().start(key, source, work, python, readable, keep), "kind": "static"}
+
+        engine, wid, _, _ = self.run(tmp_path, previews=Static())
+        assert engine.get(wid)["outcome"].startswith("Done and verified: it opens")
+
+    def test_something_with_no_tests_that_is_not_a_static_page_is_not_verified(self, tmp_path):
+        engine, wid, _, _ = self.run(tmp_path)
+        assert "NOT verified" in engine.get(wid)["outcome"]
+
+    def test_only_static_files_need_no_security_review(self, tmp_path):
+        seen = []
+
+        def script(kind, prompt, cwd):
+            if kind == "review":
+                seen.append(prompt)
+                return json.dumps({"summary": "clean", "findings": []})
+            return "<!doctype html><html></html>"
+
+        plan = {"summary": "a page", "tasks": [{"id": "page", "title": "The page", "role": "frontend", "allowed_paths": ["index.html"]}]}
+        self.run(tmp_path, script=script, plans=[plan])
+        assert len(seen) == 1 and "Security" not in seen[0].split("\n")[0]
+
+    def test_code_still_gets_a_security_review(self, tmp_path):
+        seen = []
+        helper = TestYouAreTheCEO()
+        pool = [TestYouAreTheCEO.PLAN1]
+        base, _ = helper.script(pool)
+
+        def script(kind, prompt, cwd):
+            if kind == "review":
+                seen.append(prompt)
+            return base(kind, prompt, cwd)
+
+        self.run(tmp_path, script=script, plans=pool)
+        assert len(seen) == 2
+
+    def test_a_turn_stopped_at_its_limit_is_not_paid_for_twice(self, tmp_path):
+        """A real page paid 208,000 tokens for the same task twice."""
+        turns = []
+        helper = TestYouAreTheCEO()
+        pool = [TestYouAreTheCEO.PLAN1]
+        thinker = covering([{"complete": True, "missing": []}] * 3)
+        thinker.topics = []
+        thinker.plans = pool
+        base, _ = helper.script(pool)
+        engine, team, _ = build(tmp_path, thinker, script=base, deps_factory=FakeDeps, previews=StubPreviews())
+        real = team.prompt
+
+        async def limited(session, text, on_tool=None, timeout=None):
+            answer = await real(session, text, on_tool=on_tool, timeout=timeout)
+            if "YOUR TASK core" in text:
+                turns.append(text)
+                answer.stop_reason = "max_tokens"
+                for path in Path(engine.session_registry.get(session)["root"]).glob("built/*"):
+                    path.unlink()
+            return answer
+
+        team.prompt = limited
+
+        async def go():
+            wf = await engine.start("Build a thing", autonomy="supervisor")
+            await until(finished(engine, wf["id"]), 40)
+
+        asyncio.run(go())
+        assert len(turns) == 1
+
+    def test_limits_are_set_by_size_and_a_fix_gets_less(self, tmp_path):
+        seen = []
+        broken = {"now": True}
+        helper = TestYouAreTheCEO()
+        pool = [TestYouAreTheCEO.PLAN1]
+        base, _ = helper.script(pool)
+
+        def script(kind, prompt, cwd):
+            if kind == "review":
+                found = [{"severity": "high", "issue": "broken", "file": "README.md", "line": 1}] if broken["now"] else []
+                return json.dumps({"summary": "x", "findings": found})
+            if "Fix what the checks found" in prompt:
+                (Path(cwd) / "README.md").write_text("fixed\n")
+                broken["now"] = False
+                return result("fixed")
+            return base(kind, prompt, cwd)
+
+        helper_thinker = covering([{"complete": True, "missing": []}] * 3)
+        helper_thinker.topics = []
+        helper_thinker.plans = pool
+        engine, _, _ = build(tmp_path, helper_thinker, script=script, deps_factory=FakeDeps, previews=StubPreviews())
+        add = engine.session_registry.add
+        engine.session_registry.add = lambda session, s: (seen.append(dict(s)), add(session, s))[1]
+        real = engine.factory.assemble
+
+        def small(*a, **k):
+            team = real(*a, **k)
+            team.size = "small"
+            return team
+
+        engine.factory.assemble = small
+
+        async def go():
+            wf = await engine.start("Build a thing", autonomy="supervisor")
+            await until(finished(engine, wf["id"]), 40)
+
+        asyncio.run(go())
+        fix = next(s for s in seen if str(s["task"]).startswith("fix-"))
+        first = next(s for s in seen if s["task"] == "core")
+        assert fix["max_turn_tokens"] == 20_000 and first["max_turn_tokens"] == 60_000
+
+
+class TestSkillsInThePrompt:
+    def manager(self, chosen):
+        class Skills:
+            used, saved = [], []
+
+            def search(self, text):
+                return []
+
+            def best_for(self, agent, about):
+                return chosen
+
+            def text_of(self, skill):
+                return "---\nname: x\n---\nThe long text of the skill."
+
+            def save_digest(self, skill_id, digest):
+                self.saved.append((skill_id, digest))
+
+            def note_used(self, skill_id, workflow, agent, task):
+                self.used.append((skill_id, agent, task))
+
+            def keep_used(self, workflow, root):
+                return []
+
+        return Skills()
+
+    PLAN = {"summary": "a page", "tasks": [{"id": "page", "title": "The page", "role": "frontend", "allowed_paths": ["index.html"], "acceptance": ["who he is"]}]}
+    PAGE = "<!doctype html>\n<html><body>The page</body></html>"
+
+    def build_page(self, tmp_path, reply, chosen=()):
+        skills = self.manager(list(chosen))
+        prompts = []
+        thinker = covering([{"complete": True, "missing": []}] * 3)
+        thinker.topics = []
+        thinker.plans = [self.PLAN]
+
+        def script(kind, prompt, cwd):
+            prompts.append(prompt)
+            if kind == "review":
+                return json.dumps({"summary": "clean", "findings": []})
+            return reply() if callable(reply) else reply
+
+        engine, _, _ = build(tmp_path, thinker, script=script, deps_factory=FakeDeps, previews=StubPreviews(), skills=skills)
+        seen = []
+        add = engine.session_registry.add
+        engine.session_registry.add = lambda session, s: (seen.append(dict(s)), add(session, s))[1]
+
+        async def go():
+            wf = await engine.start("Build a page", autonomy="supervisor")
+            await until(finished(engine, wf["id"]), 40)
+            return wf["id"]
+
+        return engine, asyncio.run(go()), prompts, seen, skills
+
+    def test_one_page_is_one_call_and_xenio_saves_it(self, tmp_path):
+        chosen = [{"id": "s1", "name": "taste", "digest": "Use one strong idea."}]
+        engine, wid, prompts, seen, skills = self.build_page(tmp_path, f"Here it is:\n{self.PAGE}\nEnjoy.", chosen)
+        project = Path(engine.get(wid)["project"])
+        assert (project / "index.html").read_text().strip() == self.PAGE
+        page = next(p for p in prompts if "Reply with only one complete index.html" in p)
+        assert "Use one strong idea." in page and "senior product designer" in page and "who he is" in page and "Build a page" in page
+        scope = next(s for s in seen if s["task"] == "page")
+        assert scope["one_call"] is True and scope["max_reply_tokens"] == 20_000 and scope["temperature"] == 0.7
+        assert skills.used == [("s1", "frontend", "page")] and skills.saved == []
+
+    def test_a_page_cut_off_is_not_saved_as_if_it_were_finished(self, tmp_path):
+        engine, wid, _, _, _ = self.build_page(tmp_path, "<!doctype html><html><body>half a pa")
+        assert engine.get(wid)["status"] == "failed" and "cut off" in engine.get(wid)["outcome"]
+        assert not (Path(engine.get(wid)["project"]) / "index.html").exists()
+
+    def test_a_key_in_what_comes_back_is_not_saved(self, tmp_path):
+        secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+        engine, wid, _, _, _ = self.build_page(tmp_path, f"<!doctype html><html><body>{secret}</body></html>")
+        assert secret not in (Path(engine.get(wid)["project"]) / "index.html").read_text()
+
+    def test_anything_bigger_still_gets_an_agent_with_tools(self, tmp_path):
+        thinker = covering([{"complete": True, "missing": []}] * 3)
+        thinker.topics = []
+        plan = {"summary": "x", "tasks": [{"id": "ui", "title": "The app", "role": "frontend", "allowed_paths": ["src"]}]}
+        thinker.plans = [plan]
+        prompts = []
+
+        def script(kind, prompt, cwd):
+            prompts.append(prompt)
+            if kind == "review":
+                return json.dumps({"summary": "clean", "findings": []})
+            (Path(cwd) / "src").mkdir(exist_ok=True)
+            (Path(cwd) / "src" / "a.js").write_text("1\n")
+            return result("built")
+
+        engine, _, _ = build(tmp_path, thinker, script=script, deps_factory=FakeDeps, previews=StubPreviews())
+        seen = []
+        add = engine.session_registry.add
+        engine.session_registry.add = lambda session, s: (seen.append(dict(s)), add(session, s))[1]
+
+        async def go():
+            wf = await engine.start("Build an app", autonomy="supervisor")
+            await until(finished(engine, wf["id"]), 40)
+
+        asyncio.run(go())
+        assert not next(s for s in seen if s["task"] == "ui").get("one_call") and any("one tool call" in p for p in prompts)
+
+    def test_a_skill_is_distilled_once_by_a_model_with_no_tools(self, tmp_path):
+        skills = self.manager([])
+        helper = TestPeopleHelpingEachOther()
+        engine, live, _, thinker, _, _ = helper.finished(tmp_path)
+        engine.skills = skills
+        digest = asyncio.run(engine._distil(live, {"id": "s1", "name": "taste"}))
+        assert digest and skills.saved == [("s1", digest)] and any("Distil it into the craft rules" in a and "The long text" in a for a in thinker.asked)
+
+    def test_when_the_model_fails_its_own_words_are_used(self, tmp_path):
+        skills = self.manager([])
+        helper = TestPeopleHelpingEachOther()
+        engine, live, _, _, _, _ = helper.finished(tmp_path)
+        engine.skills = skills
+
+        async def down(*a, **k):
+            raise ModelError("provider down")
+
+        engine.router.ask = down
+        assert asyncio.run(engine._distil(live, {"id": "s1", "name": "taste"})) == "The long text of the skill."
 
 
 class TestFailingTestsGoToWhoCanFixThem:

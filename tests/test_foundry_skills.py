@@ -11,7 +11,7 @@ import pytest
 from app.foundry import sandbox
 from app.foundry.registry import Agent, AgentRegistry
 from app.foundry.runtime import NativeSessions
-from app.foundry.skills.inspect import inspect_package
+from app.foundry.skills.inspect import inspect_package, read_front
 from app.foundry.skills.manager import TOOL_NAME, SkillError, SkillManager, work_for_skill
 from app.foundry.skills.sources import Source, SkillSourceError, identify, safe_extract, tree_hash
 from app.foundry.store import FoundryStore
@@ -863,3 +863,81 @@ class TestWhatTheTeamUsedStaysWithTheProject:
         mgr.keep_used("w1", root)
         (root / ".agents/skills/warm-design/SKILL.md").write_text("ours now")
         assert mgr.keep_used("w1", root) == [] and (root / ".agents/skills/warm-design/SKILL.md").read_text() == "ours now"
+
+
+class TestReadingWhatASkillIsFor:
+    @pytest.mark.parametrize("front,expected", [
+        ("name: a\ndescription: on one line", "on one line"),
+        ("name: a\ndescription: >-\n  on two\n  lines", "on two lines"),
+        ("name: a\ndescription: |\n  kept as\n  a block\nlicense: MIT", "kept as a block"),
+        ("description: >\n  folded\n\n  across a gap\nname: a", "folded across a gap"),
+        ('name: a\ndescription: "in quotes"', "in quotes"),
+    ])
+    def test_a_description_on_several_lines_is_read(self, front, expected):
+        """Read as it stood, a real skill's description was ">-", and it was the best skill in the base."""
+        assert read_front(f"---\n{front}\n---\nbody")["description"] == expected
+
+    def test_a_skill_installed_before_this_says_what_it_is(self, store, reg, tmp_path):
+        mgr = SkillManager(store, reg, tmp_path / "skills", fetcher=copying_fetcher({"SKILL.md": "---\nname: taste\ndescription: >-\n  Art direction for websites and frontend design\n---\nbody"}))
+        got = mgr.acquire("github.com/acme/thing")
+        assert got["description"] != ">-"
+        stale = mgr.require(got["id"])
+        stale["description"] = ">-"
+        stale["incoming"]["package"] and stale.update(path=str(Path(stale["incoming"]["package"]).parent))
+        mgr._save(stale, "stale")
+        assert "Art direction" in mgr.list()[0]["description"] and mgr.list()[0]["for_work"] == ["ui"]
+
+
+class TestTheBestSkillsForTheTask:
+    def base(self, store, reg, tmp_path, skills):
+        mgr = SkillManager(store, reg, tmp_path / "skills", fetcher=copying_fetcher({}))
+        ids = {}
+        for name, description in skills.items():
+            mgr.fetcher = copying_fetcher({"SKILL.md": f"---\nname: {name}\ndescription: {description}\n---\nThe rules of {name}."})
+            got = mgr.acquire(f"github.com/acme/{name}")
+            ids[name] = mgr.install(got["id"], by="user")["id"]
+        return mgr, ids
+
+    SKILLS = {"taste": "Art direction for websites and frontend pages", "apple-design": "Interface design and motion for websites", "animate": "Build an animation from scratch", "write-swift": "Write modern Swift with components and tests", "gsap-core": "The GSAP animation library for frontend"}
+
+    @needs_mac
+    def test_only_what_fits_the_task_at_most_two(self, store, reg, tmp_path):
+        mgr, _ = self.base(store, reg, tmp_path, self.SKILLS)
+        names = [s["name"] for s in mgr.best_for(reg.get("frontend"), "build a cool website page about a hero")]
+        assert names[0] in ("taste", "apple-design") and len(names) <= 2 and "write-swift" not in names and "animate" not in names
+
+    @needs_mac
+    def test_a_clear_winner_works_alone(self, store, reg, tmp_path):
+        mgr, _ = self.base(store, reg, tmp_path, {"taste": "Art direction for websites, frontend design and interface taste", "mobile-native": "Make a web app feel native on a phone with small CSS fixes"})
+        assert [s["name"] for s in mgr.best_for(reg.get("frontend"), "an intro website about a hero")] == ["taste"]
+
+    @needs_mac
+    def test_what_you_asked_for_decides_it(self, store, reg, tmp_path):
+        mgr, _ = self.base(store, reg, tmp_path, {"taste": "Art direction for websites and frontend design", "gsap-scrolltrigger": "GSAP scroll linked animation, pinning, scrub, for the web frontend"})
+        assert mgr.best_for(reg.get("frontend"), "add a GSAP scroll animation")[0]["name"] == "gsap-scrolltrigger"
+
+    @needs_mac
+    def test_nothing_fits_a_builder_gets_nothing(self, store, reg, tmp_path):
+        mgr, _ = self.base(store, reg, tmp_path, self.SKILLS)
+        assert mgr.best_for(reg.get("backend"), "rename a variable") == []
+
+    @needs_mac
+    def test_a_test_agent_gets_no_design_skill_for_a_page(self, store, reg, tmp_path):
+        mgr, _ = self.base(store, reg, tmp_path, self.SKILLS)
+        assert [s["name"] for s in mgr.best_for(reg.get("tester"), "tests for the website page")] == []
+
+    @needs_mac
+    def test_someone_you_named_comes_first(self, store, reg, tmp_path):
+        mgr, ids = self.base(store, reg, tmp_path, self.SKILLS)
+        mgr.assign(ids["animate"], ["frontend"], by="user")
+        assert mgr.best_for(reg.get("frontend"), "build a website page")[0]["name"] == "animate"
+
+    @needs_mac
+    def test_a_digest_is_kept_and_goes_with_new_files(self, store, reg, tmp_path):
+        mgr, ids = self.base(store, reg, tmp_path, {"taste": "Art direction for websites"})
+        mgr.save_digest(ids["taste"], "Use one strong idea.")
+        assert mgr.get(ids["taste"])["digest"] == "Use one strong idea."
+        mgr.fetcher = copying_fetcher({"SKILL.md": "---\nname: taste\ndescription: Art direction for websites\n---\nNewer rules."})
+        mgr.update(ids["taste"])
+        mgr.install(ids["taste"], by="user")
+        assert not mgr.get(ids["taste"]).get("digest")

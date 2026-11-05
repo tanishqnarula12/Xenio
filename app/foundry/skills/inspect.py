@@ -184,14 +184,9 @@ def _manifest(root: Path, report: Report) -> None:
         if path.is_file():
             text = path.read_text(encoding="utf-8", errors="replace")
             report.instructions = text
-            found = re.match(r"^---\n(.*?)\n---", text, re.S)
-            if found:
-                for line in found.group(1).splitlines():
-                    key, _, value = line.partition(":")
-                    if key.strip() == "name" and not report.name:
-                        report.name = value.strip().strip("'\"")[:80]
-                    if key.strip() == "description" and not report.description:
-                        report.description = value.strip().strip("'\"")[:400]
+            front = read_front(text)
+            report.name = report.name or front.get("name", "")[:80]
+            report.description = report.description or front.get("description", "")
             break
     pyproject = root / "pyproject.toml"
     if pyproject.is_file():
@@ -268,10 +263,21 @@ def _dedupe(report: Report) -> None:
 def read_front(text: str) -> dict[str, str]:
     found = re.match(r"^---\n(.*?)\n---", text, re.S)
     out: dict[str, str] = {}
-    for line in (found.group(1).splitlines() if found else []):
+    lines = found.group(1).splitlines() if found else []
+    for number, line in enumerate(lines):
         key, _, value = line.partition(":")
-        if key.strip() in ("name", "description") and value.strip():
-            out[key.strip()] = value.strip().strip("'\"")[:400]
+        value = value.strip()
+        if line[:1].isspace() or key.strip() not in ("name", "description"):
+            continue
+        if value in (">", ">-", ">+", "|", "|-", "|+", ""):  # the words are on the lines below. Read as they stood, a real skill's description was ">-" and nobody could tell what it was for
+            below = []
+            for next_line in lines[number + 1:]:
+                if next_line.strip() and not next_line[:1].isspace():
+                    break
+                below.append(next_line.strip())
+            value = " ".join(w for w in below if w)
+        if value:
+            out[key.strip()] = value.strip("'\"")[:400]
     return out
 
 

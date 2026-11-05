@@ -2,7 +2,7 @@
 
 Tested on 2026-11-04 with real models, real package installs and the real macOS sandbox, in scratch folders. Not in live XENIO, and not with Hermes.
 
-**The headline: a real build now finishes verified, and running, for 337,000 tokens.** See [Tokens and a finished build](#tokens-and-a-finished-build). The first runs below are kept as they were: the Nabh account ran out of credit partway through independent review on them, and what they found is why the later fixes exist.
+**The headline: a plain page now costs about 25,000 tokens and a real build with a server about 337,000, both finished, verified and running.** See [A plain page](#a-plain-page) and [Tokens and a finished build](#tokens-and-a-finished-build). The server build was measured before the later cuts. The first runs below are kept as they were: the Nabh account ran out of credit partway through independent review on them, and what they found is why the later fixes exist.
 
 | Scenario | Result | What really happened |
 |---|---|---|
@@ -12,6 +12,21 @@ Tested on 2026-11-04 with real models, real package installs and the real macOS 
 | D. Install a skill for two agents | **Partly** | Real fetch and read passed. Real install and run were refused by the permission system on this machine, so they are verified only on local packages |
 | E. Reuse a specialist | **Passed** | Reused in a real factory run and in tests, with separate workspaces |
 | F. Recovery after a crash | **Passed** | The real process was killed mid-write. Nothing was repeated. Then stopped at the credit limit |
+
+## A plain page
+
+The same sentence each time, on 2026-11-05: "build a basic website for intrducing spider man use skills and make sure its cool." Real models, the real service and a copy of the user's real skills base, in scratch folders.
+
+| Run | Tokens | Time | The page |
+|---|---|---|---|
+| Live, before these fixes | 990,000 | 10 min | Plain: a header and 6 emoji cards, on Flask, with tests |
+| One agent with tools, wrong skills | 64,000 | 8 min | Better: real type and hand-drawn icons, a clumsy spider |
+| Kimi Code with tools, right skill | 48,000 | 4 min | Comic-book character, a clumsy spider, seams in the background |
+| GLM-5.2 with tools | 77,000 | 10 min | Clean, but generic again |
+| GLM-5.2 with tools, higher temperature | 110,000 | 8 min | Worse: a cartoon spider collided with the title |
+| **GLM-5.2, one call, no tools** | **24,625** | **93 s** | **Editorial poster type and a drawn web. The strongest of these** |
+
+The last one spent 9,055 on the page, 8,696 on the review, and the rest on assembling the team, the plan and distilling the skill. Judged by eye, on one run of each: pages vary from run to run, and no check looks at a page before you do. Seniors, helpers and the rule against a second milestone on a small job have not come up in a real build that needed them, beyond what is noted below.
 
 ## Tokens and a finished build
 
@@ -135,6 +150,10 @@ Tests changed because the behaviour was changed on purpose, at the user's reques
 * Something that looks dangerous can be installed, locked down, if you confirm twice. This relaxes a rule that had no override.
 * A skill reaches the agents whose job it suits, where it used to reach every agent.
 * Rounds and budgets depend on the size of the job.
+* A plain page has no tests, and counts as verified if it opens and passes review.
+* Skill text no longer stays in context once read: what fits goes in the prompt instead. The tests for keeping it were removed.
+
+A test in `images.test.tsx` counted the pictures before the second one had appeared, and failed now and then. It now waits for it.
 
 `test_real_hermes_gateway_shows_xenios_tools_only_with_tool_search_off` takes minutes, because Hermes installs its dependencies the first time it sees a data folder, and this test makes a new one each run. Its time limit was raised for that reason, and its assertions are unchanged. A test in `chat-page.test.tsx` built its dates in UTC and failed every night until 05:30 in India. It now uses local time, as XENIO does.
 

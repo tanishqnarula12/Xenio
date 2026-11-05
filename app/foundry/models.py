@@ -19,7 +19,7 @@ FALLBACK_NABH = ("glm-5-2", "deepseek-v4-pro", "kimi-k2-7-code")
 # cheap first: on a nearly empty account deepseek-v4-1-flash, gpt-oss and gemma were still accepted while GLM and Kimi were refused, which says what they cost
 DEBATE_SEATS = ("deepseek-v4-1-flash", "gpt-oss-120b", "deepseek-v4-pro", "kimi-k2-7-code")
 # who may do what, best first. A tool loop needs a model that really calls tools (glm, kimi, qwen, measured); a review with no tools can go to the cheapest head that reasons well.
-POOLS = {"build": ("glm-5-2", "kimi-k2-7-code", "qwen3-5-397b"), "ui": ("kimi-k2-7-code", "glm-5-2", "qwen3-5-397b"), "test": ("kimi-k2-7-code", "qwen3-5-397b", "glm-5-2"), "docs": ("qwen3-5-397b", "kimi-k2-7-code"),
+POOLS = {"build": ("glm-5-2", "kimi-k2-7-code", "qwen3-5-397b"), "ui": ("glm-5-2", "kimi-k2-7-code", "qwen3-5-397b"), "test": ("kimi-k2-7-code", "qwen3-5-397b", "glm-5-2"), "docs": ("qwen3-5-397b", "kimi-k2-7-code"),
          "review": ("deepseek-v4-pro", "deepseek-v4-1-flash", "gpt-oss-120b"), "security": ("deepseek-v4-1-flash", "deepseek-v4-pro", "gpt-oss-120b"), "plan": ("glm-5-2", "kimi-k2-7-code")}
 
 

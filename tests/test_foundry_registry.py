@@ -1,6 +1,7 @@
 """The Foundry's memory of who is in the organization: persistence, versions, least privilege, and the factory's reuse-before-create. A fake model answers the factory."""
 
 import json
+from dataclasses import replace
 import os
 import stat
 import time
@@ -391,3 +392,22 @@ class TestModels:
             Budget(max_tokens=1, tokens=5).check()
         with pytest.raises(BudgetExceeded):
             Budget(max_seconds=1, started=time.monotonic() - 5).check()
+
+
+class TestAnOldPinIsReleased:
+    def test_one_seeded_long_ago_goes_however_many_versions_it_has_had(self, store):
+        """The docs agent kept the older team's model through 3 versions, and a README on it cost 151,000 tokens."""
+        registry = AgentRegistry(store)
+        store.execute("DELETE FROM agents WHERE id = 'docs'")
+        store.execute("DELETE FROM agent_versions WHERE agent_id = 'docs'")
+        role = DEFAULT_ROLES["docs"]
+        registry.create(Agent(id="docs", name=role.title, role="docs", model="gpt-6-luna", provider="openai-codex", capabilities=list(role.capabilities), kind="permanent", source="builtin"), "system", "seeded")
+        registry._write(replace(registry.get("docs"), description="edited", version=3), "edited", "system", new=False)
+        registry.seed_builtin({"docs": role})
+        assert registry.get("docs").model == "" and registry.get("docs").provider == ""
+
+    def test_one_you_chose_stays(self, store):
+        registry = AgentRegistry(store)
+        registry._write(replace(registry.get("docs"), model="glm-5-2", provider="nabh", version=2), "you chose it", "user", new=False)
+        registry.seed_builtin({"docs": DEFAULT_ROLES["docs"]})
+        assert registry.get("docs").model == "glm-5-2"

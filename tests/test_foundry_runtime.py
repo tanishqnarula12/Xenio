@@ -488,30 +488,6 @@ class TestTheEngineeringCoreRunsOnIt:
         assert test["outputs"]["tests"][0]["status"] in ("passed", "failed", "error")
 
 
-class TestWhatASkillSaysStaysInMind:
-    def trimmed(self, skill_text):
-        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}, {"role": "tool", "tool_call_id": "0", "content": skill_text}]
-        messages += [{"role": "tool", "tool_call_id": str(i), "content": "output " * 100} for i in range(1, 8)]
-        NativeSessions._trim(messages)
-        return messages
-
-    def test_it_is_not_trimmed_away_like_old_output(self):
-        skill = "(from the skill warm-design: third-party know-how) Name every colour --brew-something. " + "x" * 500
-        messages = self.trimmed(skill)
-        assert messages[2]["content"] == skill and "older output trimmed" in messages[3]["content"]
-
-    def test_a_long_one_keeps_only_its_start_because_it_is_paid_for_on_every_step(self):
-        messages = self.trimmed("(from the skill big) " + "x" * 20_000)
-        assert len(messages[2]["content"]) < 3_100 and "read it again" in messages[2]["content"]
-
-    def test_even_when_the_conversation_is_too_big(self):
-        skill = "(from the skill warm-design) Name every colour --brew-something. " + "x" * 200
-        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}, {"role": "tool", "tool_call_id": "0", "content": skill}]
-        messages += [{"role": "tool", "tool_call_id": str(i), "content": "y" * 40_000} for i in range(1, 5)]
-        NativeSessions._trim(messages)
-        assert messages[2]["content"] == skill
-
-
 class TestNotWastingTokens:
     """Each of these cost hundreds of thousands of tokens on a real build, and is now stopped by the machine, not left to the model."""
 
@@ -586,7 +562,7 @@ class TestNotWastingTokens:
         native, go = session(tmp_path, root, client)
         native.extra_tools = Team()
         turn = asyncio.run(go())
-        assert len(asked) == 1 and "failed 3 times" in asked[0][0] and turn.text == "stopped as told"
+        assert len(asked) == 1 and "keeps failing" in asked[0][0] and turn.text == "stopped as told"
         assert any("the fault is in app.py" in m["content"] for m in client.seen[-1]["messages"] if m["role"] == "tool")
 
     def test_when_a_senior_cannot_help_the_work_carries_on(self, tmp_path, root):
@@ -604,3 +580,80 @@ class TestNotWastingTokens:
         native, go = session(tmp_path, root, client)
         native.extra_tools = Team()
         assert asyncio.run(go()).text == "finished anyway"
+
+    def test_the_same_failure_in_small_variations_is_stopped_too(self, tmp_path, root):
+        """On a real page agents tried python, python3, which python and unset PYTHONHOME, each one a different command."""
+        client = Scripted(*[[call("terminal", command=f"ls /no/such/place/{i}")] for i in range(12)], "never reached")
+        _, go = session(tmp_path, root, client)
+        turn = asyncio.run(go())
+        assert turn.stop_reason == "stuck" and "8 commands failed" in turn.text and len(client.seen) == 8
+
+    def test_making_a_folder_is_not_a_dead_end(self, tmp_path, root):
+        client = Scripted([call("xenio_create_directory", path="tests")], "done")
+        _, go = session(tmp_path, root, client, allowed=("tests/test_app.py",))
+        asyncio.run(go())
+        assert any("write_file creates them" in m["content"] for m in client.seen[-1]["messages"] if m["role"] == "tool")
+
+    def test_a_whole_page_just_written_is_not_sent_again(self, tmp_path, root):
+        page = "x" * 20_000
+        client = Scripted([call("write_file", path="src/page.html", content=page)], "done")
+        _, go = session(tmp_path, root, client)
+        asyncio.run(go())
+        assert (root / "src" / "page.html").read_text() == page
+        assert page not in json.dumps(client.seen[-1]["messages"])
+
+    def test_a_small_edit_just_made_stays_in_view(self, tmp_path, root):
+        client = Scripted([call("write_file", path="src/b.py", content="x = 12345\n")], "done")
+        _, go = session(tmp_path, root, client)
+        asyncio.run(go())
+        assert "x = 12345" in json.dumps(client.seen[-1]["messages"])
+
+    def test_a_page_in_one_call_is_offered_no_tools(self, tmp_path, root):
+        client = Scripted("<!doctype html><html></html>")
+        native, go = session(tmp_path, root, client)
+        real = native.registry.get
+        native.registry.get = lambda sid: {**(real(sid) or {}), "one_call": True}
+        turn = asyncio.run(go())
+        assert "<html>" in turn.text and not client.seen[0].get("tools") and len(client.seen) == 1
+        assert "Reply with only the complete page" in client.seen[0]["messages"][0]["content"]
+
+    def test_design_work_can_set_its_own_temperature_and_code_stays_careful(self, tmp_path, root):
+        client = Scripted("done")
+        native, go = session(tmp_path, root, client)
+        asyncio.run(go())
+        assert client.seen[0]["temperature"] == 0.2
+        client = Scripted("done")
+        native, go = session(tmp_path, root, client)
+        real = native.registry.get
+        native.registry.get = lambda sid: {**(real(sid) or {}), "temperature": 0.7}
+        asyncio.run(go())
+        assert client.seen[0]["temperature"] == 0.7
+
+    def test_a_page_has_room_to_be_written_in_one_go(self, tmp_path, root):
+        client = Scripted("done")
+        native, go = session(tmp_path, root, client)
+        registry = native.registry
+        real = registry.get
+        registry.get = lambda sid: {**(real(sid) or {}), "max_reply_tokens": 14_000}
+        asyncio.run(go())
+        assert client.seen[0]["max_tokens"] == 14_000
+
+
+class TestAProjectsOwnPythonRuns:
+    @needs_mac
+    def test_python_in_a_project_venv_can_start_inside_the_sandbox(self, tmp_path, root):
+        """Its real files are in the home folder, which the sandbox shuts. Every python command in a project died on start, and agents burned whole turns on it."""
+        project_venv = Path(sys.prefix)
+        client = Scripted([call("terminal", command="python -c 'print(6 * 7)'")], "done")
+        registry = SessionRegistry(tmp_path / "s.json")
+        native = NativeSessions(registry, PathPolicy(workspace=tmp_path / "workspace"), nabh_factory=lambda: client, models=("m1",))
+        role = RoleRegistry().get("backend")
+
+        async def go():
+            sid = await native.open(root)
+            registry.add(sid, {"run": "r", "task": "t", "role": "backend", "tools": sorted(role.tools), "terminal": "write", "root": str(root), "allowed_paths": ["src"], "readable": [str(project_venv)]})
+            return await native.prompt(sid, "do it")
+
+        asyncio.run(go())
+        results = [m["content"] for m in client.seen[-1]["messages"] if m["role"] == "tool"]
+        assert any("exit code 0" in r and "42" in r for r in results), results

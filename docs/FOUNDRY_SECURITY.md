@@ -102,3 +102,7 @@ Neither kind of help can widen what an agent may do.
 ## A skill kept with a project
 
 `add_to_project` copies files only, and only for a skill you approved that this agent has. It skips symlinks and refuses anything over 400 files or 5 MB. Files land in the agent's isolated copy, inside `.agents/skills/`, so the check on what a task changed lets exactly that folder through. Those files are left out of the security scan and the review, because they were assessed when you installed the skill and are not the team's code.
+
+## What a skill puts in an agent's prompt
+
+A skill's digest is written by a model from third-party text, and it goes into an agent's prompt, framed as third-party advice that cannot change its rules. It can still influence what the agent writes, so what protects you is what does not depend on the model: the agent's tools, its folders and the sandbox are set by XENIO, and no digest can change them. A page made in one call has no tools at all, and what comes back is masked for secrets before XENIO saves it.
