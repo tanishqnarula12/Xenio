@@ -1,0 +1,14 @@
+# The scan uses gitleaks' own rules. The only exceptions are the deliberately fake keys the tests use to prove that
+# XENIO masks secrets (alphabet runs and "testsecretvalue"), and the placeholder in .env.example.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake keys in tests, and placeholders"
+regexes = [
+  '''abcdefghijklmnopqrstuvwxyz''',
+  '''ABCDEFGHIJKLMNOPQRSTUVWXYZ''',
+  '''testsecretvalue''',
+  '''should_not_leak''',
+  '''PASTE_YOUR_KEY_HERE''',
+]

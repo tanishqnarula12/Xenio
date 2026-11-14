@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (lint + tests, ${{ matrix.python }})
+    # The sandbox (sandbox-exec), AppleScript and Accessibility code is macOS-only, so the tests run on macOS.
+    # Tests that need XENIO's compiled native helpers, Touch ID or an unlocked screen skip themselves here.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-dev.txt
+      - name: Install (exact versions from the lockfile)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Tests (pytest)
+        env:
+          XENIO_CI: "1"
+        run: python -m pytest -q -p no:cacheprovider -rfE
+
+  ui:
+    name: Interface (type check, tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - name: Type check
+        run: npm run typecheck
+      - name: Tests (vitest)
+        run: npm test
+      - name: Production build
+        run: npx vite build
+
+  security:
+    name: Security (dependencies + secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the whole history, so a secret committed long ago is found too
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Python dependencies (pip-audit)
+        run: |
+          pip install pip-audit==2.10.1
+          pip-audit -r requirements.lock --progress-spinner off
+      - name: Interface dependencies (npm audit)
+        working-directory: ui
+        run: npm audit --omit=dev --audit-level=high
+      - name: Secrets in the code and its history (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

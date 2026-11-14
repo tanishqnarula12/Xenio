@@ -95,3 +95,21 @@ Types: `INFORMATION`, `PROPOSAL`, `QUESTION`, `CHALLENGE`, `COUNTERARGUMENT`, `R
 `id`, `type`, `title`, `status`, `agent`, `deps`, `inputs`, `outputs`, `when`, `always`, `retries`, `max_retries`, `budget`, `error`, `started`, `finished`, `priority`, `writes`, `payload`, `history`.
 
 Types: `goal`, `planning`, `agent`, `task`, `communication`, `review`, `testing`, `decision`, `approval`, `loop`, `completion`. Statuses: `pending`, `running`, `waiting`, `done`, `failed`, `skipped`, `blocked`, `cancelled`.
+
+## The War Room's commands
+
+`POST /api/foundry/<command>`, with XENIO's own key.
+
+| Command | What it does | Yours only |
+|---|---|---|
+| `message` `{workflow, text, to?, uploads?}` | Says something, at once, to the team or to one agent | |
+| `start` `{goal, uploads?, ...}` | Starts work. Pictures are looked at first | |
+| `live` `{workflow}` | The browsers, everyone's arrows, who has the pointer, and what they really did | |
+| `artifacts` `{workflow}` | The files made, and who changed them when | |
+| `capabilities` `{fresh?}` | What can really be done right now, and what is missing | |
+| `take_over` `{why?}`, `hand_back` | The computer is yours, or theirs again | yes |
+| `vault_status` | Websites and labels. Never anything secret | |
+| `vault_setup`, `vault_add` `{host?}`, `vault_touch`, `vault_remove` `{item}`, `vault_open_site` `{url}` | Each opens a window of the Mac's own. None takes or returns a password | yes |
+
+`GET /api/foundry/live/<workflow>/<agent>`: the latest picture of an agent's browser.
+`GET /api/foundry/file/<workflow>/<path>`: a file from that job's own folder. Pages and Office files come as downloads, so that they never run as part of XENIO.

@@ -106,3 +106,23 @@ Neither kind of help can widen what an agent may do.
 ## What a skill puts in an agent's prompt
 
 A skill's digest is written by a model from third-party text, and it goes into an agent's prompt, framed as third-party advice that cannot change its rules. It can still influence what the agent writes, so what protects you is what does not depend on the model: the agent's tools, its folders and the sandbox are set by XENIO, and no digest can change them. A page made in one call has no tools at all, and what comes back is masked for secrets before XENIO saves it.
+
+## The War Room's new reach
+
+Everything here adds reach, so each one has a wall of its own. The full picture is in [the War Room](WAR_ROOM.md) and [the vault](VAULT.md).
+
+| What an agent can now do | What stops it going further |
+|---|---|
+| Read the web | Public addresses only, checked at every redirect, so a public page cannot bounce a request onto your network. Addresses are limited in length and refused if they hold anything like a key, so they cannot carry your files out. A GET and nothing else. Robots.txt respected. Pages arrive marked as data |
+| Use a private browser | No cookies of yours. Your own network and `file://` are refused, as are downloads and file pickers. Anything that sends, posts, buys or deletes goes to you first, by the same rules as everywhere else in XENIO. A live test is refused |
+| Sign in | It asks and you answer with your finger. The native helper places the login after checking the website itself. The agent gets "filled" or "refused", and no tool anywhere returns a password |
+| Use your real screen | Off by default, and it asks once per job as a high-risk step. Sends and deletes ask again. Password managers, the lock screen and live tests are refused, and password boxes are never filled. You outrank everyone: take over, and all of them let go |
+| Read your mail, calendar, GitHub | After your yes, once per job and per service. Read only: no tool can send, change or delete. What comes back is marked as data, and secrets in it are masked |
+| Make files | Only inside this task's own files, and pictures in a deck only from inside the project. Formulas are read by a small parser of XENIO's own, and never run |
+| Be given work by you directly | Only XENIO can speak as you or as XENIO. An agent cannot send as either, however it tries |
+
+Who gets what comes from a table, by kind of work, and never from a model. A kind of work a model invents gets the weakest set. Only an agent whose job is desktop work has your screen.
+
+Consensus changes none of this. Agents agreeing is not your yes.
+
+**One decision that needs your eye.** The team now acts on what you say before any model has read it: a message that is not a question goes straight to whoever is working, marked as from the CEO. That is the point. It also means an order has real weight, so anything claiming to be from you must really be from you: the endpoint for it takes XENIO's own key, and an agent's message can never be framed as yours.

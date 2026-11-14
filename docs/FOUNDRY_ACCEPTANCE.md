@@ -1,5 +1,44 @@
 # The Foundry: acceptance results
 
+## The whole company
+
+Real models, the real service, a real macOS and real websites, in scratch folders, on 2026-11-05. Not in live XENIO. Local stand-ins were used for anything of yours: no real account was touched.
+
+| Scenario | Result | What really happened |
+|---|---|---|
+| The CEO changes their mind mid-page | **Passed** | "Make it about tea, not coffee, and everything green", while the page was being written. Acknowledged in 6 to 8 ms. The final page said tea 37 times and coffee 0. The reviewer then said the green part was not done, so XENIO sent it back, it was fixed, and only then was the order marked done |
+| Three different subjects | **Passed, by eye** | A coffee shop as an espresso machine readout, a wedding photographer as a risograph album, Spider-Man as a comic. They look nothing alike. The Spider-Man before these fixes was black, red and huge type |
+| Research into a deck | **Mostly** | Real searches and real pages read, and 4 sources, all opened. A real 5-slide PowerPoint file. **Not verified, and rightly:** a fix round thinned the deck out, and the reviewer caught that no slide still compared all three on price. That cause is fixed and covered by tests, and the job was not run again, to save credit |
+| A job on a website | **Mostly** | On a local stand-in for a profile page. A specialist was staffed, the Save asked for approval once, the site really received the new headline, and it was read back. The first run pressed Save three times in its fix rounds, which is now fixed. The last run was marked not verified by a false alarm in the source check, since fixed and covered by tests, and not run again |
+| Two agents at once on the real desktop | **Passed** | Real windows off the screen, the real Accessibility API. The app itself reported each press and what was typed. **The real mouse position was the same before and after** |
+| The vault, for real | **Passed, except the finger** | The real helper, real encryption and a real browser signing in to a local website, which received the real password. It appears nowhere in what XENIO sees or in the file. Wrong secret, another website, an edited file and a "show password" button all failed safely. The Secure Enclave refused to use a finger-locked key without a finger |
+
+| What it cost | Tokens | Time |
+|---|---|---|
+| Spider-Man page, all in | 28,870 | 2.4 min |
+| Coffee shop page, all in, with two skills read for the first time | 47,598 | 5 min |
+| Wedding portfolio, before the debate and coverage check were removed from pages | 92,968 | 8 min |
+| Tea page, with the change of mind, an order sent back and a fix | about 52,000 | 6.5 min |
+| Profile edit on a website | 53,148, about 28,000 without the false alarm | 1.2 min |
+| Research into a deck | 78,000 to 105,000 | 6 min |
+| One deck, on its own | **3,452** in one call, where four tool steps had cost 32,161 | 6 s |
+| One edit to a page | **8,003** on gpt-oss-120b, where GLM took 23,045 | 42 s |
+
+**These have not been run:**
+
+* **A finger on the real sensor.** The one try was made while the Mac was locked, and macOS cancels every request then, even from a bare test program. See [the vault](VAULT.md#limits-plainly).
+* **A real sign-in to Google, LinkedIn or anything real.** Some sites refuse embedded browsers, and Google is known to.
+* **Borrowing the real pointer.** Tests use a stand-in. It would move your mouse, so it has not been run here.
+* **Your mail, calendar and GitHub through an agent**, which are covered by tests with stand-ins.
+* **A picture made for a page.** Covered by tests, and the real pictures came from a page before this was added.
+* **Attaching a real picture.** The path is tested with a stand-in for the model that looks at it.
+* **A real agent asking for a sign-in**, end to end. The toolbox is tested with a real browser and a refused unlock, and the fill is tested on its own.
+
+Three real problems were found only by real runs, and are worth knowing about. Your mobile network hands out websites as NAT64 addresses, which a safety check read as private, so half the web looked closed. Pages built by scripts came back empty until they were read in a real browser. A browser nobody can see stops running animations, so pages looked broken when they were not.
+
+Testing today spent about 900,000 tokens of your credit, most of it on real runs that found these.
+
+
 Tested on 2026-11-04 with real models, real package installs and the real macOS sandbox, in scratch folders. Not in live XENIO, and not with Hermes.
 
 **The headline: a plain page now costs about 25,000 tokens and a real build with a server about 337,000, both finished, verified and running.** See [A plain page](#a-plain-page) and [Tokens and a finished build](#tokens-and-a-finished-build). The server build was measured before the later cuts. The first runs below are kept as they were: the Nabh account ran out of credit partway through independent review on them, and what they found is why the later fixes exist.

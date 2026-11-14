@@ -11,10 +11,10 @@ not assumed. Re-check after `hermes update`.
 | Python (XENIO) | 3.14.2 (`python`, Microsoft Store build) | `python --version` |
 | Node.js / npm | v24.11.1 / 11.6.2 | `node --version`, `npm --version` |
 | Hermes Agent | v0.21.5+5764.g0cdba5e (2026.9.24), git install, 1 commit behind upstream | `hermes --version` |
-| Hermes executable | `C:\Users\aniln\AppData\Local\hermes\bin\hermes.exe` (also `hermes.cmd`, `hermes-acp.exe`) | `where.exe hermes` |
-| Hermes source | `C:\Users\aniln\AppData\Local\hermes\hermes-agent` | `hermes --version` |
+| Hermes executable | `~/.local/bin/hermes` on macOS; `%LOCALAPPDATA%\hermes\bin\hermes.exe` on Windows (also `hermes.cmd`, `hermes-acp.exe`) | `which hermes` (`where.exe hermes` on Windows) |
+| Hermes source | inside Hermes' home: `hermes-agent/` | `hermes --version` |
 | Hermes Python | bundled 3.14.7, venv under `...\hermes\installs\<id>\environments\<id>\venv` | `hermes --print-runtime-command`, `installs\...\facts.json` |
-| Hermes home (`HERMES_HOME`) | `C:\Users\aniln\AppData\Local\hermes` (`config.yaml`, `.env`, `memories\`, `plugins\`, `state.db`) | directory listing |
+| Hermes home (`HERMES_HOME`) | `~/.hermes` on macOS, `%LOCALAPPDATA%\hermes` on Windows (`config.yaml`, `.env`, `memories/`, `plugins/`, `state.db`) | directory listing |
 | Model / provider | `cohere/north-mini-code:free` via OpenRouter (`model.provider: openrouter`) | `hermes status`, `config.yaml` |
 | Credentials in Hermes `.env` | `OPENROUTER_API_KEY`, `TELEGRAM_*` (names only were read) | `.env` key names |
 | Gateway | running (manual process), Telegram configured | `hermes status --full` |
@@ -53,7 +53,7 @@ Source of truth: `hermes-agent/acp_adapter/server.py`, `permissions.py`, `edit_a
 ```
 XENIO -> Hermes  initialize      {"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{...}}
 Hermes -> XENIO  result          {"protocolVersion":1,"agentInfo":{"name":"hermes-agent","version":"0.21.5"},"agentCapabilities":{"loadSession":true,...}}
-XENIO -> Hermes  session/load    {"sessionId":"<saved>","cwd":"C:\\Users\\aniln\\Xenio","mcpServers":[]}   -> null if unknown
+XENIO -> Hermes  session/load    {"sessionId":"<saved>","cwd":"<your XENIO workspace>","mcpServers":[]}   -> null if unknown
 XENIO -> Hermes  session/new     {"cwd":"...","mcpServers":[]}                                              -> {"sessionId":"..."}
 XENIO -> Hermes  session/prompt  {"sessionId":"...","prompt":[{"type":"text","text":"hello"}]}
 Hermes -> XENIO  session/update  {"sessionId":"...","update":{"sessionUpdate":"agent_message_chunk","messageId":"...","content":{"type":"text","text":"Hel"}}}

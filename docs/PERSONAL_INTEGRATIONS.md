@@ -39,7 +39,7 @@ process. Results containing other people's text (emails, invitations, issues) ca
 | Google Calendar | not connected | the one-time Google sign-in below |
 | Email (Gmail) | not connected | the same Google sign-in |
 | Email (any IMAP mailbox) | Himalaya v2.2.1 installed, no account | optional: run `himalaya` and follow its wizard |
-| GitHub | public data for `tanishqnarula12` | optional: `gh auth login` for private repos and higher limits |
+| GitHub | public data for the user set in `XENIO_GITHUB_USER` | optional: `gh auth login` for private repos and higher limits |
 | Tasks / projects | ready | nothing |
 | Scheduled checks / notifications | ready | nothing (see PROACTIVE_AGENT.md) |
 
@@ -99,7 +99,7 @@ used.
 
 ### GitHub
 
-Works now for public data of `XENIO_GITHUB_USER` (`tanishqnarula12`, set in `.env`; verified against the
+Works for public data of `XENIO_GITHUB_USER` (set in `.env`; verified against the
 GitHub API: 24 public repositories). Without sign-in GitHub allows 60 requests an hour. For private
 repositories and higher limits:
 
@@ -138,7 +138,7 @@ flagged. Stored in `personal.db`, separate from memory.
 
 "I'm working on the CRM analytics feature" → `xenio_project set_current` (focus: analytics feature). From
 then on every turn carries one short line such as
-`[XENIO context] current project: CRM (focus: analytics feature), repository tanishqnarula12/final-crm; other projects: Xenio; 2 open task(s)`.
+`[XENIO context] current project: CRM (focus: analytics feature), repository you/your-crm; other projects: Xenio; 2 open task(s)`.
 So "check the backend" or "what issues are open in my repository?" refer to that project. If several projects
 could match, XENIO asks which one. If nothing is recorded, it says it doesn't know. It never guesses.
 

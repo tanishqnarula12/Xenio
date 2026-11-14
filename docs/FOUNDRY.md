@@ -170,6 +170,7 @@ After pulling this work:
 .venv/bin/python -m app.main --install-guard
 (cd ui && npm install && npm run build)
 native/orb/build.sh
+native/hands/build.sh  # the agents' browsers, their arrows and the vault. Built by itself the first time if you skip it
 ```
 
 Then restart `--ui`. The first step teaches Hermes the new `xenio_foundry` tool, so that chat can command the team. The War Room itself works without it. The last step only redraws the Dock icon. It needs `NABH_API_KEY` in `.env`, and `npm` and `git` for skills.
