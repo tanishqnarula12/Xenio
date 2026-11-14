@@ -207,6 +207,8 @@ class Music:
 
     def play_spotify(self, track: Track) -> dict:
         """Start ``track`` in the Spotify app and read back what is playing (opens Spotify when it is closed)."""
+        if not re.fullmatch(r"spotify:track:[A-Za-z0-9]{8,40}", str(track.url or "")):  # it goes into a script: only a real track address may
+            raise MediaError("that is not a Spotify track address")
         out = _osascript(f'tell application "Spotify"\nplay track "{track.url}"\ndelay 0.6\n'
                          'return (player state as string) & "|" & (name of current track) & "|" & '
                          '(artist of current track)\nend tell', timeout=15, runner=self._run)

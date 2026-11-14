@@ -99,7 +99,25 @@ def test_macos_trash_uses_the_system_trash_command(ctx, monkeypatch):
     monkeypatch.setattr(filesystem.subprocess, "run", fake_run)
     r = tool("xenio_delete_path").run({"path": "old.txt"}, ctx)
     assert r.success and r.data["recycled"] is True
-    assert seen == [[filesystem.MACOS_TRASH, "-s", "--", str(ws / "old.txt")]]
+    assert seen == [[filesystem.MACOS_TRASH, "-s", str(ws / "old.txt")]]  # no "--": macOS's trash takes it for a file and every delete failed
+
+
+def test_the_real_macos_trash_takes_the_arguments_xenio_gives_it(tmp_path):
+    """Run against the real /usr/bin/trash, with a file that does not exist: the error must be about that file, never
+    about a file named "--" (which is how every delete on a Mac failed)."""
+    if not Path(filesystem.MACOS_TRASH).exists():
+        pytest.skip("no macOS trash command here")
+    missing = tmp_path / "not-there.txt"
+    with pytest.raises(OSError) as err:
+        filesystem._recycle(missing)
+    assert "not-there.txt" in str(err.value) and "“--”" not in str(err.value)
+
+
+def test_a_relative_path_never_reaches_the_trash_command(monkeypatch):
+    monkeypatch.setattr(filesystem.sys, "platform", "darwin")
+    monkeypatch.setattr(filesystem.subprocess, "run", lambda *a, **k: pytest.fail("ran the trash command"))
+    with pytest.raises(OSError):
+        filesystem._recycle(Path("-rf"))
 
 
 def test_a_failed_trash_is_reported_and_the_file_kept(ctx, monkeypatch):

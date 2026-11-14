@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { FoundryMember, FoundryNode, FoundryOverview, FoundryState } from "../api/types";
-import { describe as describeEvent, logoFor, placeNodes, roundsOf } from "../pages/WarRoom";
+import { asTokens, describe as describeEvent, logoFor, placeNodes, roundsOf } from "../pages/WarRoom";
 import { FakeApi, renderApp } from "./fakes";
 
 const perf = { runs: 0, succeeded: 0, failed: 0, workflows: 0, average_score: null, seconds: 0, last: "" };
@@ -28,7 +28,7 @@ describe("the command", () => {
   it("one sentence starts the team, as a supervisor unless you ask otherwise", async () => {
     const api = new FakeApi();
     await renderApp(api, "warroom");
-    fireEvent.change(await screen.findByLabelText("What should the team build?"), { target: { value: "Build a gym app" } });
+    fireEvent.change(await screen.findByLabelText("What should the team do?"), { target: { value: "Build a gym app" } });
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("start", expect.objectContaining({ goal: "Build a gym app", autonomy: "supervisor" })));
     await waitFor(() => expect(window.location.hash).toContain("warroom/w1"));
@@ -37,11 +37,72 @@ describe("the command", () => {
   it("you can still ask to be asked", async () => {
     const api = new FakeApi();
     await renderApp(api, "warroom");
-    fireEvent.change(await screen.findByLabelText("What should the team build?"), { target: { value: "x" } });
+    fireEvent.change(await screen.findByLabelText("What should the team do?"), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "Options" }));
     fireEvent.click(screen.getByLabelText(/Ask me before building/));
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("start", expect.objectContaining({ autonomy: "careful" })));
+  });
+
+  it("you set the token limits for a job, and can make them your default", async () => {
+    const api = new FakeApi();
+    api.foundry = vi.fn(async () => overview({ limits: { job_tokens: 200_000, task_tokens: 0 } }));
+    await renderApp(api, "warroom");
+    fireEvent.change(await screen.findByLabelText("What should the team do?"), { target: { value: "Build a notes app" } });
+    fireEvent.click(screen.getByRole("button", { name: "Options" }));
+    expect(screen.getByLabelText("Most tokens for the whole job")).toHaveValue("200k");  // your saved default
+    fireEvent.change(screen.getByLabelText("Most tokens for the whole job"), { target: { value: "120k" } });
+    fireEvent.change(screen.getByLabelText("Most tokens for one agent's task"), { target: { value: "30,000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Make these my default" }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("set_limits", { job_tokens: 120_000, task_tokens: 30_000 }));
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("start", expect.objectContaining({ job_tokens: 120_000, task_tokens: 30_000 })));
+  });
+
+  it("a running job's limits are changed from its header", async () => {
+    const api = await workflow(state({ budget: { calls: 3, max_calls: 800, tokens_estimated: 40_000, max_tokens: 200_000, seconds: 60, max_seconds: 28800 } }));
+    fireEvent.click(screen.getByRole("button", { name: "Limits" }));
+    fireEvent.change(screen.getByLabelText("Most tokens for the whole job"), { target: { value: "80k" } });
+    fireEvent.change(screen.getByLabelText("Most tokens for one agent's task"), { target: { value: "20k" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("set_budget", { workflow: "w1", job_tokens: 80_000, task_tokens: 20_000 }));
+  });
+
+  it("you connect an MCP server, and its token goes with it to be kept in the Keychain", async () => {
+    const api = new FakeApi();
+    api.foundryDo = vi.fn(async (c: string) => (c === "mcp_list" ? { servers: [] } : { added: ["github"], servers: [] }));
+    await renderApp(api, "warroom");
+    fireEvent.click(await screen.findByRole("tab", { name: /Connectors/ }));
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "github" } });
+    fireEvent.change(screen.getByLabelText("Command or address"), { target: { value: "https://api.example.com/mcp" } });
+    fireEvent.change(screen.getByLabelText("Access token, if it needs one"), { target: { value: "ghp_secret" } });
+    expect(screen.getByLabelText("Access token, if it needs one")).toHaveAttribute("type", "password");
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("mcp_add", { name: "github", url: "https://api.example.com/mcp", token: "ghp_secret", for_agents: true }));
+  });
+
+  it("a pasted mcpServers config is sent as it is", async () => {
+    const api = new FakeApi();
+    api.foundryDo = vi.fn(async (c: string) => (c === "mcp_list" ? { servers: [] } : { added: ["figma"], servers: [] }));
+    await renderApp(api, "warroom");
+    fireEvent.click(await screen.findByRole("tab", { name: /Connectors/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Paste a config" }));
+    const pasted = '{ "mcpServers": { "Figma": { "url": "https://mcp.figma.com/mcp" } } }';
+    fireEvent.change(screen.getByLabelText(/The mcpServers block/), { target: { value: pasted } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("mcp_add", { config: pasted, token: "" }));
+  });
+
+  it("finished work is put on your GitHub only when you click, private unless you say otherwise", async () => {
+    const api = await workflow(state({ status: "done", greenfield: true, delivered: "/Users/me/Xenio/projects/notes-app", project: "/Users/me/Xenio/projects/notes-app", outcome: "Done and verified" }));
+    fireEvent.change(await screen.findByLabelText("Put it on your GitHub as"), { target: { value: "notes-app" } });
+    expect(api.foundryDo).not.toHaveBeenCalledWith("github_publish", expect.anything());
+    fireEvent.click(screen.getByRole("button", { name: "Create the repository and push" }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("github_publish", { workflow: "w1", name: "notes-app", private: true }));
+  });
+
+  it("a number of tokens is read as you would type it", () => {
+    expect([asTokens("150k"), asTokens("1.5m"), asTokens("150,000"), asTokens(""), asTokens("lots")]).toEqual([150_000, 1_500_000, 150_000, 0, 0]);
   });
 
   it("an empty command cannot be sent", async () => {
@@ -62,14 +123,14 @@ describe("the command", () => {
     api.foundry = vi.fn(async () => overview({ available: false, reason: "the engineering team is switched off" }));
     await renderApp(api, "warroom");
     expect(await screen.findByText("the engineering team is switched off")).toBeInTheDocument();
-    expect(screen.queryByLabelText("What should the team build?")).toBeNull();
+    expect(screen.queryByLabelText("What should the team do?")).toBeNull();
   });
 
   it("a server error is shown, not swallowed", async () => {
     const api = new FakeApi();
     api.foundryDo = vi.fn(async () => { throw new Error("the team needs a key"); });
     await renderApp(api, "warroom");
-    fireEvent.change(await screen.findByLabelText("What should the team build?"), { target: { value: "x" } });
+    fireEvent.change(await screen.findByLabelText("What should the team do?"), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByText("the team needs a key")).toBeInTheDocument();
   });
@@ -648,5 +709,95 @@ describe("skills", () => {
       fireEvent.click(screen.getByRole("button", { name }));
       await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith(command, { skill: "s1" }));
     }
+  });
+});
+
+describe("the digital company", () => {
+  const working = (over = {}) => state(over, { team: [member({ agent: "researcher", name: "Researcher", role: "research", work: "research", state: "working", task: "Find competitors", model: "qwen3-5-397b", tools_used: 3 })], events: [{ id: "e1", seq: 1, type: "web", workflow: "w1", agent: "researcher", task: "t", at: AT, data: { query: "best crm" } }] });
+
+  it("shows who is doing what on the floor, with their own arrow", async () => {
+    await workflow(working());
+    fireEvent.click(await screen.findByRole("tab", { name: /Floor/ }));
+    expect((await screen.findAllByText("Find competitors")).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Now: best crm/)).toBeInTheDocument();
+    expect(screen.getAllByText("Researcher").length).toBeGreaterThan(1);
+  });
+
+  it("lets you take over, and says what is real", async () => {
+    const api = new FakeApi();
+    const live = { browsers: [{ agent: "researcher", name: "Researcher", colour: "#2e7dff", url: "https://x.example", title: "X", signed_in: false, kind: "private browser", picture: false, last: { action: "click", label: "Save" } }], allowed: true, computer: { taken_over: false, holder: null, waiting: [], arrows: [{ name: "Ben", colour: "#12a150", x: 10, y: 20, action: "press", label: "Save", app: "Notes", window: "Untitled", how: "without touching your mouse", at: 1 }], windows_in_use: [] }, actions: [{ agent: "researcher", at: AT, action: "click", label: "Save", ok: true, where: "private browser" }] };
+    api.foundryDo = vi.fn(async (command: string) => (command === "live" ? live : { taken_over: true })) as never;
+    await workflow(working(), api);
+    fireEvent.click(await screen.findByRole("tab", { name: "Live" }));
+    expect(await screen.findByText(/its own private browser, not your screen/)).toBeInTheDocument();
+    expect(screen.getByText("without touching your mouse")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Take over/ }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("take_over", expect.anything()));
+  });
+
+  it("shows your orders as they really stand", async () => {
+    await workflow(state({ orders: [{ id: "o1", text: "Make it blue", state: "not done", binding: true, at: AT, evidence: "it is still red" }] }));
+    expect(await screen.findByText("Make it blue")).toBeInTheDocument();
+    expect(screen.getByText("not done")).toBeInTheDocument();
+    expect(screen.getByText(/it is still red/)).toBeInTheDocument();
+  });
+
+  it("calls you the CEO and XENIO the manager, and shows an acknowledgement as one", async () => {
+    await workflow(state({}, { messages: [message({ sender: "xenio", recipient: "you", type: "ACK", content: "Got it." })] }));
+    fireEvent.click(await screen.findByRole("tab", { name: /Conversation/ }));
+    expect(await screen.findByText("XENIO (manager)")).toBeInTheDocument();
+    expect(screen.getByText("acknowledges")).toBeInTheDocument();
+  });
+
+  it("lets you talk to one agent directly, mid-work", async () => {
+    const api = await workflow(working());
+    fireEvent.change(await screen.findByLabelText("Say it to"), { target: { value: "researcher" } });
+    fireEvent.change(screen.getByLabelText("Your message"), { target: { value: "Look at India too" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("message", expect.objectContaining({ text: "Look at India too", to: "researcher" })));
+  });
+});
+
+describe("the vault page", () => {
+  const vault = { exists: true, touch_available: true, touch_ready: false, items: [{ id: "i1", host: "linkedin.com", label: "Work", added: AT }] };
+
+  it("has no box for a password, because you type that into the Mac's own window", async () => {
+    const api = new FakeApi();
+    api.foundryDo = vi.fn(async (command: string) => (command === "vault_status" ? vault : { ok: true })) as never;
+    await renderApp(api, "warroom");
+    fireEvent.click(await screen.findByRole("tab", { name: "Vault" }));
+    expect(await screen.findByText("linkedin.com")).toBeInTheDocument();
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+    expect(screen.queryByText(/reveal|show password|copy password/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add a login" }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("vault_add", {}));
+    expect(JSON.stringify((api.foundryDo as ReturnType<typeof vi.fn>).mock.calls)).not.toMatch(/password/i);
+  });
+
+  it("offers to create the vault when there is none", async () => {
+    const api = new FakeApi();
+    api.foundryDo = vi.fn(async () => ({ ...vault, exists: false, items: [] })) as never;
+    await renderApp(api, "warroom");
+    fireEvent.click(await screen.findByRole("tab", { name: "Vault" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Create your vault/ }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("vault_setup", {}));
+  });
+
+  it("says what XENIO really has, and what is missing", async () => {
+    const api = new FakeApi();
+    api.foundryDo = vi.fn(async () => ({ capabilities: [{ id: "drive", name: "Google Drive", kind: "connector", how: "", available: false, missing: "a Drive connector" }, { id: "web_search", name: "Searching the web", kind: "tool", how: "no key needed", available: true, missing: "" }] })) as never;
+    await renderApp(api, "warroom");
+    fireEvent.click(await screen.findByRole("tab", { name: "What it can do" }));
+    expect(await screen.findByText(/Needs a Drive connector/)).toBeInTheDocument();
+    expect(screen.getByText("no key needed")).toBeInTheDocument();
+  });
+});
+
+
+describe("work with nothing to run", () => {
+  it("offers no Run it, and so never asks the team to make a profile edit start", async () => {
+    await workflow(state({ status: "failed", run_id: "r1", team: { brief: { kind: "browser" }, members: [] } } as never));
+    expect(screen.queryByRole("button", { name: /Run it/ })).toBeNull();
+    expect(screen.queryByText(/Fix it so it starts/)).toBeNull();
   });
 });

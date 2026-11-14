@@ -50,6 +50,15 @@ class AXClient:
         """The window's code editor (Ace, Monaco, CodeMirror or a big text area), focused through accessibility."""
         return self._call("editor", timeout=10, id=int(hwnd), focus=bool(focus))
 
+    def background_press(self, hwnd: int, name: str) -> dict:
+        return self._call("background_press", timeout=8, id=int(hwnd), name=str(name))
+
+    def background_fill(self, hwnd: int, name: str, text: str) -> dict:
+        return self._call("background_fill", timeout=8, id=int(hwnd), name=str(name), text=str(text))
+
+    def background_read(self, hwnd: int, name: str) -> dict:
+        return self._call("background_read", timeout=8, id=int(hwnd), name=str(name))
+
     def press(self, hwnd: int, name: str) -> dict:
         """Press the button named exactly ``name`` through accessibility (wherever it is on the page)."""
         return self._call("press", timeout=8, id=int(hwnd), name=str(name))

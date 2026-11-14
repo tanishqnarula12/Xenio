@@ -574,6 +574,7 @@ def _transform_tool_result(tool_name="", args=None, result=None, **kwargs):
     except Exception as exc:  # bookkeeping must never break a tool result
         _audit("OBSERVE_FAILED", tool=tool_name, error=repr(exc))
     try:
+        policy = _state["policy"]  # it was never bound here, so the policy's own masking never ran: only the plain fallback did
         cleaned = policy.redact_tool_output(tool_name, kwargs.get("args") if isinstance(kwargs.get("args"), dict) else kwargs, result, _state["secrets"]) if policy is not None and isinstance(result, str) else _redact(result)
     except Exception:  # never let a masking problem pass text through unmasked
         cleaned = _redact(result)

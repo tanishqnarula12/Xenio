@@ -19,7 +19,6 @@ import os
 import subprocess
 import sys
 import time
-from ctypes import wintypes as w
 
 from app.desktop.common import UIAError
 from app.desktop.common import score_name as _score

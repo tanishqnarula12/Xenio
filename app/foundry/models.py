@@ -14,21 +14,32 @@ from pathlib import Path
 from app.integrations import nabh as nabh_module
 from app.integrations.nabh import NabhError
 
-FALLBACK_NABH = ("glm-5-2", "deepseek-v4-pro", "kimi-k2-7-code")
+FALLBACK_NABH = ("glm-5-2", "deepseek-v4-pro", "kimi-k2-7-code", "qwen3-5-397b", "gpt-oss-120b")  # the last two from other makers, for when Nabh says the first ones are busy
 # measured on the same design question (2026-11-04): these gave a usable answer in 5-9 s; kimi-k3, qwen3 and minimax-m3 came back empty
 # cheap first: on a nearly empty account deepseek-v4-1-flash, gpt-oss and gemma were still accepted while GLM and Kimi were refused, which says what they cost
 DEBATE_SEATS = ("deepseek-v4-1-flash", "gpt-oss-120b", "deepseek-v4-pro", "kimi-k2-7-code")
 # who may do what, best first. A tool loop needs a model that really calls tools (glm, kimi, qwen, measured); a review with no tools can go to the cheapest head that reasons well.
 POOLS = {"build": ("glm-5-2", "kimi-k2-7-code", "qwen3-5-397b"), "ui": ("glm-5-2", "kimi-k2-7-code", "qwen3-5-397b"), "test": ("kimi-k2-7-code", "qwen3-5-397b", "glm-5-2"), "docs": ("qwen3-5-397b", "kimi-k2-7-code"),
-         "review": ("deepseek-v4-pro", "deepseek-v4-1-flash", "gpt-oss-120b"), "security": ("deepseek-v4-1-flash", "deepseek-v4-pro", "gpt-oss-120b"), "plan": ("glm-5-2", "kimi-k2-7-code")}
+         "review": ("deepseek-v4-pro", "deepseek-v4-1-flash", "gpt-oss-120b"), "security": ("deepseek-v4-1-flash", "deepseek-v4-pro", "gpt-oss-120b"), "plan": ("glm-5-2", "kimi-k2-7-code"),
+         "research": ("qwen3-5-397b", "kimi-k2-7-code", "glm-5-2"), "content": ("glm-5-2", "qwen3-5-397b", "kimi-k2-7-code"), "data": ("kimi-k2-7-code", "qwen3-5-397b", "glm-5-2"), "browser": ("kimi-k2-7-code", "qwen3-5-397b", "glm-5-2"), "desktop": ("kimi-k2-7-code", "qwen3-5-397b", "glm-5-2"), "assistant": ("qwen3-5-397b", "kimi-k2-7-code", "glm-5-2")}
 
 
 def work_of(agent) -> str:
     """What kind of work this is, which decides which models are fit for it."""
     caps = set(agent.capabilities)
     words = f"{agent.name} {agent.role}".lower()
+    if "computer_use" in caps:
+        return "desktop"
+    if "connectors" in caps:
+        return "assistant"
+    if "agent_browser" in caps:
+        return "browser"
     if "docs_write" in caps and "scoped_file_write" not in caps:
-        return "docs"
+        if "deliverables" in caps:
+            return "content"
+        return "research" if "web_research" in caps else "docs"
+    if "deliverables" in caps and "image_make" not in caps:
+        return "data"
     if "test_execution" in caps:
         return "test"
     if "security_checks" in caps:
@@ -199,6 +210,7 @@ class ModelRouter:
         """(the answer, the model that gave it)."""
         client = self._client()
         last = None
+        waited = False
         for model in self.chain(agent, prefer):
             if budget is not None:
                 budget.check()
@@ -211,7 +223,19 @@ class ModelRouter:
                     raise OutOfCredit(str(exc)) from None
                 if exc.kind in ("auth", "config"):
                     break
-                continue
+                if getattr(exc, "busy", False):  # that model is busy, not us: the next one answers now
+                    continue
+                if exc.kind == "rate_limit" and not waited and float(getattr(exc, "retry_after", 0) or 8) <= 15:  # "try again in 7 s" is a short wait here; a long one
+                    waited = True  # goes back to the workflow, which waits without holding a thread and tells you why (a real job failed at its first step on one)
+                    time.sleep(float(getattr(exc, "retry_after", 0) or 8))
+                    try:
+                        answer = client.stream_text({"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.3, "stream_options": {"include_usage": True}}, timeout)
+                        text = str(answer)
+                    except NabhError as again:
+                        last = again
+                        continue
+                else:
+                    continue
             if budget is not None:
                 budget.spend(sum(len(str(m.get("content") or "")) for m in messages) + len(text), int((getattr(answer, "usage", None) or {}).get("total_tokens") or 0))
             return text, model

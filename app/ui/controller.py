@@ -22,7 +22,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from app import __version__
 from app.config import PROJECT_ROOT, Settings, default_hermes_home
@@ -747,6 +747,28 @@ class UiController:
         if foundry is None:
             return {"available": False, "reason": "the engineering team is switched off", "workflows": [], "agents": [], "skills": []}
         return json.loads(self.redact(json.dumps(foundry.overview(), default=str)))
+
+    def foundry_picture(self, workflow: str, agent: str) -> bytes:
+        foundry = getattr(self.engineering, "foundry", None)
+        if foundry is None:
+            raise UiError("The team is not available", 404)
+        from app.foundry.engine import FoundryError
+
+        try:
+            return foundry.live_picture(workflow, agent)
+        except FoundryError as exc:
+            raise UiError(str(exc), exc.status) from None
+
+    def foundry_file(self, workflow: str, path: str) -> tuple[bytes, str, str]:
+        foundry = getattr(self.engineering, "foundry", None)
+        if foundry is None:
+            raise UiError("The team is not available", 404)
+        from app.foundry.engine import FoundryError
+
+        try:
+            return foundry.engine.artifact_file(workflow, path)
+        except FoundryError as exc:
+            raise UiError(str(exc), exc.status) from None
 
     def foundry_command(self, command: str, payload: dict) -> dict:
         """What you do in the War Room. Coming through your signed-in session is what makes it yours: agents have no way in here."""

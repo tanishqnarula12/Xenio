@@ -174,6 +174,20 @@ class TestOpen:
         with pytest.raises(DesktopError, match="no new window"):
             work(desk, run).open("https://example.com")
 
+    def test_a_window_safari_opened_on_another_desktop_is_closed_again_and_said_so(self, desk, monkeypatch):
+        import app.desktop.browser as module
+
+        monkeypatch.setattr(module, "OPEN_WAIT", 0.01)
+        calls = []
+
+        def run(argv, **kw):  # measured: the CEO in a full-screen editor, Safari on another Space. Four windows were left behind
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "50173\n" if len(calls) == 1 else "", "")
+
+        with pytest.raises(DesktopError, match="another desktop") as caught:
+            work(desk, run).open("https://example.com")
+        assert caught.value.status == "NEEDS_PERMISSION" and len(calls) == 2 and calls[1][-1] == "50173" and "close w" in calls[1][calls[1].index("-e") + 1]
+
     def test_a_page_that_shows_nothing_yet_is_said_so(self, desk, monkeypatch):
         import app.desktop.browser as module
 
@@ -342,3 +356,28 @@ class TestMoving:
     def test_it_keeps_the_display_awake_while_working(self, desk):
         work(desk).page({}, "s")
         assert desk.awake == 1
+
+
+
+def test_an_agent_never_falls_back_to_whatever_window_is_in_front():
+    """On a real test an agent with no window of its own was given the CEO's own YouTube, and clicked on it."""
+    from types import SimpleNamespace
+
+    import pytest
+
+    from app.desktop.browser import BrowserWork
+    from app.desktop.common import WindowInfo
+    from app.desktop.service import DesktopError
+
+    front = WindowInfo(1, "YouTube", "Safari", 10, (0, 0, 800, 600), foreground=True)
+    linkedin = WindowInfo(2, "Tanishq Narula | LinkedIn", "Safari", 10, (0, 0, 800, 600))
+    other = WindowInfo(3, "LinkedIn Learning", "Safari", 10, (0, 0, 800, 600))
+    desktop = SimpleNamespace(windows=SimpleNamespace(list_windows=lambda: [front, linkedin, other]), is_own=lambda w: False)
+    work = BrowserWork(desktop, strict=True)
+    with pytest.raises(DesktopError, match="no window of your own"):
+        work.pick({}, "w:agent")
+    with pytest.raises(DesktopError, match="name one more exactly"):
+        work.adopt("w:agent", "LinkedIn")
+    with pytest.raises(DesktopError, match="name the window"):
+        work.adopt("w:agent", "")
+    assert work.adopt("w:agent", "Tanishq Narula").hwnd == 2 and work.pick({}, "w:agent").hwnd == 2

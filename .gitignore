@@ -40,3 +40,7 @@ native/build/
 
 # tools run from the repository root
 /node_modules/
+
+# The original, full-size screen recording (over GitHub's 100 MB limit, and unblurred). The repo has docs/media/xenio-demo.mp4.
+/xenio .mp4
+*.mov

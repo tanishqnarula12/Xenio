@@ -17,6 +17,7 @@ never in a message: a response is cleaned of anything that looks like one before
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import re
@@ -68,9 +69,10 @@ class _Answer(str):
 class NabhError(Exception):
     """``kind``: config | auth | quota | rate_limit | timeout | network | rejected | provider | bad_response"""
 
-    def __init__(self, kind: str, message: str, retry_after: int | None = None):
+    def __init__(self, kind: str, message: str, retry_after: int | None = None, busy: bool = False):
         super().__init__(message)
         self.kind, self.retry_after = kind, retry_after
+        self.busy = busy  # this one model is busy (MODEL_BUSY), not the account: another model can answer at once
 
 
 def configure(values: Mapping[str, str]) -> None:
@@ -122,7 +124,7 @@ class Nabh:
             if isinstance(getattr(exc, "reason", None), TimeoutError):
                 raise NabhError("timeout", f"Nabh did not answer in {int(timeout)} s") from None
             raise NabhError("network", "Nabh could not be reached: check the internet connection") from None
-        except OSError:
+        except (OSError, http.client.HTTPException):  # a connection dropped mid-answer (IncompleteRead) is the network too
             raise NabhError("network", "Nabh could not be reached: check the internet connection") from None
         try:
             data = json.loads(raw)
@@ -172,7 +174,7 @@ class Nabh:
             if isinstance(getattr(exc, "reason", None), TimeoutError):
                 raise NabhError("timeout", "Nabh stopped answering part way through") from None
             raise NabhError("network", "Nabh could not be reached: check the internet connection") from None
-        except OSError:
+        except (OSError, http.client.HTTPException):  # a connection dropped mid-answer (IncompleteRead) is the network too
             raise NabhError("network", "the connection to Nabh was lost part way through") from None
         text = "".join(pieces)
         if not text.strip():
@@ -229,15 +231,17 @@ class Nabh:
             if isinstance(getattr(exc, "reason", None), TimeoutError):
                 raise NabhError("timeout", "Nabh stopped answering part way through") from None
             raise NabhError("network", "Nabh could not be reached: check the internet connection") from None
-        except OSError:
+        except (OSError, http.client.HTTPException):  # a connection dropped mid-answer (IncompleteRead) is the network too
             raise NabhError("network", "the connection to Nabh was lost part way through") from None
         return {"content": "".join(pieces), "tool_calls": [calls[i] for i in sorted(calls)], "cut": finish == "length", "usage": usage if isinstance(usage, dict) else {}}
 
     @staticmethod
     def _http_error(exc: urllib.error.HTTPError) -> NabhError:
+        why = ""
         try:
             body = json.loads(exc.read() or b"{}")
             said = (body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else body.get("error")
+            why = str((body.get("error") or {}).get("code") or "") if isinstance(body.get("error"), dict) else ""
         except (ValueError, OSError, AttributeError):
             said = ""
         said = _KEYLIKE.sub("[hidden]", str(said or ""))[:200]
@@ -246,6 +250,8 @@ class Nabh:
             return NabhError("auth", "Nabh refused the key: check NABH_API_KEY")
         if code == 402:
             return NabhError("quota", said or "the Nabh account has no balance left")
+        if code == 429 and why == "MODEL_BUSY":  # measured 2026-11-06: glm, deepseek, kimi and minimax all busy for many minutes while gpt-oss and qwen answered
+            return NabhError("rate_limit", "this model is busy on Nabh right now", None, busy=True)
         if code == 429:
             wait = _wait_of(exc.headers)
             return NabhError("rate_limit", "Nabh is limiting requests right now" + (f": try again in {wait} s" if wait else ": try again in a moment"), wait)

@@ -6,7 +6,6 @@ labels: ``xenio_form`` puts values into fields without the model seeing them, an
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from app.safety.policy import RiskLevel

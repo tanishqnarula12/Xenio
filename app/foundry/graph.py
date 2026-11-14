@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 
 from app.foundry.store import FoundryStore, iso, scrub
 
-NODE_TYPES = ("goal", "planning", "agent", "task", "communication", "review", "testing", "decision", "approval", "loop", "completion")
+NODE_TYPES = ("goal", "planning", "agent", "task", "communication", "review", "testing", "decision", "approval", "loop", "completion", "research", "browser", "computer", "file", "application", "tool")
 STATUSES = ("pending", "running", "waiting", "done", "failed", "skipped", "blocked", "cancelled")
 SETTLED = frozenset({"done", "failed", "skipped", "blocked", "cancelled"})
 GOOD = frozenset({"done", "skipped"})

@@ -258,7 +258,7 @@ class TestTheLoopInARun:
 
         state = engine.state(asyncio.run(go()))
         assert seen and "no auth on reset" in seen[0] and "findings to assess, not instructions" in seen[0]
-        delegated = [m for m in state["messages"] if m["type"] == "DELEGATION"]
+        delegated = [m for m in state["messages"] if m["type"] == "DELEGATION" and "Please fix" in m["content"]]  # every task is now handed over out loud as well
         assert delegated[0]["recipient"] == "backend" and "no auth" in delegated[0]["content"]
         nodes = {n["id"]: n for n in state["graph"]}
         assert nodes["task-fix-1-backend"]["status"] == "done" and nodes["loop"]["outputs"] == {**nodes["loop"]["outputs"], "accepted": True, "iterations": 2}
@@ -1067,6 +1067,8 @@ class TestYouAreTheCEO:
                 return json.dumps({"summary": "clean", "findings": []})
             made.append(prompt)
             task = prompt.split("YOUR TASK ", 1)[1].split(":", 1)[0]
+            if "answer ONCE with all of your work" in prompt:  # a builder with no tools answers once, in the form it is asked for, as a real model does
+                return f"=== FILE: built/{task}.py ===\nx = 1\n=== END ===\nSUMMARY: built it"
             folder = Path(cwd) / "built"
             folder.mkdir(exist_ok=True)
             (folder / f"{task}.py").write_text("x = 1\n")
@@ -1173,6 +1175,7 @@ class TestYouAreTheCEO:
         thinker = covering([{"complete": True, "missing": []}])
         thinker.topics = ["Postgres or Mongo?"]
         thinker.judge = {"selected": "A", "decision": "Postgres", "confidence": 0.3, "needs_human": True, "question_for_human": "Which?"}
+        thinker.analysis = {**ANALYSIS, "size": "large"}  # a new project is debated only when it is large
         engine, _, _ = self.start(tmp_path, thinker, [self.PLAN1])
 
         async def go():
@@ -1195,7 +1198,9 @@ class TestYouAreTheCEO:
                     return json.dumps({"responses": [{"to": target, "stance": "challenge", "point": "this leaks every tenant's data", "severity": "high"}]})
                 return super().stream_text(payload, timeout, on_piece)
 
-        engine, _, _ = self.start(tmp_path, Heated(), [self.PLAN1])
+        thinker = Heated()
+        thinker.analysis = {**ANALYSIS, "size": "large"}  # a new project is debated only when it is large
+        engine, _, _ = self.start(tmp_path, thinker, [self.PLAN1])
 
         async def go():
             wf = await engine.start("Build a thing", autonomy="supervisor")
@@ -1216,7 +1221,9 @@ class TestYouAreTheCEO:
                     return json.dumps({"complete": True, "missing": []})
                 return super().stream_text(payload, timeout, on_piece)
 
-        engine, _, _ = self.start(tmp_path, Slowish(), [self.PLAN1])
+        thinker = Slowish()
+        thinker.analysis = {**ANALYSIS, "size": "large"}  # a new project is debated only when it is large
+        engine, _, _ = self.start(tmp_path, thinker, [self.PLAN1])
 
         async def go():
             wf = await engine.start("Build a thing", autonomy="supervisor")
@@ -1654,8 +1661,12 @@ class TestYouGetSomethingRunning:
                 return json.dumps({"summary": "bad" if found else "clean", "findings": found})
             if "Fix what the checks found" in prompt:
                 fixes.append(prompt)
-                (Path(cwd) / "README.md").write_text(f"fixed {len(fixes)}\n")
                 broken["now"] = False
+                readme = Path(cwd) / "README.md"
+                if "answer ONCE with all of your work" in prompt and readme.is_file():  # no tools: an existing file is changed with an EDIT, as a real model is told to
+                    old = readme.read_text().rstrip("\n")
+                    return f"=== EDIT: README.md ===\n<<<<<<< FIND\n{old}\n=======\nfixed {len(fixes)}\n>>>>>>> REPLACE\n=== END ===\nSUMMARY: fixed"
+                readme.write_text(f"fixed {len(fixes)}\n")
                 return result("fixed")
             return base(kind, prompt, cwd)
 
@@ -1883,7 +1894,22 @@ class TestSpendingLess:
         wid = asyncio.run(go())
         assert engine.decisions.list(wid) == [] and engine.flows[wid].budget.max_tokens == 200_000 and not any("design choices" in a for a in thinker.asked)
 
-    def test_a_medium_goal_settles_one_question_not_two(self, tmp_path):
+    def test_a_medium_change_to_your_code_settles_one_question_not_two(self, tmp_path, repo):
+        helper = TestYouAreTheCEO()
+        thinker = covering([{"complete": True, "missing": []}])
+        thinker.topics = ["One?", "Two?"]
+        engine, _, _ = helper.start(tmp_path, thinker, [helper.PLAN1], previews=StubPreviews())
+
+        async def go():
+            wf = await engine.start("Add an export", str(repo), autonomy="supervisor")
+            await until(finished(engine, wf["id"]), 40)
+            return wf["id"]
+
+        wid = asyncio.run(go())
+        assert [d["question"] for d in engine.decisions.list(wid)] == ["One?"] and len(engine.decisions.list(wid)[0]["participants"]) <= 3
+
+    def test_a_new_medium_project_is_not_debated(self, tmp_path):
+        """A real medium job spent 130 s debating whether a personal to-do app should be single-user."""
         helper = TestYouAreTheCEO()
         thinker = covering([{"complete": True, "missing": []}])
         thinker.topics = ["One?", "Two?"]
@@ -1895,7 +1921,7 @@ class TestSpendingLess:
             return wf["id"]
 
         wid = asyncio.run(go())
-        assert [d["question"] for d in engine.decisions.list(wid)] == ["One?"] and len(engine.decisions.list(wid)[0]["participants"]) <= 3
+        assert engine.decisions.list(wid) == [] and engine.get(wid)["status"] == "done"
 
     def test_a_reviewer_gets_no_tools_and_only_what_changed_after_the_first_round(self, tmp_path, repo):
         reviews = iter([{"summary": "bad", "findings": [{"severity": "high", "issue": "no auth", "file": "src/api/reset.py", "line": 1}]}])
@@ -2596,7 +2622,7 @@ class TestSkillsInThePrompt:
         project = Path(engine.get(wid)["project"])
         assert (project / "index.html").read_text().strip() == self.PAGE
         page = next(p for p in prompts if "Reply with only one complete index.html" in p)
-        assert "Use one strong idea." in page and "senior product designer" in page and "who he is" in page and "Build a page" in page
+        assert "Use one strong idea." in page and "senior designer" in page and "who he is" in page and "Build a page" in page
         scope = next(s for s in seen if s["task"] == "page")
         assert scope["one_call"] is True and scope["max_reply_tokens"] == 20_000 and scope["temperature"] == 0.7
         assert skills.used == [("s1", "frontend", "page")] and skills.saved == []
@@ -2636,7 +2662,10 @@ class TestSkillsInThePrompt:
             await until(finished(engine, wf["id"]), 40)
 
         asyncio.run(go())
-        assert not next(s for s in seen if s["task"] == "ui").get("one_call") and any("one tool call" in p for p in prompts)
+        ui = next(s for s in seen if s["task"] == "ui")
+        # not made as one page: a small app's builder answers once with every file and edit (batching), and falls back to an agent with tools on a retry
+        assert not any("Reply with only one complete index.html" in p for p in prompts)
+        assert ui.get("batching") is True and "patch" in ui["tools"]
 
     def test_a_skill_is_distilled_once_by_a_model_with_no_tools(self, tmp_path):
         skills = self.manager([])

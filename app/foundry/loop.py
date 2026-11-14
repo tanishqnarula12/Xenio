@@ -102,7 +102,7 @@ class EngineeringLoop:
             await self.hooks.checkpoint()
             issues = await self.hooks.verify(number)  # TEST, REVIEW, IDENTIFY_ISSUES
             blocking = [i for i in issues if i["severity"] == "high"]
-            workable = [i for i in issues if not i.get("unassignable") and (i["severity"] == "high" or (self.policy.fix_medium and number == 1))]  # the smaller findings get one pass: chasing them round after round is where tokens go
+            workable = [i for i in issues if not i.get("unassignable") and (i["severity"] == "high" or (i["severity"] == "medium" and self.policy.fix_medium and number == 1))]  # the smaller findings get one pass: chasing them round after round is where tokens go
             if not blocking and not workable:
                 self._record(number, {"stage": "ACCEPT_OR_ESCALATE", "issues": issues, "outcome": "accepted"})
                 return self._finish(number, True, issues, "tests and independent review found nothing that blocks this")

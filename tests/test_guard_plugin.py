@@ -250,3 +250,20 @@ def test_fails_closed_if_policy_cannot_load(monkeypatch, tmp_path):
     module._state["error"] = "simulated"
     assert module._pre_tool_call(tool_name="read_file", args={"path": "a"}) is None
     assert module._pre_tool_call(tool_name="terminal", args={"command": "ls"})["action"] == "block"
+
+
+def test_the_policys_own_masking_really_runs_on_tool_results(monkeypatch, tmp_path):
+    """It once named a variable it never bound: the error was caught, so only the plain fallback ever masked anything."""
+    module, ctx, _ws = load(monkeypatch, tmp_path)
+    policy = module._state["policy"]
+    assert policy is not None
+    seen = []
+    real = policy.redact_tool_output
+
+    def watched(*a, **k):
+        seen.append(a[0])
+        return real(*a, **k)
+
+    monkeypatch.setattr(policy, "redact_tool_output", watched)
+    out = ctx.hooks["transform_tool_result"](tool_name="terminal", args={"command": "cat x"}, result="key is sk-or-v1-testsecretvalue0000 ok")
+    assert seen == ["terminal"] and "testsecretvalue" not in out

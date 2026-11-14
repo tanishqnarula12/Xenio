@@ -595,6 +595,18 @@ class SkillManager:
         best = scored[0][1]
         return [s[2] for s in scored[:limit] if s[0] or s[1] >= best * 0.6]  # a clear winner works alone: a weak second is only tokens
 
+    def for_design(self, agent) -> list[dict]:
+        """Every usable skill that could help make something look good: all of them are in the running, so that all of them get used."""
+        out = [s for s in self._for_agent(agent, "design") if self._usable(s["id"]) is not None and (not self._work_of(s) or "ui" in self._work_of(s))]
+        return [{"name": s.get("name", ""), "description": self._description(s)} for s in out]
+
+    def named_for(self, agent, names: list[str] | None) -> list[dict]:
+        """The skills asked for by name, if this agent may use them. A name that does not match is dropped."""
+        wanted = {str(n).strip().lower() for n in names or [] if str(n).strip()}
+        if not wanted:
+            return []
+        return [s for s in self._for_agent(agent, "design") if str(s.get("name") or "").lower() in wanted and self._usable(s["id"]) is not None][:MAX_BRIEFED]
+
     def text_of(self, skill: dict) -> str:
         return self._document(skill)
 

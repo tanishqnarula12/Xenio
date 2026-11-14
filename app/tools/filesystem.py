@@ -131,7 +131,9 @@ def _trash_supported() -> bool:
 def _recycle(path: Path) -> None:
     """Send a file/folder to the Recycle Bin (Windows) or the Trash (macOS); both are recoverable."""
     if sys.platform == "darwin":
-        done = subprocess.run([MACOS_TRASH, "-s", "--", str(path)], capture_output=True, text=True, timeout=60)
+        if not path.is_absolute():  # so it can never be read as an option: macOS's trash takes no "--", and with one it
+            raise OSError(f"Trash operation refused: not an absolute path: {path}")  # tried to bin a file named "--" and every delete failed
+        done = subprocess.run([MACOS_TRASH, "-s", str(path)], capture_output=True, text=True, timeout=60)
         if done.returncode != 0:
             raise OSError(f"Trash operation failed: {(done.stderr or done.stdout).strip() or done.returncode}")
         return

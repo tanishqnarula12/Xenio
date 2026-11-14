@@ -52,6 +52,8 @@ export interface XenioApi {
   foundry(signal?: AbortSignal): Promise<import("./types").FoundryOverview>;
   foundryState(id: string, signal?: AbortSignal): Promise<import("./types").FoundryState>;
   foundryDo(command: string, body?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  foundryPicture(workflow: string, agent: string, signal?: AbortSignal): Promise<ArrayBuffer>;
+  foundryFile(workflow: string, path: string, signal?: AbortSignal): Promise<ArrayBuffer>;
   readonly demo: boolean;
   snapshot(signal?: AbortSignal): Promise<Snapshot>;
   chat(text: string, via: "text" | "voice", quiet?: boolean, files?: string[]): Promise<{ turn: string }>;
@@ -230,6 +232,8 @@ export class HttpApi implements XenioApi {
   overlayMetric(name: string, ms: number) { return this.request<{ ok: boolean }>("POST", "/overlay/metric", { body: { name, ms } }); }
   foundry(signal?: AbortSignal) { return this.request<import("./types").FoundryOverview>("GET", "/foundry", { signal }); }
   foundryState(id: string, signal?: AbortSignal) { return this.request<import("./types").FoundryState>("GET", `/foundry/workflows/${encodeURIComponent(id)}`, { signal, timeout: 30_000 }); }
+  foundryPicture(workflow: string, agent: string, signal?: AbortSignal) { return this.request<ArrayBuffer>("GET", `/foundry/live/${encodeURIComponent(workflow)}/${encodeURIComponent(agent)}`, { signal, binary: true, timeout: 15_000 }); }
+  foundryFile(workflow: string, path: string, signal?: AbortSignal) { return this.request<ArrayBuffer>("GET", `/foundry/file/${encodeURIComponent(workflow)}/${path.split("/").map(encodeURIComponent).join("/")}`, { signal, binary: true, timeout: 60_000 }); }
   foundryDo(command: string, body: Record<string, unknown> = {}) { return this.request<Record<string, unknown>>("POST", `/foundry/${encodeURIComponent(command)}`, { body, timeout: 300_000 }); }
   runs(signal?: AbortSignal) { return this.request<{ available: boolean; reason?: string; runs: RunSummary[] }>("GET", "/engineering/runs", { signal }); }
   run(id: string, signal?: AbortSignal) { return this.request<RunDetail>("GET", `/engineering/runs/${encodeURIComponent(id)}`, { signal }); }

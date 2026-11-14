@@ -566,9 +566,11 @@ export interface FoundrySkill {
   installed?: { id?: string; name: string; state: string; why?: string }[];
 }
 export interface FoundryBudget { calls: number; max_calls: number; tokens_estimated: number; max_tokens: number; seconds: number; max_seconds: number }
-export interface FoundryLine { budget?: FoundryBudget; size?: string; id: string; goal: string; status: string; created: string; updated: string; outcome: string; attention: string; milestone: number; autonomy: string; project: string; delivered: string; summary: string; paused: boolean; pause_reason: string }
-export interface FoundryOverview { available: boolean; reason?: string; can_think?: boolean; workflows: FoundryLine[]; agents: FoundryAgent[]; skills: FoundrySkill[]; seats?: string[]; judge?: string }
-export interface FoundryMember { agent: string; name: string; role: string; reused: boolean; why: string; work: string; kind: string; source: string; model: string; state: string; task: string; since: string; tools_used: number; permissions: FoundryPermissions; skills: string[]; performance: FoundryPerformance }
+export interface FoundryLine { budget?: FoundryBudget; budget_tokens?: number; task_tokens?: number; size?: string; id: string; goal: string; status: string; created: string; updated: string; outcome: string; attention: string; milestone: number; autonomy: string; project: string; delivered: string; summary: string; paused: boolean; pause_reason: string }
+export interface FoundryLimits { job_tokens: number; task_tokens: number }
+export interface FoundryMcpServer { name: string; transport: "stdio" | "http"; command: string[]; url: string; env: string[]; token_env: string; has_token: boolean; for_agents: boolean; added: number; tools: { name: string; about: string }[] }
+export interface FoundryOverview { available: boolean; reason?: string; can_think?: boolean; workflows: FoundryLine[]; agents: FoundryAgent[]; skills: FoundrySkill[]; seats?: string[]; judge?: string; limits?: FoundryLimits; mcp?: FoundryMcpServer[] }
+export interface FoundryMember { writing?: number; agent: string; name: string; role: string; reused: boolean; why: string; work: string; kind: string; source: string; model: string; state: string; task: string; since: string; tools_used: number; permissions: FoundryPermissions; skills: string[]; performance: FoundryPerformance }
 export interface FoundryNode { id: string; type: string; title: string; status: string; agent: string; deps: string[]; inputs: string[]; outputs: Record<string, unknown>; error: string; started: string; finished: string; priority: number; writes: boolean; detail: string; payload: Record<string, unknown>; budget: Record<string, unknown>; retries: number; max_retries: number; history: { status: string; at: string; note?: string }[] }
 export interface FoundryMessage { id: string; seq: number; workflow: string; sender: string; recipient: string; type: string; content: string; task: string; correlation: string; reply_to: string; evidence: string[]; artifacts: string[]; model: string; at: string }
 export interface FoundryOption { agent: string; name: string; model: string; position: string; reasoning: string; evidence: { text: string; checked: boolean }[]; tradeoffs: string[]; risks: string[]; validation: string[]; confidence: number; history: string[]; why_changed?: string; label: string }
@@ -580,6 +582,18 @@ export interface FoundryDecision {
 }
 export interface FoundryEventRow { id: string; seq: number; type: string; workflow: string; agent: string; task: string; at: string; data: Record<string, unknown> }
 export interface FoundryIntervention { id: string; kind: string; text: string; to: string; effect: string[]; at: string }
-export interface FoundryWorkflow extends FoundryLine { greenfield?: boolean; constraints: string[]; require_evidence: boolean; run_id: string; report?: string; verified?: boolean; model_use?: Record<string, number> }
+export interface FoundryWorkflow extends FoundryLine { team?: { brief?: { kind?: string } }; orders?: FoundryOrder[]; design?: Record<string, unknown>; missing?: { id: string; name: string; missing: string }[]; greenfield?: boolean; constraints: string[]; require_evidence: boolean; run_id: string; report?: string; verified?: boolean; model_use?: Record<string, number> }
 export interface FoundryPreview { state: string; url?: string; command?: string; kind?: string; detail?: string; log?: string; since?: number }
 export interface FoundryState { workflow: FoundryWorkflow; team: FoundryMember[]; graph: FoundryNode[]; counts: Record<string, number>; messages: FoundryMessage[]; decisions: FoundryDecision[]; interventions: FoundryIntervention[]; loop: { iteration: number; stage: string; outcome: string; issues?: { summary: string; severity: string }[] }[]; events: FoundryEventRow[]; live: boolean; seq: number; preview?: FoundryPreview }
+
+export interface FoundryOrder { id: string; text: string; state: string; binding: boolean; at: string; evidence: string }
+export interface FoundryArrow { name: string; colour: string; x: number | null; y: number | null; action: string; label: string; app: string; window: string; how: string; at: number }
+export interface FoundryBrowser { agent: string; name: string; colour: string; url: string; title: string; signed_in: boolean; kind: string; picture: boolean; last: { action?: string; label?: string; x?: number; y?: number; ok?: boolean } }
+export interface FoundryLive {
+  browsers: FoundryBrowser[]; allowed: boolean;
+  computer: { taken_over: boolean; holder: { name: string; colour: string; for_seconds: number; last: Record<string, unknown> } | null; waiting: { name: string }[]; arrows: FoundryArrow[]; windows_in_use: { window: string }[] };
+  actions: { agent: string; at: string; action: string; label: string; x?: number; y?: number; ok: boolean; where: string; url?: string; window?: string; app?: string }[];
+}
+export interface FoundryArtifact { path: string; kind: string; bytes: number; modified: string; versions: number; history: { commit: string; by: string; at: string; what: string }[] }
+export interface FoundryCapability { id: string; name: string; kind: string; how: string; available: boolean; missing: string }
+export interface VaultState { exists: boolean; touch_available: boolean; touch_ready: boolean; items: { id: string; host: string; label: string; added: string }[] }

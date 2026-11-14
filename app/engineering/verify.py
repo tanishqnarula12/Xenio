@@ -80,6 +80,22 @@ def _python_for(source: Path) -> str:
     return shutil.which("python3") or sys.executable
 
 
+_NOT_THE_PROJECT = {".venv", "venv", ".deps", "node_modules", ".git", ".agents", "__pycache__", "site-packages"}
+
+
+def python_tests(root: Path, limit: int = 3) -> list[Path]:
+    """Python test files anywhere in the project, as pytest itself finds them: a real backend kept its tests in app/test_main.py."""
+    found: list[Path] = []
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in _NOT_THE_PROJECT and not d.startswith(".")]  # never walked into: a venv or node_modules is thousands of folders
+        for name in files:
+            if name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")):
+                found.append(Path(folder) / name)
+                if len(found) >= limit:
+                    return found
+    return found
+
+
 def detect(worktree: Path, source: Path | None = None) -> list[TestCommand]:
     """Test commands this project declares, most specific first. ``source``: the user's original folder (venvs)."""
     source = source or worktree
@@ -87,9 +103,11 @@ def detect(worktree: Path, source: Path | None = None) -> list[TestCommand]:
     names = {p.name for p in worktree.iterdir()}
     pyproject = (worktree / "pyproject.toml").read_text(encoding="utf-8", errors="replace") if "pyproject.toml" in names else ""
     has_py_tests = any(worktree.glob("test_*.py")) or any(worktree.glob("tests/**/test_*.py")) or \
-        any(worktree.glob("tests/**/*_test.py"))
+        any(worktree.glob("tests/**/*_test.py")) or bool(python_tests(worktree))
     if "pytest.ini" in names or "conftest.py" in names or "[tool.pytest" in pyproject or has_py_tests:
         found.append(TestCommand("pytest", [_python_for(source), "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rfE"]))
+    if "manage.py" in names and not found:  # Django's own runner finds tests.py, which pytest does not: a real app's passing tests were reported as "no tests"
+        found.append(TestCommand("django", [_python_for(source), "manage.py", "test", "--noinput"]))
     if "package.json" in names:
         try:
             scripts = (json.loads((worktree / "package.json").read_text(encoding="utf-8")).get("scripts") or {})
@@ -132,13 +150,29 @@ def focused(commands: list[TestCommand], changed: list[str], worktree: Path) -> 
 
 # ---- running ----------------------------------------------------------------------------------------------------
 
-def _sandbox_profile(worktree: Path) -> str:
-    allowed = {str(worktree.resolve()), "/private/var/folders", "/private/tmp", os.path.realpath(tempfile.gettempdir())}
-    allowed |= {str(Path.home() / d) for d in (".cache", "Library/Caches", ".npm", ".cargo/registry", "go/pkg")}
-    subpaths = " ".join(f'(subpath "{p}")' for p in sorted(allowed))
-    return ("(version 1)\n(allow default)\n(deny network-outbound)\n(allow network-outbound (remote ip \"localhost:*\"))\n"
-            "(allow network-outbound (remote unix-socket))\n(deny file-write*)\n"
-            f"(allow file-write* {subpaths} (literal \"/dev/null\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n")
+# where language tools keep themselves inside a home folder: reading them is how a test runner starts at all
+_TOOL_HOMES = (".local/share/uv", ".pyenv", ".nvm", ".volta", ".cargo", ".rustup", "go", ".npm", ".cache", "Library/Caches", ".bun", ".deno")
+
+
+def _sandbox_profile(worktree: Path, program: str = "") -> str:
+    """Code XENIO did not write: no writes outside the work, no network beyond this Mac, and nothing of your home folder
+    to read but the tools it runs on. A real check found an agent's test could list ~/Library."""
+    home = Path.home()
+    writable = {str(worktree.resolve()), "/private/var/folders", "/private/tmp", os.path.realpath(tempfile.gettempdir())}
+    writable |= {str(home / d) for d in (".cache", "Library/Caches", ".npm", ".cargo/registry", "go/pkg")}
+    readable = {str(worktree.resolve()), *(str(home / d) for d in _TOOL_HOMES)}
+    if program:
+        exe = Path(os.path.abspath(shutil.which(program) or program))
+        for found in {exe, exe.resolve()}:
+            if len(found.parents) > 1:
+                readable.add(str(found.parents[1]))  # the venv or install it belongs to: bin/python -> the folder above bin
+                readable.add(str(found.parents[1].resolve()))  # and where it really is, when the venv is a link (pyvenv.cfg is read through it)
+    quote = lambda p: '"' + p.replace("\\", "\\\\").replace('"', '\\"') + '"'  # noqa: E731
+    reads = " ".join(f"(subpath {quote(p)})" for p in sorted(readable))
+    writes = " ".join(f"(subpath {quote(p)})" for p in sorted(writable))
+    return (f"(version 1)\n(allow default)\n(deny file-read* (subpath {quote(str(home))}))\n(allow file-read-metadata)\n(allow file-read* {reads})\n"
+            "(deny network-outbound)\n(allow network-outbound (remote ip \"localhost:*\"))\n(allow network-outbound (remote unix-socket))\n"
+            f"(deny file-write*)\n(allow file-write* {writes} (literal \"/dev/null\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n")
 
 
 def _env() -> dict:
@@ -155,10 +189,12 @@ def run(cmd: TestCommand, worktree: Path, timeout: float = DEFAULT_TIMEOUT, sand
     if not (os.path.isabs(argv[0]) and os.path.exists(argv[0])) and not shutil.which(argv[0]):
         return TestRun(label, "blocked", detail=f"{argv[0]} is not installed")  # checked first: the sandbox hides it
     sandboxed = sandbox and sys.platform == "darwin" and os.path.exists("/usr/bin/sandbox-exec")
+    if sandbox and not sandboxed:  # fail closed: code XENIO did not write never runs without its wall, it is not quietly run anyway
+        return TestRun(label, "blocked", detail="this machine has no sandbox (macOS sandbox-exec), so XENIO will not run code it did not write")
     profile = None
     if sandboxed:
         fd, profile = tempfile.mkstemp(suffix=".sb")
-        os.write(fd, _sandbox_profile(worktree).encode())
+        os.write(fd, _sandbox_profile(worktree, argv[0]).encode())
         os.close(fd)
         argv = ["/usr/bin/sandbox-exec", "-f", profile, *argv]
     started = time.monotonic()

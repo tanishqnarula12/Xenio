@@ -202,11 +202,11 @@ def build(scan: dict) -> Form:
             if name and not node.get("hidden") and not _off_the_page(node.get("rect"), web_area) and node.get("enabled", True):
                 words.append(f"[{name}]" if role == "AXButton" else name)
                 if role == "AXLink":
-                    link_nodes.append({"name": " ".join(name.split()), "index": node["i"]})
+                    link_nodes.append({"name": " ".join(name.split()), "index": node["i"], "rect": node.get("rect")})
                 if role == "AXButton" and not _CHROME_BUTTONS.match(name):
                     kind = "next" if _NEXT.search(name) else "back" if _BACK.match(name) else \
                         "submit" if _SUBMIT.search(name) else "other"
-                    buttons.append({"name": name, "index": node["i"], "kind": kind})
+                    buttons.append({"name": name, "index": node["i"], "kind": kind, "rect": node.get("rect")})
             continue
         kind = _kind(node)
         placeholder = str(node.get("placeholder") or "")

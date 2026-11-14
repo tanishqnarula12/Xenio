@@ -8,6 +8,7 @@ sandbox cannot be used, nothing runs: code is never run outside it.
 from __future__ import annotations
 
 import os
+import functools
 import re
 import shutil
 import subprocess
@@ -77,15 +78,26 @@ def _clang(cpp: bool) -> str | None:
     return None
 
 
+@functools.lru_cache(maxsize=1)
 def _sdk() -> list[str]:
-    """The SDK for this macOS (the Command Line Tools can ship a newer one that their linker cannot read: measured)."""
+    """An SDK this Mac's linker can really use, found by trying. After a macOS update the Command Line Tools shipped a
+    MacOSX27 SDK their own linker could not read ("unknown architecture"), and every C and C++ lesson stopped compiling."""
     folder = Path(_TOOLS) / "SDKs"
-    try:
-        major = subprocess.run(["/usr/bin/sw_vers", "-productVersion"], capture_output=True, text=True, timeout=5).stdout.split(".")[0].strip()
-        found = sorted(p for p in folder.glob(f"MacOSX{major}*.sdk") if not p.is_symlink())
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return ["-isysroot", str(found[-1])] if found else []
+
+    def version(p: Path) -> tuple:
+        return tuple(int(x) for x in re.findall(r"\d+", p.name)[:2]) or (0,)
+
+    candidates = sorted((p for p in folder.glob("MacOSX*.sdk") if not p.is_symlink()), key=version, reverse=True)
+    for sdk in candidates:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                done = subprocess.run([_clang(False), "-isysroot", str(sdk), "-x", "c", "-", "-o", os.path.join(tmp, "probe")], input="int main(void){return 0;}",
+                                      capture_output=True, text=True, timeout=30)
+            if done.returncode == 0:
+                return ["-isysroot", str(sdk)]
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return []
 
 
 def available() -> dict:

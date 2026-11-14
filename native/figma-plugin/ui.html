@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 12px/1.45 Inter, system-ui, sans-serif; margin: 12px; color: var(--figma-color-text, #222); background: var(--figma-color-bg, #fff); }
+  h1 { font-size: 13px; margin: 0 0 6px; }
+  p { margin: 0 0 8px; color: var(--figma-color-text-secondary, #666); }
+  input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--figma-color-border, #ccc); border-radius: 6px; background: transparent; color: inherit; }
+  button { margin-top: 8px; padding: 6px 10px; border: 0; border-radius: 6px; background: var(--figma-color-bg-brand, #0d99ff); color: #fff; cursor: pointer; }
+  #status { margin-top: 10px; font-weight: 600; }
+  .ok { color: var(--figma-color-text-success, #14ae5c); } .bad { color: var(--figma-color-text-danger, #f24822); }
+</style>
+</head>
+<body>
+<h1>XENIO</h1>
+<p>Paste the pairing code from XENIO's War Room, under Connectors. Keep this open while agents draw: every change can be undone.</p>
+<label for="code">Pairing code</label>
+<input id="code" type="password" autocomplete="off" placeholder="from the War Room">
+<button id="pair">Connect</button>
+<div id="status">Not connected</div>
+<script>
+  var BASE = "http://localhost:3779";
+  var token = "", info = {}, running = false;
+  var status = document.getElementById("status"), code = document.getElementById("code");
+  var button = document.getElementById("pair");
+  function say(text, good) {
+    status.textContent = text; status.className = good ? "ok" : (good === false ? "bad" : "");
+    button.textContent = good ? "Connected ✓" : "Connect";  /* already connected: nothing to click, and it shows */
+    button.disabled = !!good;
+    button.style.opacity = good ? "0.6" : "1";
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function headers() { return { "Content-Type": "application/json", "X-Xenio-Token": token }; }
+  async function hello() {
+    try {
+      var r = await fetch(BASE + "/hello", { method: "POST", headers: headers(), body: JSON.stringify(info) });
+      if (r.status === 403) { say("XENIO did not accept that code: copy it again from the War Room, Connectors", false); return false; }
+      say("Connected to XENIO" + (info.file ? ": " + info.file : ""), true);
+      return true;
+    } catch (e) {
+      say("XENIO is not running on this Mac: open XENIO, then Connect again", false);
+      return false;
+    }
+  }
+  async function loop() {
+    if (running) return;
+    running = true;
+    while (token) {
+      try {
+        var r = await fetch(BASE + "/next", { headers: headers() });
+        if (r.status === 403) { say("XENIO did not accept that code: copy it again from the War Room, Connectors", false); running = false; return; }
+        if (status.className !== "ok") say("Connected to XENIO" + (info.file ? ": " + info.file : ""), true);
+        if (r.status === 200) parent.postMessage({ pluginMessage: { type: "run", cmd: await r.json() } }, "*");
+      } catch (e) {
+        say("XENIO is not running on this Mac", false);
+        await sleep(3000);
+      }
+    }
+    running = false;
+  }
+  button.onclick = function () {
+    token = code.value.trim();
+    if (!token) { say("Paste the pairing code first", false); return; }
+    say("Connecting…");
+    parent.postMessage({ pluginMessage: { type: "save", token: token } }, "*");
+    hello().then(function (ok) { if (ok) loop(); });
+  };
+  onmessage = function (event) {
+    var m = event.data.pluginMessage || {};
+    if (m.type === "token" && m.token) { token = m.token; code.value = m.token; say("Connecting…"); hello().then(function (ok) { if (ok) loop(); }); }
+    if (m.type === "info") { info = { file: m.file, page: m.page, user: m.user }; if (token) hello(); }
+    if (m.type === "result") fetch(BASE + "/result", { method: "POST", headers: headers(), body: JSON.stringify(m) }).catch(function () {});
+  };
+  parent.postMessage({ pluginMessage: { type: "load" } }, "*");
+</script>
+</body>
+</html>

@@ -11,7 +11,7 @@ from collections import deque
 
 from app.config import Settings
 from app.memory.manager import MemoryManager
-from app.orchestrator import Orchestrator, describe_actions
+from app.orchestrator import Orchestrator
 from app.safety.permissions import NO_CLEAR_ANSWER, PermissionRequest, interpret_answer, is_new_request
 from app.sources import describe_sources
 

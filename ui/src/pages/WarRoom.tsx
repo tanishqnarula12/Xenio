@@ -1,6 +1,6 @@
-import { AlertTriangle, Check, ChevronLeft, CircleDashed, Copy, ExternalLink, FolderOpen, Hand, Loader2, MessageSquare, Pause, Play, RotateCw, Send, ShieldAlert, Square, Trash2, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Check, ChevronLeft, CircleDashed, Copy, Download, ExternalLink, Fingerprint, FolderOpen, Hand, ImagePlus, KeyRound, Loader2, MessageSquare, MousePointer2, Pause, Play, RotateCw, Send, ShieldAlert, Square, Trash2, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import type { FoundryAgent, FoundryDecision, FoundryEventRow, FoundryMember, FoundryMessage, FoundryNode, FoundryOverview, FoundrySkill, FoundryState } from "../api/types";
+import type { FoundryAgent, FoundryArtifact, FoundryCapability, FoundryMcpServer, FoundryDecision, FoundryEventRow, FoundryLive, FoundryMember, FoundryMessage, FoundryNode, FoundryOrder, FoundryOverview, FoundrySkill, FoundryState, VaultState } from "../api/types";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { XenioMark } from "../components/XenioMark";
@@ -10,6 +10,8 @@ import { useApp, useAppState } from "../state/context";
 import { href } from "../state/router";
 
 const OPEN = ["starting", "running", "paused", "waiting"];
+const TASK_NODES = ["task", "research", "browser", "computer", "file"];
+const NOTHING_TO_RUN = ["research", "document", "spreadsheet", "presentation", "browser", "desktop", "files", "answer"];
 
 /** Re-reads on every event, at most once per interval, and never throws away what is on screen while it does. */
 function useLive<T>(load: () => Promise<T>, deps: unknown[], every = 700) {
@@ -50,7 +52,7 @@ function useAct() {
 
 // ---- the people ------------------------------------------------------------------------------------------------------
 
-const SENDER_NAMES: Record<string, string> = { you: "You", xenio: "XENIO" };
+const SENDER_NAMES: Record<string, string> = { you: "You (CEO)", xenio: "XENIO (manager)" };
 const readable = (id: string) => id.replace(/[-_]+/g, " ").replace(/^./, (c) => c.toUpperCase());
 
 function hue(name: string): number {
@@ -92,6 +94,55 @@ function Spend({ state }: { state: FoundryState }) {
   );
 }
 
+/** A number of tokens as you would type it: 150000, 150,000, 150k or 1.5m. Empty is 0: XENIO decides. */
+export const asTokens = (value: string): number => {
+  const t = value.trim().toLowerCase().replace(/[,_\s]/g, "");
+  const m = /^(\d+(?:\.\d+)?)([km]?)$/.exec(t);
+  if (!m) return 0;
+  return Math.round(Number(m[1]) * (m[2] === "k" ? 1_000 : m[2] === "m" ? 1_000_000 : 1));
+};
+const shown = (n?: number) => (n ? tokens(n) : "");
+
+/** Your own token limits: for a whole job, and for one agent's task. Empty means XENIO decides. */
+function LimitFields({ id, job, task, setJob, setTask }: { id: string; job: string; task: string; setJob: (v: string) => void; setTask: (v: string) => void }) {
+  return (
+    <div className="wr-limits">
+      <div className="field"><label htmlFor={`${id}-job`}>Most tokens for the whole job</label><input id={`${id}-job`} inputMode="numeric" value={job} onChange={(e) => setJob(e.target.value)} placeholder="XENIO decides, by the size of the job" /></div>
+      <div className="field"><label htmlFor={`${id}-task`}>Most tokens for one agent's task</label><input id={`${id}-task`} inputMode="numeric" value={task} onChange={(e) => setTask(e.target.value)} placeholder="XENIO decides, by the kind of work" /></div>
+      <p className="wr-muted wr-limits__hint">Type 150k or 1.5m. When a job reaches its limit it stops and asks you. When a task reaches its limit, that agent stops and says where it got to.</p>
+    </div>
+  );
+}
+
+/** The limits of the work you are looking at, changed while it runs. */
+function LimitsControl({ state, act }: { state: FoundryState; act: (command: string, body: Record<string, unknown>) => Promise<unknown> }) {
+  const wf = state.workflow;
+  const [open, setOpen] = useState(false);
+  const [job, setJob] = useState(shown(wf.budget_tokens));
+  const [task, setTask] = useState(shown(wf.task_tokens));
+  const [error, setError] = useState("");
+  const apply = async (e: FormEvent) => {
+    e.preventDefault();
+    const jobTokens = asTokens(job), taskTokens = asTokens(task);
+    if ((job.trim() && !jobTokens) || (task.trim() && !taskTokens)) { setError("Type a number, like 150k."); return; }
+    setError("");
+    await act("set_budget", { workflow: wf.id, job_tokens: jobTokens, task_tokens: taskTokens });
+    setOpen(false);
+  };
+  return (
+    <span className="wr-limits-control">
+      <button type="button" className="wr-link" aria-expanded={open} onClick={() => setOpen(!open)}>Limits{wf.budget_tokens || wf.task_tokens ? " (yours)" : ""}</button>
+      {open && (
+        <form className="wr-limits-pop" onSubmit={(e) => void apply(e)} aria-label="Token limits for this work">
+          <LimitFields id={`wr-lim-${wf.id}`} job={job} task={task} setJob={setJob} setTask={setTask} />
+          {error && <p className="wr-error">{error}</p>}
+          <p className="wr-command__row"><Button variant="primary" type="submit">Apply</Button><Button onClick={() => setOpen(false)}>Cancel</Button></p>
+        </form>
+      )}
+    </span>
+  );
+}
+
 function ModelsUsed({ state }: { state: FoundryState }) {
   const models = Object.entries(state.workflow.model_use ?? {}).sort((a, b) => b[1] - a[1]);
   if (!models.length) return null;
@@ -116,7 +167,7 @@ const SAYS = { verb: "says", tone: "neutral" };
 const KINDS: Record<string, { verb: string; tone: string }> = {
   PROPOSAL: { verb: "proposes", tone: "propose" }, CHALLENGE: { verb: "challenges", tone: "challenge" }, COUNTERARGUMENT: { verb: "changes position", tone: "challenge" },
   REVIEW: { verb: "reviews", tone: "review" }, QUESTION: { verb: "asks", tone: "neutral" }, RESULT: { verb: "reports", tone: "result" }, BLOCKER: { verb: "is blocked", tone: "blocker" },
-  DECISION: { verb: "decision", tone: "decision" }, ESCALATION: { verb: "needs you", tone: "blocker" }, DELEGATION: { verb: "hands over", tone: "neutral" }, INFORMATION: { verb: "says", tone: "neutral" },
+  ACK: { verb: "acknowledges", tone: "ack" }, DECISION: { verb: "decision", tone: "decision" }, ESCALATION: { verb: "needs you", tone: "blocker" }, DELEGATION: { verb: "hands over", tone: "neutral" }, INFORMATION: { verb: "says", tone: "neutral" },
 };
 
 function MessageCard({ m, names }: { m: FoundryMessage; names: Map<string, string> }) {
@@ -145,7 +196,8 @@ function MessageCard({ m, names }: { m: FoundryMessage; names: Map<string, strin
 function Conversation({ state, names }: { state: FoundryState; names: Map<string, string> }) {
   const [agent, setAgent] = useState("");
   const [kind, setKind] = useState("");
-  const shown = state.messages.filter((m) => (!agent || m.sender === agent || m.recipient === agent) && (!kind || m.type === kind));
+  const [words, setWords] = useState("");
+  const shown = state.messages.filter((m) => (!agent || m.sender === agent || m.recipient === agent) && (!kind || m.type === kind) && (!words.trim() || m.content.toLowerCase().includes(words.trim().toLowerCase())));
   const list = useRef<HTMLOListElement | null>(null);
   const near = useRef(true);
   useEffect(() => { // only the feed moves: scrollIntoView would drag the whole page, and hide the goal and its controls
@@ -158,6 +210,7 @@ function Conversation({ state, names }: { state: FoundryState; names: Map<string
     <div className="wr-convo">
       {state.messages.length > 6 && (
         <div className="wr-filters">
+          <label>Find <input type="search" value={words} onChange={(e) => setWords(e.target.value)} placeholder="Any word" /></label>
           <label>Who <select value={agent} onChange={(e) => setAgent(e.target.value)}><option value="">Everyone</option>{people.map((p) => <option key={p} value={p}>{SENDER_NAMES[p] ?? names.get(p) ?? p}</option>)}</select></label>
           <label>Kind <select value={kind} onChange={(e) => setKind(e.target.value)}><option value="">Everything</option>{types.map((t) => <option key={t} value={t}>{KINDS[t]?.verb ?? t}</option>)}</select></label>
         </div>
@@ -170,15 +223,61 @@ function Conversation({ state, names }: { state: FoundryState; names: Map<string
   );
 }
 
-function Composer({ team, send, finished }: { team: FoundryMember[]; send: (text: string, to: string) => Promise<void>; finished: boolean }) {
+/** Pictures to go with what you say. Dropped, pasted or chosen. They are looked at once, and the team reads what was seen. */
+function usePictures() {
+  const { app } = useApp();
+  const [files, setFiles] = useState<{ id: string; name: string }[]>([]);
+  const [adding, setAdding] = useState(false);
+  const add = async (list: FileList | File[] | null) => {
+    const pictures = Array.from(list ?? []).filter((f) => f.type.startsWith("image/")).slice(0, 4);
+    if (!pictures.length) return;
+    setAdding(true);
+    try {
+      for (const file of pictures) {
+        const up = await app.api.upload(file);
+        setFiles((was) => [...was, { id: up.id, name: up.name }]);
+      }
+    } catch (e) {
+      app.store.notify({ tone: "danger", title: "That picture could not be added", message: (e as Error).message });
+    } finally {
+      setAdding(false);
+    }
+  };
+  return { files, adding, add, clear: () => setFiles([]), drop: (id: string) => setFiles((was) => was.filter((f) => f.id !== id)) };
+}
+
+function Pictures({ pictures }: { pictures: ReturnType<typeof usePictures> }) {
+  if (!pictures.files.length && !pictures.adding) return null;
+  return (
+    <p className="wr-chips wr-pictures">
+      {pictures.files.map((f) => <span key={f.id} className="wr-chip">{f.name} <button type="button" className="wr-link" aria-label={`Remove ${f.name}`} onClick={() => pictures.drop(f.id)}>×</button></span>)}
+      {pictures.adding && <span className="wr-muted">Adding…</span>}
+    </p>
+  );
+}
+
+function AttachButton({ pictures }: { pictures: ReturnType<typeof usePictures> }) {
+  const input = useRef<HTMLInputElement | null>(null);
+  return (
+    <>
+      <input ref={input} type="file" accept="image/*" multiple hidden aria-label="Add a picture" onChange={(e) => { void pictures.add(e.target.files); e.target.value = ""; }} />
+      <Button variant="quiet" type="button" aria-label="Add a picture" onClick={() => input.current?.click()}><ImagePlus size={15} aria-hidden="true" /></Button>
+    </>
+  );
+}
+
+function Composer({ team, send, finished }: { team: FoundryMember[]; send: (text: string, to: string, uploads: string[]) => Promise<void>; finished: boolean }) {
   const [text, setText] = useState("");
   const [to, setTo] = useState("team");
+  const pictures = usePictures();
   const go = async (e?: FormEvent) => {
     e?.preventDefault();
     const words = text.trim();
-    if (!words) return;
+    if (!words && !pictures.files.length) return;
     setText("");
-    await send(words, to);
+    const uploads = pictures.files.map((f) => f.id);
+    pictures.clear();
+    await send(words, to, uploads);
   };
   return (
     <form className={`wr-composer ${finished ? "wr-composer--change" : ""}`} onSubmit={(e) => void go(e)}>
@@ -186,9 +285,11 @@ function Composer({ team, send, finished }: { team: FoundryMember[]; send: (text
         <option value="team">The whole team</option>
         {team.map((m) => <option key={m.agent} value={m.agent}>{m.name}</option>)}
       </select>}
-      <textarea aria-label="Your message" rows={1} value={text} placeholder={finished ? "Tried it? Tell the team what to change." : "Say anything: “Stop, use PostgreSQL instead.”"} onChange={(e) => setText(e.target.value)}
+      <Pictures pictures={pictures} />
+      <AttachButton pictures={pictures} />
+      <textarea aria-label="Your message" rows={1} value={text} onPaste={(e) => { if (e.clipboardData.files.length) void pictures.add(e.clipboardData.files); }} placeholder={finished ? "Tried it? Tell the team what to change." : "Say anything, to anyone, any time: “Stop, use PostgreSQL instead.”"} onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void go(); } }} />
-      <Button variant="primary" type="submit" disabled={!text.trim()} aria-label="Send"><Send size={15} aria-hidden="true" /></Button>
+      <Button variant="primary" type="submit" disabled={!text.trim() && !pictures.files.length} aria-label="Send"><Send size={15} aria-hidden="true" /></Button>
     </form>
   );
 }
@@ -392,7 +493,7 @@ function NodeDetail({ node, state, names, act }: { node: FoundryNode; state: Fou
             <Button variant="danger" onClick={() => void act("reject", { workflow: wid, node: node.id })}>Reject</Button>
           </>}
           {node.status === "pending" && <Button variant="quiet" onClick={() => void act("priority", { workflow: wid, node: node.id, priority: node.priority + 1 })}>Do this sooner</Button>}
-          {node.status === "pending" && node.type === "task" && (
+          {node.status === "pending" && TASK_NODES.includes(node.type) && (
             <label className="wr-reassign">Give it to <select value={node.agent} onChange={(e) => void act("reassign", { workflow: wid, node: node.id, agent: e.target.value })}>
               {state.team.filter((m) => !node.writes || m.permissions.writes).map((m) => <option key={m.agent} value={m.agent}>{m.name}</option>)}
             </select></label>
@@ -462,6 +563,361 @@ function TeamRail({ state, onAsk }: { state: FoundryState; onAsk: (agent: string
   );
 }
 
+const ORDER_TONES: Record<string, string> = { done: "ok", "not done": "danger", heard: "neutral", "with the team": "running", noted: "neutral" };
+
+/** What you have told them to do, and how each one really stands. Only an independent review can mark one done. */
+function Orders({ orders }: { orders: FoundryOrder[] }) {
+  return (
+    <ul className="wr-orders">
+      {[...orders].reverse().map((o) => (
+        <li key={o.id}>
+          <p>{o.text}</p>
+          <p className="wr-orders__state"><Status tone={(ORDER_TONES[o.state] ?? "neutral") as "ok"}>{o.state}</Status>{o.evidence && <span className="wr-muted"> {o.evidence}</span>}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ---- the agent floor -------------------------------------------------------------------------------------------------
+
+const arrowColour = (name: string) => { const all = ["#2e7dff", "#12a150", "#b154f0", "#e0841b", "#0fa3b1", "#d6336c", "#5c7cfa", "#7a9e00"]; let n = 0; for (const c of name) n += c.charCodeAt(0); return all[n % all.length] ?? "#2e7dff"; };
+
+function Arrow({ colour, label }: { colour: string; label: string }) {
+  return <span className="wr-arrow" style={{ color: colour }}><MousePointer2 size={13} fill="currentColor" aria-hidden="true" /><span style={{ background: colour }}>{label}</span></span>;
+}
+
+/** Everyone on the team, as they really are right now. */
+function Floor({ state }: { state: FoundryState }) {
+  const last = useMemo(() => {
+    const out = new Map<string, FoundryEventRow>();
+    for (const e of state.events) if (e.agent && ["agent.tool", "web", "computer.action", "artifact", "vision"].includes(e.type)) out.set(e.agent, e);
+    return out;
+  }, [state.events]);
+  return (
+    <div className="wr-floor">
+      {state.team.map((m) => {
+        const e = last.get(m.agent);
+        const what = e ? String(e.data.title ?? e.data.label ?? e.data.query ?? e.data.url ?? e.data.path ?? e.data.what ?? "") : "";
+        const busy = m.state !== "idle";
+        return (
+          <article key={m.agent} className={`wr-seat ${busy ? "is-busy" : ""}`}>
+            <header><Avatar id={m.agent} name={m.name} /><div><h3>{m.name}</h3><p className="wr-muted">{m.work || m.role}</p></div><Status tone={busy ? "running" : "neutral"}>{busy ? "working" : "idle"}</Status></header>
+            <p className="wr-seat__task">{busy ? m.task : m.why || "Ready when needed."}</p>
+            {what && <p className="wr-seat__tool">{busy ? "Now" : "Last"}: {what}</p>}
+            <p className="wr-msg__meta"><Arrow colour={arrowColour(m.name)} label={m.name} /> <span>{m.model || "balanced"}</span>{m.tools_used ? <span>{m.tools_used} tool calls</span> : null}{m.writing && busy ? <span>{m.writing} pieces of reply so far</span> : null}</p>
+          </article>
+        );
+      })}
+      {!state.team.length && <Empty>The team is being assembled.</Empty>}
+    </div>
+  );
+}
+
+// ---- live view -------------------------------------------------------------------------------------------------------
+
+/** A picture of an agent's private browser, drawn from what it really has on screen. No model sees this unless an agent asks to look. */
+function BrowserCard({ workflow, b, tick }: { workflow: string; b: FoundryLive["browsers"][number]; tick: number }) {
+  const { app } = useApp();
+  const [src, setSrc] = useState("");
+  useEffect(() => {
+    if (!b.picture) return;
+    let gone = false;
+    let made = "";
+    app.api.foundryPicture(workflow, b.agent).then((raw) => { if (gone) return; made = URL.createObjectURL(new Blob([raw], { type: "image/jpeg" })); setSrc((was) => { if (was) URL.revokeObjectURL(was); return made; }); }, () => undefined);
+    return () => { gone = true; };
+  }, [app, workflow, b.agent, b.picture, tick]);
+  return (
+    <figure className="wr-browser">
+      <figcaption><Arrow colour={b.colour} label={b.name} /><span className="wr-muted" title={b.url}>{b.title || b.url || "No page yet"}</span>{b.signed_in && <Status tone="running">signed in</Status>}</figcaption>
+      {src ? <img src={src} alt={`What ${b.name} has on its browser now`} /> : <div className="wr-browser__blank">No picture yet</div>}
+      <p className="wr-muted">{b.last.action ? `${b.last.action}${b.last.label ? `: ${b.last.label}` : ""}` : "Nothing yet"} · its own private browser, not your screen</p>
+    </figure>
+  );
+}
+
+function LiveView({ workflow, open }: { workflow: string; open: boolean }) {
+  const { app } = useApp();
+  const [live, setLive] = useState<FoundryLive | null>(null);
+  const [tick, setTick] = useState(0);
+  const { act } = useAct();
+  useEffect(() => {
+    let stopped = false;
+    const read = () => app.api.foundryDo("live", { workflow }).then((value) => { if (!stopped) { setLive(value as unknown as FoundryLive); setTick((t) => t + 1); } }, () => undefined);
+    void read();
+    const timer = open ? setInterval(read, 1500) : null;
+    return () => { stopped = true; if (timer) clearInterval(timer); };
+  }, [app, workflow, open]);
+  if (!live) return <p className="wr-muted" role="status">Loading…</p>;
+  const c = live.computer;
+  return (
+    <div className="wr-live">
+      <section className={`wr-takeover ${c.taken_over ? "is-yours" : ""}`}>
+        <div>
+          <h3>{c.taken_over ? "The computer is yours" : "Your Mac"}</h3>
+          <p className="wr-muted">{c.taken_over ? "No agent will touch your screen until you hand it back. When you do, they read the screen again first." : live.allowed ? "This job may use your screen. Agents work in the background and your mouse stays yours." : "This job has not asked to use your screen."}</p>
+          {c.holder && <p>Borrowing the real pointer for one action: <Arrow colour={c.holder.colour} label={c.holder.name} /></p>}
+          {c.waiting.length > 0 && <p className="wr-muted">Waiting for the pointer: {c.waiting.map((w) => w.name).join(", ")}</p>}
+        </div>
+        {c.taken_over ? <Button variant="primary" onClick={() => void act("hand_back", {})}><Play size={14} aria-hidden="true" /> Hand it back</Button> : <Button variant="danger" onClick={() => void act("take_over", { why: "you took over" })}><Hand size={14} aria-hidden="true" /> Take over</Button>}
+      </section>
+      {c.arrows.length > 0 && (
+        <section>
+          <h3>On your real screen</h3>
+          <ul className="wr-arrows">{c.arrows.map((a) => <li key={a.name}><Arrow colour={a.colour} label={a.name} /><span>{a.action}{a.label ? ` ${a.label}` : ""}</span><span className="wr-muted">{a.app}{a.window ? `: ${a.window}` : ""}</span><span className="wr-muted">{a.how}</span></li>)}</ul>
+        </section>
+      )}
+      {live.browsers.length > 0 ? <section className="wr-browsers">{live.browsers.map((b) => <BrowserCard key={b.agent} workflow={workflow} b={b} tick={tick} />)}</section> : !c.arrows.length && <Empty>No agent is using a browser or your screen right now. When one does, you will see it here.</Empty>}
+      {live.actions.length > 0 && (
+        <section>
+          <h3>What they really did</h3>
+          <ol className="wr-actions">{[...live.actions].reverse().slice(0, 20).map((a, i) => <li key={`${a.at}-${i}`} className={a.ok ? "" : "is-bad"}><Time iso={a.at} /> <strong>{readable(a.agent)}</strong> {a.action}{a.label ? `: ${a.label}` : ""} <span className="wr-muted">{a.where}{a.x != null ? ` at ${a.x}, ${a.y}` : ""}</span></li>)}</ol>
+        </section>
+      )}
+    </div>
+  );
+}
+
+// ---- the shared workspace --------------------------------------------------------------------------------------------
+
+const size = (n: number) => (n > 1_000_000 ? `${(n / 1_000_000).toFixed(1)} MB` : n > 1024 ? `${Math.round(n / 1024)} KB` : `${n} bytes`);
+
+function FileRow({ workflow, file }: { workflow: string; file: FoundryArtifact }) {
+  const { app } = useApp();
+  const [preview, setPreview] = useState("");
+  const picture = ["png", "jpg", "jpeg", "gif", "webp"].includes(file.kind);
+  const text = ["md", "txt", "csv", "json"].includes(file.kind);
+  const [words, setWords] = useState("");
+  const save = async () => {
+    const raw = await app.api.foundryFile(workflow, file.path);
+    const url = URL.createObjectURL(new Blob([raw]));
+    const a = document.createElement("a");
+    a.href = url; a.download = file.path.split("/").pop() ?? "file"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+  const look = async () => {
+    if (preview || words) { setPreview(""); setWords(""); return; }
+    const raw = await app.api.foundryFile(workflow, file.path);
+    if (picture) setPreview(URL.createObjectURL(new Blob([raw])));
+    else setWords(new TextDecoder().decode(raw).slice(0, 6000));
+  };
+  return (
+    <li className="wr-file">
+      <div className="wr-file__line">
+        <strong title={file.path}>{file.path}</strong>
+        <span className="wr-muted">{file.kind} · {size(file.bytes)} · <Time iso={file.modified} />{file.versions > 1 ? ` · ${file.versions} versions` : ""}</span>
+        <span className="wr-file__do">{(picture || text) && <button type="button" className="wr-link" onClick={() => void look()}>{preview || words ? "Hide" : "Look"}</button>}<button type="button" className="wr-link" aria-label={`Save ${file.path}`} onClick={() => void save()}><Download size={14} aria-hidden="true" /></button></span>
+      </div>
+      {preview && <img className="wr-file__picture" src={preview} alt={file.path} />}
+      {words && <pre className="wr-file__words">{words}</pre>}
+      {file.history[0] && <p className="wr-muted wr-file__last">{file.history[0].what}</p>}
+    </li>
+  );
+}
+
+function Files({ workflow }: { workflow: string }) {
+  const { app } = useApp();
+  const { data, error, reload } = useLive(() => app.api.foundryDo("artifacts", { workflow }) as unknown as Promise<{ files: FoundryArtifact[]; root: string }>, [workflow], 3000);
+  if (error && !data) return <ErrorNote message={error} retry={reload} />;
+  if (!data) return <p className="wr-muted" role="status">Loading…</p>;
+  if (!data.files.length) return <Empty>Nothing has been made yet.</Empty>;
+  return <ul className="wr-files">{data.files.map((f) => <FileRow key={f.path} workflow={workflow} file={f} />)}</ul>;
+}
+
+// ---- what XENIO can really do, and your vault ------------------------------------------------------------------------
+
+function CanDo() {
+  const { app } = useApp();
+  const { data, error, reload } = useLive(() => app.api.foundryDo("capabilities", {}) as unknown as Promise<{ capabilities: FoundryCapability[] }>, [], 5000);
+  if (error && !data) return <ErrorNote message={error} retry={reload} />;
+  if (!data) return <p className="wr-muted" role="status">Loading…</p>;
+  return (
+    <>
+      <p className="wr-muted wr-cando__intro">Found by asking this Mac, just now. If something is missing it says what would fix it, and no agent will pretend otherwise.</p>
+      <ul className="wr-cando">{data.capabilities.map((c) => <li key={c.id} className={c.available ? "" : "is-missing"}>{c.available ? <Check size={15} aria-hidden="true" /> : <AlertTriangle size={15} aria-hidden="true" />}<div><p><strong>{c.name}</strong> <span className="wr-muted">{c.kind}</span></p><p className="wr-muted">{c.available ? c.how : `Needs ${c.missing}`}</p></div></li>)}</ul>
+    </>
+  );
+}
+
+/** A project XENIO built, on your GitHub: only when you click, never forced. */
+function GitHubPanel({ state }: { state: FoundryState }) {
+  const { app } = useApp();
+  const wf = state.workflow;
+  const folder = (wf.project || wf.delivered || "").split("/").filter(Boolean).pop() ?? "project";
+  const [name, setName] = useState(folder);
+  const [isPrivate, setPrivate] = useState(true);
+  const [github, setGithub] = useState<{ remote: string; branch: string; ahead: number; behind: number } | null>((wf as unknown as { github?: { remote: string; branch: string; ahead: number; behind: number } }).github ?? null);
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState("");
+  useEffect(() => { void app.api.foundryDo("github_status", { workflow: wf.id }).then((out) => setGithub((out as { github?: typeof github }).github ?? null), () => undefined); }, [app, wf.id]);
+  const run = async (command: string, body: Record<string, unknown> = {}) => {
+    setBusy(true); setSaid("");
+    try {
+      const out = (await app.api.foundryDo(command, { workflow: wf.id, ...body })) as { github?: typeof github };
+      setGithub(out.github ?? null);
+      setSaid(command === "github_publish" ? "It is on GitHub." : command === "github_push" ? "Pushed." : "Pulled.");
+    } catch (e) {
+      setSaid((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="wr-result__actions wr-github">
+      {github?.remote ? (
+        <>
+          <p><a href={github.remote} target="_blank" rel="noreferrer">{github.remote.replace("https://github.com/", "github.com/")}</a> <span className="wr-muted">{github.branch}{github.ahead > 0 ? `, ${github.ahead} commit${github.ahead === 1 ? "" : "s"} not pushed yet` : github.ahead < 0 ? ", not pushed yet" : ", up to date"}</span></p>
+          <Button onClick={() => void run("github_push")} disabled={busy}>Push latest</Button>
+          <Button variant="quiet" onClick={() => void run("github_pull")} disabled={busy}>Pull</Button>
+        </>
+      ) : (
+        <form onSubmit={(e) => { e.preventDefault(); void run("github_publish", { name, private: isPrivate }); }} className="wr-github__new">
+          <div className="field"><label htmlFor={`gh-${wf.id}`}>Put it on your GitHub as</label><input id={`gh-${wf.id}`} value={name} onChange={(e) => setName(e.target.value)} /></div>
+          <label className="wr-check"><input type="checkbox" checked={isPrivate} onChange={(e) => setPrivate(e.target.checked)} /> Private</label>
+          <Button type="submit" disabled={busy || !name.trim()}>Create the repository and push</Button>
+        </form>
+      )}
+      {said && <p className="wr-muted" role="status">{said}</p>}
+    </div>
+  );
+}
+
+/** Figma, through XENIO's plugin in the Figma app: whether it is open, the pairing code, and how to set it up once. */
+function FigmaBox() {
+  const { app } = useApp();
+  const { data } = useLive(() => app.api.foundryDo("figma_status", {}) as unknown as Promise<{ listening: boolean; error: string; connected: boolean; file: string; page: string; token: string; plugin: string }>, [], 4000);
+  const [shown, setShown] = useState(false);
+  const [copied, setCopied] = useState("");
+  if (!data) return null;
+  const copy = (text: string, what: string) => { void navigator.clipboard?.writeText(text).then(() => setCopied(`${what} copied`), () => setCopied("Could not copy")); };
+  return (
+    <section className="wr-vault__how wr-figma">
+      <h3>Figma {data.connected ? <Status tone="ok">Connected{data.file ? `: ${data.file}` : ""}</Status> : <Status tone="neutral">Not connected</Status>}</h3>
+      {data.connected ? <p>Agents can draw in this file now. Ask the team for a design "in Figma". The first drawing in each job asks you, and everything can be undone in Figma.</p> : (
+        <ol className="wr-figma__steps">
+          <li>In the Figma app, open the file to design in.</li>
+          <li>The first time only: Plugins, Development, Import plugin from manifest, and pick <code>{data.plugin}</code> <button type="button" className="wr-link" onClick={() => copy(data.plugin, "Path")}>Copy path</button></li>
+          <li>Plugins, Development, XENIO. Paste the pairing code below, and Connect.</li>
+        </ol>
+      )}
+      <p className="wr-figma__code"><span className="wr-muted">Pairing code:</span> <code>{shown ? data.token : "••••••••••••"}</code> <button type="button" className="wr-link" onClick={() => setShown(!shown)}>{shown ? "Hide" : "Show"}</button> <button type="button" className="wr-link" onClick={() => copy(data.token, "Pairing code")}>Copy</button></p>
+      {copied && <p className="wr-muted" role="status">{copied}</p>}
+      {!data.listening && <p className="wr-error">XENIO cannot listen for Figma: {data.error || "restart XENIO"}.</p>}
+    </section>
+  );
+}
+
+/** MCP servers you connect: a program on this Mac or an address. Agents use one only if you switch it on, and ask you the first time in each job. */
+function Connectors() {
+  const { app } = useApp();
+  const { data, error, reload } = useLive(() => app.api.foundryDo("mcp_list", {}) as unknown as Promise<{ servers: FoundryMcpServer[] }>, [], 10000);
+  const { act, busy } = useAct();
+  const [paste, setPaste] = useState(false);
+  const [config, setConfig] = useState("");
+  const [name, setName] = useState("");
+  const [where, setWhere] = useState("");
+  const [token, setToken] = useState("");
+  const [agents, setAgents] = useState(true);
+  const [tested, setTested] = useState<Record<string, string>>({});
+  const [removing, setRemoving] = useState<string | null>(null);
+  const run = async (command: string, body: Record<string, unknown>) => { const out = await act(command, body); reload(); return out; };
+  const add = async (e: FormEvent) => {
+    e.preventDefault();
+    const address = /^https?:\/\//.test(where.trim());
+    const body = paste ? { config, token } : { name, ...(address ? { url: where.trim() } : { command: where.trim() }), token, for_agents: agents };
+    const out = await run("mcp_add", body);
+    if (out) { setConfig(""); setName(""); setWhere(""); setToken(""); }
+  };
+  const test = async (server: string) => {
+    setTested((t) => ({ ...t, [server]: "Connecting…" }));
+    const out = (await act("mcp_test", { name: server })) as { tools?: { name: string }[] } | undefined;
+    setTested((t) => ({ ...t, [server]: out?.tools ? `Connected: ${out.tools.length} tool${out.tools.length === 1 ? "" : "s"}.` : "It did not connect: see the message above." }));
+    reload();
+  };
+  if (error && !data) return <ErrorNote message={error} retry={reload} />;
+  if (!data) return <p className="wr-muted" role="status">Loading…</p>;
+  return (
+    <div className="wr-connectors">
+      <FigmaBox />
+      <section className="wr-vault__how">
+        <h3>Connect a service (MCP)</h3>
+        <p>Add an MCP server: a program on this Mac, or an address. Agents can use it only if you switch it on, and the first use in each job asks you. A token goes into your Mac's Keychain, never into a file, a log or a model.</p>
+        <p className="wr-muted">Some services only let apps they have approved sign in. Figma's MCP address is one of them: use the Figma box above instead.</p>
+      </section>
+      <form className="wr-connectors__add" onSubmit={(e) => void add(e)}>
+        <p className="segmented" role="tablist" aria-label="How to add it">
+          <button type="button" role="tab" aria-selected={!paste} className={!paste ? "is-on" : ""} onClick={() => setPaste(false)}>Fill in</button>
+          <button type="button" role="tab" aria-selected={paste} className={paste ? "is-on" : ""} onClick={() => setPaste(true)}>Paste a config</button>
+        </p>
+        {paste ? (
+          <div className="field"><label htmlFor="mcp-config">The mcpServers block, as you would give it to any MCP app</label><textarea id="mcp-config" rows={6} value={config} onChange={(e) => setConfig(e.target.value)} placeholder={'{ "mcpServers": { "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_TOKEN": "…" } } } }'} /></div>
+        ) : (
+          <div className="wr-limits">
+            <div className="field"><label htmlFor="mcp-name">Name</label><input id="mcp-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="github" /></div>
+            <div className="field"><label htmlFor="mcp-where">Command or address</label><input id="mcp-where" value={where} onChange={(e) => setWhere(e.target.value)} placeholder="npx -y @some/mcp-server, or https://…/mcp" /></div>
+          </div>
+        )}
+        <div className="field"><label htmlFor="mcp-token">Access token, if it needs one</label><input id="mcp-token" type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Goes to your Keychain" /></div>
+        {!paste && <label className="wr-check"><input type="checkbox" checked={agents} onChange={(e) => setAgents(e.target.checked)} /> Let agents use it (they ask you the first time in each job)</label>}
+        <p><Button variant="primary" type="submit" disabled={busy || (paste ? !config.trim() : !name.trim() || !where.trim())}>Add</Button></p>
+      </form>
+      {removing && <ConfirmDialog title={`Remove ${removing}?`} body="Its token is taken out of your Keychain too. Agents can no longer use it." confirmLabel="Remove it" onCancel={() => setRemoving(null)} onConfirm={() => { const n = removing; setRemoving(null); void run("mcp_remove", { name: n }); }} />}
+      {data.servers.length === 0 ? <Empty>No services connected yet.</Empty> : (
+        <ul className="wr-cando">{data.servers.map((s) => (
+          <li key={s.name}>
+            <div>
+              <p><strong>{s.name}</strong> <span className="wr-muted">{s.transport === "http" ? s.url : s.command.join(" ")}</span></p>
+              <p className="wr-muted">{s.has_token ? "Token in your Keychain. " : ""}{s.tools.length ? `${s.tools.length} tools: ${s.tools.slice(0, 8).map((t) => t.name).join(", ")}${s.tools.length > 8 ? "…" : ""}` : "Not tested yet."}</p>
+              {tested[s.name] && <p className="wr-muted" role="status">{tested[s.name]}</p>}
+              <p className="wr-connectors__row">
+                <Button onClick={() => void test(s.name)} disabled={busy}>Test</Button>
+                <label className="wr-check"><input type="checkbox" checked={s.for_agents} onChange={(e) => void run("mcp_update", { name: s.name, for_agents: e.target.checked })} /> Agents may use it</label>
+                <Button variant="danger" onClick={() => setRemoving(s.name)}>Remove</Button>
+              </p>
+            </div>
+          </li>
+        ))}</ul>
+      )}
+    </div>
+  );
+}
+
+function Vault() {
+  const { app } = useApp();
+  const { data, error, reload } = useLive(() => app.api.foundryDo("vault_status", {}) as unknown as Promise<VaultState>, [], 5000);
+  const { act, busy } = useAct();
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [site, setSite] = useState("");
+  const run = async (command: string, body: Record<string, unknown> = {}) => { await act(command, body); reload(); };
+  if (error && !data) return <ErrorNote message={error} retry={reload} />;
+  if (!data) return <p className="wr-muted" role="status">Loading…</p>;
+  return (
+    <div className="wr-vault">
+      <section className="wr-vault__how">
+        <h3><KeyRound size={15} aria-hidden="true" /> Your logins, placed and never seen</h3>
+        <p>When an agent reaches a sign-in page you get a fingerprint request naming the website. Once you touch the sensor, XENIO places your login on that page and the agent carries on. No agent, model or part of XENIO ever sees it, and there is no way to read a password back out of here.</p>
+        <p className="wr-muted">Logins are encrypted with AES-256. The key is locked by your fingerprint inside the Secure Enclave chip and by your secret password, which is never stored. Each login only ever goes to its own website. You type into a window of the Mac's own, never into this page.</p>
+      </section>
+      {!data.exists ? <Button variant="primary" disabled={busy} onClick={() => void run("vault_setup")}><KeyRound size={14} aria-hidden="true" /> Create your vault</Button> : (
+        <>
+          <p className="wr-vault__actions">
+            <Button variant="primary" disabled={busy} onClick={() => void run("vault_add")}>Add a login</Button>
+            {data.touch_ready ? <Status tone="ok"><Fingerprint size={13} aria-hidden="true" /> Touch ID is on</Status> : data.touch_available ? <Button disabled={busy} onClick={() => void run("vault_touch")}><Fingerprint size={14} aria-hidden="true" /> Turn on Touch ID</Button> : <span className="wr-muted">This Mac has no Touch ID: your secret password opens it.</span>}
+          </p>
+          <form className="wr-inline" onSubmit={(e) => { e.preventDefault(); if (site.trim()) { void run("vault_open_site", { url: site.trim() }); setSite(""); } }}>
+            <input aria-label="A website to sign in to" placeholder="Sign in to a website, like accounts.google.com" value={site} onChange={(e) => setSite(e.target.value)} />
+            <Button type="submit" disabled={!site.trim() || busy}>Open it</Button>
+          </form>
+          <p className="wr-muted">A window opens. A saved login is placed after your fingerprint. If you sign in by hand, XENIO offers to save it for next time.</p>
+          {data.items.length ? <ul className="wr-files">{data.items.map((i) => <li key={i.id} className="wr-file"><div className="wr-file__line"><strong>{i.host}</strong><span className="wr-muted">{i.label ? `${i.label} · ` : ""}added <Time iso={i.added} /></span><span className="wr-file__do"><button type="button" className="wr-link" aria-label={`Remove the login for ${i.host}`} onClick={() => setRemoving(i.id)}><Trash2 size={14} aria-hidden="true" /></button></span></div></li>)}</ul> : <Empty>No logins yet.</Empty>}
+        </>
+      )}
+      {busy && <p className="wr-muted" role="status">Look for a window from XENIO on your screen.</p>}
+      {removing && <ConfirmDialog title="Remove this login?" body="It needs your fingerprint or secret password, and it cannot be undone." confirmLabel="Remove" onCancel={() => setRemoving(null)} onConfirm={() => { const item = removing; setRemoving(null); void run("vault_remove", { item }); }} />}
+    </div>
+  );
+}
+
 function Requirements({ state, act }: { state: FoundryState; act: (c: string, b: Record<string, unknown>) => Promise<unknown> }) {
   const [text, setText] = useState("");
   const wf = state.workflow;
@@ -502,6 +958,8 @@ function RunningNow({ state, act }: { state: FoundryState; act: (c: string, b: R
       </section>
     );
   }
+  const kind = state.workflow.team?.brief?.kind ?? "software";
+  if (NOTHING_TO_RUN.includes(kind)) return null; // a report or a profile edit has nothing to start: offering to "fix it so it starts" sent a real job round again for nothing
   if (OPEN.includes(state.workflow.status) || !state.workflow.run_id) return null;
   const failed = preview?.state === "failed";
   return (
@@ -558,6 +1016,7 @@ function Result({ state }: { state: FoundryState }) {
           <Button variant="quiet" onClick={() => void leave("pull_request")}>Open a pull request</Button>
         </div>
       )}
+      {wf.greenfield && wf.delivered && <GitHubPanel state={state} />}
       {note && <p className="wr-muted" role="status">{note}</p>}
       {deleting && <ConfirmDialog title="Delete this work?" body="Its conversation, decisions and graph are removed. Any project it built stays in its folder." confirmLabel="Delete it" onCancel={() => setDeleting(false)} onConfirm={() => void remove()} />}
     </div>
@@ -569,9 +1028,15 @@ function Workflow({ id }: { id: string }) {
   const { data: state, error, reload } = useLive(() => app.api.foundryState(id), [id]);
   const { act: raw } = useAct();
   const act = useCallback(async (command: string, body: Record<string, unknown>) => { const out = await raw(command, body); reload(); return out; }, [raw, reload]);
-  const [chosen, setTab] = useState<"result" | "talk" | "decide" | "graph" | "time" | null>(null);
+  const [chosen, setTab] = useState<"result" | "talk" | "floor" | "live" | "files" | "decide" | "graph" | "time" | null>(null);
   const [stopping, setStopping] = useState(false);
   const [reviewer, setReviewer] = useState<string | null>(null);
+  const moving = state?.team.some((m) => m.state !== "idle") ?? false;
+  useEffect(() => { // a long reply gives off no events, and it should still be seen moving
+    if (!moving) return;
+    const timer = setInterval(reload, 2500);
+    return () => clearInterval(timer);
+  }, [moving, reload]);
   const [about, setAbout] = useState("");
   const names = useMemo(() => new Map((state?.team ?? []).map((m) => [m.agent, m.name])), [state?.team]);
   if (error && !state) return <ErrorNote message={error} retry={reload} />;
@@ -583,9 +1048,10 @@ function Workflow({ id }: { id: string }) {
   const tab = chosen === "result" && !hasResult ? "talk" : chosen ?? (open ? "talk" : "result"); // finished work opens on what it made, unless you chose otherwise
   const waitingDecision = state.decisions.some((d) => d.status === "needs_human");
   const waitingGate = state.graph.find((n) => n.status === "waiting" && n.type === "approval");
-  const counted = state.graph.filter((n) => ["task"].includes(n.type));
+  const counted = state.graph.filter((n) => TASK_NODES.includes(n.type));
   const done = counted.filter((n) => n.status === "done").length;
-  const send = async (text: string, to: string) => { await act(open ? "message" : "change", open ? { workflow: wf.id, text, to } : { workflow: wf.id, text }); };
+  const send = async (text: string, to: string, uploads: string[]) => { await act(open ? "message" : "change", open ? { workflow: wf.id, text, to, ...(uploads.length ? { uploads } : {}) } : { workflow: wf.id, text, ...(uploads.length ? { uploads } : {}) }); };
+  const working = state.team.some((m) => m.state !== "idle");
   return (
     <div className="wr-flow">
       <header className="wr-top">
@@ -596,6 +1062,7 @@ function Workflow({ id }: { id: string }) {
           {wf.milestone > 1 && <Status tone="neutral">Milestone {wf.milestone}</Status>}
           {counted.length > 0 && <span className="wr-muted">{done} of {counted.length} tasks done</span>}
           <Spend state={state} />
+          {open && <LimitsControl state={state} act={act} />}
           {open && <span className="wr-top__actions">
             {wf.paused ? <Button onClick={() => void act("resume", { workflow: wf.id })}><Play size={14} aria-hidden="true" /> Resume</Button> : <Button onClick={() => void act("pause", { workflow: wf.id })}><Pause size={14} aria-hidden="true" /> Pause</Button>}
             <Button variant="danger" onClick={() => setStopping(true)}><Square size={14} aria-hidden="true" /> Stop</Button>
@@ -618,13 +1085,16 @@ function Workflow({ id }: { id: string }) {
       <div className="wr-columns">
         <main className="wr-main">
           <div className="segmented" role="tablist" aria-label="Show">
-            {([...(hasResult ? [["result", open ? "Running" : "Result", 0] as const] : []), ["talk", "Conversation", state.messages.length], ["decide", "Decisions", state.decisions.length], ["graph", "Graph", state.graph.length], ["time", "Timeline", 0]] as const).map(([key, label, n]) => (
+            {([...(hasResult ? [["result", open ? "Running" : "Result", 0] as const] : []), ["talk", "Conversation", state.messages.length], ["floor", working ? "Floor •" : "Floor", 0], ["live", "Live", 0], ["files", "Files", 0], ["decide", "Decisions", state.decisions.length], ["graph", "Graph", state.graph.length], ["time", "Timeline", 0]] as const).map(([key, label, n]) => (
               <button key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? "is-on" : ""} onClick={() => setTab(key)}>{label}{n ? ` (${n})` : ""}</button>
             ))}
           </div>
           <div className={`wr-pane ${tab === "talk" ? "wr-pane--talk" : ""}`}>
             {tab === "result" && <div className="wr-resulting">{!open && <Result state={state} />}<RunningNow state={state} act={act} /></div>}
             {tab === "talk" && <Conversation state={state} names={names} />}
+            {tab === "floor" && <Floor state={state} />}
+            {tab === "live" && <LiveView workflow={wf.id} open={open} />}
+            {tab === "files" && <Files workflow={wf.id} />}
             {tab === "decide" && (state.decisions.length ? <div className="wr-decisions">{[...state.decisions].reverse().map((d) => <DecisionCard key={d.id} d={d} workflowOpen={open} act={act} />)}</div> : <Empty>No decision has needed a debate yet.</Empty>)}
             {tab === "graph" && <Graph state={state} names={names} act={act} />}
             {tab === "time" && <Timeline state={state} names={names} />}
@@ -640,6 +1110,7 @@ function Workflow({ id }: { id: string }) {
               <span><Button type="submit">Ask</Button> <Button variant="quiet" type="button" onClick={() => setReviewer(null)}>Never mind</Button></span>
             </form>
           )}
+          {(wf.orders?.length ?? 0) > 0 && <Section title="Your orders"><Orders orders={wf.orders ?? []} /></Section>}
           <Section title="What you require"><Requirements state={state} act={act} /></Section>
           {state.interventions.length > 0 && <Section title="What you did"><ul className="wr-yours">{[...state.interventions].reverse().slice(0, 8).map((i) => <li key={i.id}><p><strong>{i.kind.replace("_", " ")}</strong>{i.text ? `: ${i.text}` : ""}</p>{i.effect.map((x) => <p key={x} className="wr-muted">{x}</p>)}</li>)}</ul></Section>}
         </aside>
@@ -656,26 +1127,38 @@ function Command({ overview, onStarted }: { overview: FoundryOverview; onStarted
   const [more, setMore] = useState(false);
   const [path, setPath] = useState("");
   const [careful, setCareful] = useState(false);
+  const [job, setJob] = useState(shown(overview.limits?.job_tokens));
+  const [task, setTask] = useState(shown(overview.limits?.task_tokens));
+  const [saved, setSaved] = useState("");
+  const pictures = usePictures();
   const go = async (e?: FormEvent) => {
     e?.preventDefault();
     if (!goal.trim() || busy) return;
-    const out = await act("start", { goal: goal.trim(), path: path.trim(), autonomy: careful ? "careful" : "supervisor" });
+    const out = await act("start", { goal: goal.trim(), path: path.trim(), autonomy: careful ? "careful" : "supervisor", job_tokens: asTokens(job), task_tokens: asTokens(task), ...(pictures.files.length ? { uploads: pictures.files.map((f) => f.id) } : {}) });
     if (out && typeof out.id === "string") onStarted(out.id);
+  };
+  const remember = async () => {
+    const out = await act("set_limits", { job_tokens: asTokens(job), task_tokens: asTokens(task) });
+    if (out) setSaved("Saved: every new job starts with these limits.");
   };
   return (
     <form className="wr-command" onSubmit={(e) => void go(e)}>
-      <label htmlFor="wr-goal" className="wr-command__label">What should the team build?</label>
-      <textarea id="wr-goal" rows={3} value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="Build a gym management app with memberships, class bookings and payments." onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void go(); }} />
+      <label htmlFor="wr-goal" className="wr-command__label">What should the team do?</label>
+      <textarea id="wr-goal" rows={3} value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="Build a gym app. Research ten competitors and make me a deck. Update my profile on a website. Anything done on a computer." onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void go(); }} />
       {overview.can_think === false && <p className="wr-error">The team needs a Nabh key to think. Add NABH_API_KEY to XENIO's .env.</p>}
+      <Pictures pictures={pictures} />
       <div className="wr-command__row">
         <Button variant="primary" type="submit" disabled={!goal.trim() || busy || overview.can_think === false}>{busy ? "Starting…" : "Start"}</Button>
+        <AttachButton pictures={pictures} />
         <button type="button" className="wr-link" aria-expanded={more} onClick={() => setMore(!more)}>{more ? "Fewer options" : "Options"}</button>
-        <p className="wr-muted wr-command__hint">You give the command. It plans, argues, builds, tests and fixes, and only comes to you for what is really yours to decide.</p>
+        <p className="wr-muted wr-command__hint">You give the command. XENIO runs the team, and only comes to you for what is really yours to decide. Talk to them any time.</p>
       </div>
       {more && (
         <div className="wr-command__more">
           <div className="field"><label htmlFor="wr-path">Work on an existing project (leave empty for a new one)</label><input id="wr-path" value={path} onChange={(e) => setPath(e.target.value)} placeholder="/Users/you/projects/my-app" /></div>
           <label className="wr-check"><input type="checkbox" checked={careful} onChange={(e) => setCareful(e.target.checked)} /> Ask me before building, and on every judgment call</label>
+          <LimitFields id="wr-new" job={job} task={task} setJob={(v) => { setJob(v); setSaved(""); }} setTask={(v) => { setTask(v); setSaved(""); }} />
+          <p className="wr-command__row"><Button onClick={() => void remember()}>Make these my default</Button>{saved && <span className="wr-muted" role="status">{saved}</span>}</p>
         </div>
       )}
     </form>
@@ -863,12 +1346,12 @@ function Skills({ overview, reload }: { overview: FoundryOverview; reload: () =>
 export function WarRoomPage({ workflowId }: { workflowId: string | null }) {
   const { app } = useApp();
   const { data: overview, error, reload } = useLive(() => app.api.foundry(), [], 1000);
-  const [tab, setTab] = useState<"work" | "agents" | "skills">("work");
+  const [tab, setTab] = useState<"work" | "agents" | "skills" | "cando" | "connectors" | "vault">("work");
   if (workflowId) return <Workflow key={workflowId} id={workflowId} />;
   const needing = overview?.skills.filter((s) => s.state === "awaiting_approval").length ?? 0;
   return (
     <>
-      <PageHeader title="War Room" intro="Your engineering organization. You give the command and supervise. The agents do the work." />
+      <PageHeader title="War Room" intro="Your digital company. You are the CEO, XENIO is the manager, and the agents do the work." />
       {error && !overview && <ErrorNote message={error} retry={reload} />}
       {overview && !overview.available && <Empty>{overview.reason ?? "The team is switched off."}</Empty>}
       {overview?.available && (
@@ -876,13 +1359,16 @@ export function WarRoomPage({ workflowId }: { workflowId: string | null }) {
           <ApprovalsHere />
           <Command overview={overview} onStarted={(id) => { window.location.hash = href("warroom", id); }} />
           <div className="segmented" role="tablist" aria-label="Show">
-            {([["work", `Work (${overview.workflows.length})`], ["agents", `Agents (${overview.agents.length})`], ["skills", `Skills (${overview.skills.length})${needing ? ` · ${needing} waiting` : ""}`]] as const).map(([key, label]) => (
+            {([["work", `Work (${overview.workflows.length})`], ["agents", `Agents (${overview.agents.length})`], ["skills", `Skills (${overview.skills.length})${needing ? ` · ${needing} waiting` : ""}`], ["cando", "What it can do"], ["connectors", `Connectors${overview.mcp?.length ? ` (${overview.mcp.length})` : ""}`], ["vault", "Vault"]] as const).map(([key, label]) => (
               <button key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? "is-on" : ""} onClick={() => setTab(key)}>{label}</button>
             ))}
           </div>
           {tab === "work" && <WorkList overview={overview} reload={reload} />}
           {tab === "agents" && <Agents overview={overview} reload={reload} />}
           {tab === "skills" && <Skills overview={overview} reload={reload} />}
+          {tab === "cando" && <CanDo />}
+          {tab === "connectors" && <Connectors />}
+          {tab === "vault" && <Vault />}
         </>
       )}
     </>

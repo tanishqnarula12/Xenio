@@ -1366,6 +1366,11 @@ def contains_secret(text: str, strict: bool = True) -> bool:
     return any(p.search(text) for p, _ in patterns)
 
 
+def browser_interaction(target: str, what: str) -> Decision:
+    """A click or submit in an agent's own browser, judged by the same words as any other."""
+    return _interaction(target, what)
+
+
 def classify_url(raw: str, paths: PathPolicy | None = None, cwd: str | os.PathLike | None = None, *,
                  verb: str = "open") -> Decision:
     url = normalize_url(raw)

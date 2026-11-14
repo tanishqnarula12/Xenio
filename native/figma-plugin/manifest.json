@@ -1,0 +1,14 @@
+{
+  "name": "XENIO",
+  "id": "xenio-war-room",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["none"],
+    "devAllowedDomains": ["http://localhost:3779"],
+    "reasoning": "XENIO runs on this Mac. The plugin asks it for the next drawing and reports back. Nothing leaves the Mac."
+  }
+}

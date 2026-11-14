@@ -65,9 +65,11 @@ def detect(root: Path, python: str) -> Command | None:
     root = Path(root)
     written = root / RUN_FILE
     if written.is_file():
-        line = next((x.strip() for x in _read(written).splitlines() if x.strip() and not x.strip().startswith("#")), "")
-        if line:
-            return Command(line, "declared")
+        lines = [x.strip() for x in _read(written).splitlines() if x.strip() and not x.strip().startswith("#")]
+        if len(lines) > 1:  # a script, so all of it runs: running only its first line ("cd ...") made a working app look dead
+            return Command(f"bash {RUN_FILE}", "declared")
+        if lines:
+            return Command(lines[0], "declared")
     for folder in (root, *[root / name for name in ("web", "frontend", "client", "ui")]):
         manifest = folder / "package.json"
         if not manifest.is_file():

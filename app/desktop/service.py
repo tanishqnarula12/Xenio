@@ -274,6 +274,16 @@ class DesktopService:
 
     # ---- windows ------------------------------------------------------------------------------------------------
 
+    def in_background(self, what: str, window: str, name: str, text: str = "") -> dict:
+        """Work in a named window without touching the mouse, the keyboard or what is in front: several agents can do this at once, and you can carry on. Empty if this system cannot, so the caller falls back to borrowing the real pointer."""
+        call = getattr(self.uia, f"background_{what}", None)
+        if call is None:
+            return {"found": False, "unsupported": True}
+        self._check_unlocked()
+        target = self._window(window)
+        out = call(target.hwnd, name, text) if what == "fill" else call(target.hwnd, name)
+        return {**out, "app": target.app, "title": target.title, "window": target.hwnd}
+
     def _window(self, name: str):
         matches = self.windows.find_windows(name)
         if not matches:

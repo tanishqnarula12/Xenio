@@ -32,7 +32,10 @@ OPEN_WAIT = 12.0
 CHANGE_WAIT = 5.0
 _SEARCH_WINDOW = 0.05
 
-_SAFARI_OPEN = 'on run argv\ntell application "Safari" to make new document with properties {URL:item 1 of argv}\nend run'
+_SAFARI_OPEN = ('on run argv\ntell application "Safari"\nset oldIds to id of every window\nmake new document with properties {URL:item 1 of argv}\n'
+                'set newIds to id of every window\nrepeat with i in newIds\nif oldIds does not contain (contents of i) then return (contents of i) as text\n'
+                'end repeat\nreturn ""\nend tell\nend run')  # says which window it made, so one that cannot be used is closed again
+_SAFARI_CLOSE = 'on run argv\ntell application "Safari"\nset w to window id ((item 1 of argv) as integer)\nif (count of tabs of w) is less than 2 then close w\nend tell\nend run'
 _CHROMIUM_OPEN = ('on run argv\ntell application "{app}"\nset w to make new window\nset URL of active tab of w to item 1 of argv\n'
                   'end tell\nend run')
 _CHROMIUM_APPS = {"google chrome", "brave browser", "microsoft edge", "chromium", "vivaldi"}
@@ -41,31 +44,41 @@ _TAB_ROLES = ("AXRadioButton",)
 
 
 class BrowserWork:
-    def __init__(self, desktop, runner=subprocess.run, clock=time.monotonic, sleep=time.sleep, default_browser=None):
+    def __init__(self, desktop, runner=subprocess.run, clock=time.monotonic, sleep=time.sleep, default_browser=None, also: tuple[str, ...] = (), only: tuple[str, ...] = (), strict: bool = False):
         self.desktop = desktop
+        self._names = {n.lower() for n in only} if only else {*_BROWSER_NAMES, *(n.lower() for n in also)}  # also/only: a stand-in browser for a test, never in XENIO itself
+        self.strict = strict  # agents: only ever a window of their own, or one named. Never "whatever is in front", which on a real test was the CEO's own YouTube
         self._run = runner
         self._clock = clock
         self._sleep = sleep
         self._default_browser = default_browser
         self._own: set[int] = set()  # windows XENIO opened: the only ones it closes without asking
+        self._by_session: dict[str, int] = {}  # several agents, each in a window of its own
         self._seen: dict[int, str] = {}  # window -> digest of the page last sent to the model
 
     # ---- which window ------------------------------------------------------------------------------------------------
 
     def browser_windows(self) -> list:
         return [w for w in self.desktop.windows.list_windows()
-                if w.process.lower() in _BROWSER_NAMES and not self.desktop.is_own(w) and not w.minimized and w.hwnd > 0]
+                if w.process.lower() in self._names and not self.desktop.is_own(w) and not w.minimized and w.hwnd > 0]
 
     def pick(self, args: dict, session: str = ""):
         """The named window; else the window XENIO opened last; else the browser window in front."""
         name = str(args.get("window") or "")
         windows = self.browser_windows()
+        mine = self._by_session.get(session) if session else None
+        if mine is not None and not name:
+            found = next((w for w in windows if w.hwnd == mine), None)
+            if found is not None:
+                return found
         if name:
             lowered = name.lower()
             found = [w for w in windows if lowered in w.title.lower()]
             if not found:
                 raise DesktopError(f"no browser window shows {name!r}: use action tabs to see them")
             return found[0]
+        if self.strict:
+            raise DesktopError("you have no window of your own yet: open the address with page_open, or name one of the CEO's windows with page_use_tab")
         own = [w for w in windows if w.hwnd in self._own]
         if own:
             return own[0]
@@ -198,6 +211,8 @@ class BrowserWork:
             if new:
                 target = new[0]
                 self._own.add(target.hwnd)
+                if session:
+                    self._by_session[session] = target.hwnd
                 form = self._form(target)
                 if form.text.strip() or form.fields:
                     target = next((w for w in self.browser_windows() if w.hwnd == target.hwnd), target)
@@ -205,6 +220,14 @@ class BrowserWork:
                     break
         if target is None:
             self._timed("open", False, started)
+            made = str(getattr(done, "stdout", "") or "").strip()
+            if lowered == "safari" and made.isdigit():  # it did open, somewhere this cannot reach: measured, on another desktop (Space). Four were left behind once
+                try:
+                    self._run(["/usr/bin/osascript", "-e", _SAFARI_CLOSE, "--", made], capture_output=True, text=True, timeout=10)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                raise DesktopError(f"{browser} opened it on another desktop (Space), where macOS lets no app read a window, so it was closed again. "
+                                   "Bring Safari to the desktop you are on, or let agents work in Safari on any desktop", "NEEDS_PERMISSION")
             raise DesktopError(f"{browser} accepted the address but no new window appeared: nothing is confirmed")
         if view is None:
             self._timed("open", False, started)
@@ -228,6 +251,18 @@ class BrowserWork:
             if form.url and _same_page(form.url) == wanted:
                 return window, form
         return None
+
+    def adopt(self, session: str, window: str) -> object:
+        """A window the user already has open, such as a site they are signed in to, becomes this session's to work in. It has to be named, and only one may fit: a guess could be the wrong one of yours."""
+        wanted = " ".join(str(window or "").split()).lower()
+        if len(wanted) < 3:
+            raise DesktopError("name the window, by part of its title: use page_tabs to see them")
+        found = [w for w in self.browser_windows() if wanted in w.title.lower()]
+        if len(found) != 1:
+            raise DesktopError(f"{len(found)} windows have {window!r} in their title: name one more exactly" if found else f"no window has {window!r} in its title: use page_tabs to see them")
+        target = found[0]
+        self._by_session[session] = target.hwnd
+        return target
 
     def tabs(self) -> dict:
         windows = self.browser_windows()
@@ -294,7 +329,7 @@ class BrowserWork:
         expect = str(args.get("expect") or "")
         current, after, changed = self._wait_for_change(target, before, expect)
         self._timed("click", bool(changed), started)
-        out = {"pressed": control["name"], "verified": bool(changed), "timing_ms": int((self._clock() - started) * 1000)}
+        out = {"pressed": control["name"], "verified": bool(changed), "timing_ms": int((self._clock() - started) * 1000), "at": control.get("rect")}
         if after is not None:
             view = self._view(current, after, fresh=True)
             view.pop("timing_ms", None)
@@ -392,8 +427,8 @@ def _find_control(form: Form, name: str) -> dict | None:
     wanted = " ".join(str(name or "").split())
     if not wanted:
         return None
-    controls = [{"name": b["name"], "index": b["index"], "kind": "button"} for b in form.buttons]
-    controls += [{"name": n["name"], "index": n["index"], "kind": "link"} for n in form.link_nodes]
+    controls = [{"name": b["name"], "index": b["index"], "kind": "button", "rect": b.get("rect")} for b in form.buttons]
+    controls += [{"name": n["name"], "index": n["index"], "kind": "link", "rect": n.get("rect")} for n in form.link_nodes]
     exact = [c for c in controls if c["name"].lower() == wanted.lower()]
     if exact:
         distinct = {c["index"] for c in exact}

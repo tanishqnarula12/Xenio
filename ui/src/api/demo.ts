@@ -116,6 +116,8 @@ export class DemoApi implements XenioApi {
   async foundry() { return { available: false, reason: "The team only runs in the real XENIO, not in this demo.", workflows: [], agents: [], skills: [] }; }
   async foundryState(): Promise<import("./types").FoundryState> { throw new Error("The team only runs in the real XENIO."); }
   async foundryDo(): Promise<Record<string, unknown>> { throw new Error("The team only runs in the real XENIO."); }
+  async foundryPicture(): Promise<ArrayBuffer> { throw new Error("The team only runs in the real XENIO."); }
+  async foundryFile(): Promise<ArrayBuffer> { throw new Error("The team only runs in the real XENIO."); }
   async runs() { return { available: true, runs: [summary(DEMO_RUN)] }; }
   async run(id: string) {
     if (id !== DEMO_RUN.id) throw new Error("no such run");

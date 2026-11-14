@@ -55,14 +55,14 @@ def root(tmp_path):
     return folder
 
 
-def session(tmp_path, root, client, role="backend", allowed=("src",), ask=None, models=("m1", "m2"), runner=sandbox.run):
+def session(tmp_path, root, client, role="backend", allowed=("src",), ask=None, models=("m1", "m2"), runner=sandbox.run, extra_scope=None):
     registry = SessionRegistry(tmp_path / "s.json")
     native = NativeSessions(registry, PathPolicy(workspace=tmp_path / "workspace"), ask=ask, nabh_factory=lambda: client, models=models, runner=runner)
     r = RoleRegistry().get(role)
 
     async def go(text="do it", on_tool=None, timeout=None):
         sid = await native.open(root)
-        registry.add(sid, {"run": "r", "task": "t", "role": role, "tools": sorted(r.tools), "terminal": r.terminal_mode, "root": str(root), "allowed_paths": list(allowed), "docs_only": r.writes_docs_only})
+        registry.add(sid, {"run": "r", "task": "t", "role": role, "tools": sorted(r.tools), "terminal": r.terminal_mode, "root": str(root), "allowed_paths": list(allowed), "docs_only": r.writes_docs_only, **(extra_scope or {})})
         return await native.prompt(sid, text, on_tool=on_tool, timeout=timeout)
 
     return native, go
@@ -276,7 +276,7 @@ class TestCommandsRunInTheWall:
 class TestGoingRoundInCircles:
     def test_reading_the_same_thing_again_is_answered_without_doing_it(self, tmp_path, root):
         turn, client = run(tmp_path, root, [call("read_file", path="src/a.py")], [call("read_file", path="src/a.py")], "ok")
-        assert "already did exactly this" in client.seen[2]["messages"][-1]["content"] and len(turn.tools) == 1
+        assert "already have a.py, unchanged" in client.seen[2]["messages"][-1]["content"] and len(turn.tools) == 1  # answered from what it has: the read did not run
 
     def test_writing_twice_is_not_treated_as_repeating(self, tmp_path, root):
         turn, client = run(tmp_path, root, [call("write_file", path="src/x.py", content="1")], [call("write_file", path="src/x.py", content="1")], "ok")
@@ -657,3 +657,130 @@ class TestAProjectsOwnPythonRuns:
         asyncio.run(go())
         results = [m["content"] for m in client.seen[-1]["messages"] if m["role"] == "tool"]
         assert any("exit code 0" in r and "42" in r for r in results), results
+
+
+class TestNotReadingTheSameFileForEver:
+    """A real tester read app/main.py ten times, as read_file, cat, head and tail, and wrote nothing: 127,000 tokens.
+    Its only copy had been trimmed while it was told "you already did exactly this, use what you have"."""
+
+    def test_the_same_file_is_known_however_it_was_read(self):
+        from app.foundry.runtime import _read_of
+
+        full = '{"path": "/Users/x/engineering/run/tasks/t/app/main.py"}'
+        assert _read_of("read_file", full) == _read_of("terminal", '{"command": "cat app/main.py"}') == "app/main.py"  # the whole file, however it was read
+        pieces = {_read_of("terminal", '{"command": "head -n 80 app/main.py"}'), _read_of("terminal", "{\"command\": \"sed -n '1,159p' app/main.py\"}"), _read_of("terminal", "{\"command\": \"sed -n '160,334p' app/main.py\"}"), _read_of("read_file", '{"path": "app/main.py", "offset": 100, "limit": 50}')}
+        assert len(pieces) == 4 and all(p.startswith("app/main.py#") for p in pieces)  # a piece is not a copy of the whole, nor of another piece: treating them so lost half a real page
+        assert _read_of("terminal", '{"command": "python -m pytest -q"}') == "" and _read_of("terminal", '{"command": "cat a.py && rm b.py"}') == ""
+
+    def test_the_newest_copy_of_every_file_it_works_from_is_kept(self):
+        files = ["app/main.py", "app/models.py", "app/database.py", "app/test_main.py", "requirements.txt", "README.md"]
+        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "write tests"}]
+        for i, path in enumerate(files + ["app/main.py"]):
+            messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": path})}}]})
+            messages.append({"role": "tool", "tool_call_id": f"c{i}", "content": f"contents of {path} " + "y" * 3000})
+        NativeSessions._trim(messages)
+        tool = [m["content"] for m in messages if m.get("role") == "tool"]
+        for path in files[1:]:
+            assert any(c.startswith(f"contents of {path}") and "trimmed" not in c and "older copy" not in c for c in tool), path
+        assert "older copy" in tool[0] and "trimmed" not in tool[-1]  # main.py read again: the first copy is the duplicate
+
+    def test_reading_an_unchanged_file_a_third_time_is_called_out(self, tmp_path, root):
+        _, client = run(tmp_path, root, [call("read_file", path="src/a.py")], [call("terminal", command="cat src/a.py")], [call("read_file", path="./src/a.py")], "ok")
+        said = [m["content"] for m in client.seen[-1]["messages"] if m["role"] == "tool"]
+        assert "two" in said[0] and all("already have a.py, unchanged" in x for x in said[1:])  # now the second and third reads do not run at all
+
+
+class TestNeverReadingTheSameThingTwice:
+    """The user: "make sure re-reading is eliminated, my tokens will burn like water". A read of a file the agent already has, unchanged, does not run."""
+
+    def said(self, client):
+        return [m["content"] for m in client.seen[-1]["messages"] if m["role"] == "tool"]
+
+    def test_a_second_read_of_an_unchanged_file_does_not_run_however_it_is_asked(self, tmp_path, root):
+        _, client = run(tmp_path, root, [call("read_file", path="src/a.py")], [call("terminal", command="cat src/a.py")], [call("terminal", command="sed -n '1,2p' src/a.py")], "ok")
+        said = self.said(client)
+        assert "two" in said[0] and all("You already have a.py, unchanged" in x and "two" not in x for x in said[1:])
+
+    def test_after_the_file_changes_reading_it_runs_again(self, tmp_path, root):
+        _, client = run(tmp_path, root, [call("read_file", path="src/a.py")], [call("patch", path="src/a.py", old_string="two", new_string="TWO")], [call("read_file", path="src/a.py")], "ok")
+        said = self.said(client)
+        assert "TWO" in said[-1] and "already have" not in said[-1]
+
+    def test_a_file_handed_over_in_the_task_is_never_read(self, tmp_path, root):
+        from app.foundry.runtime import _fingerprint
+
+        client = Scripted([call("read_file", path="src/a.py")], "ok")
+        _, go = session(tmp_path, root, client, extra_scope={"given_files": {"src/a.py": _fingerprint(root / "src" / "a.py")}})
+        asyncio.run(go("the file is above"))
+        assert "in your task above" in self.said(client)[0]
+
+    def test_a_copy_that_had_to_be_trimmed_can_be_read_again(self):
+        from app.foundry.runtime import _already_have, _fingerprint
+
+        import tempfile
+
+        folder = Path(tempfile.mkdtemp())
+        (folder / "x.py").write_text("print(1)\n")
+        held = {str((folder / "x.py").resolve()): (_fingerprint(folder / "x.py"), {"role": "tool", "content": "print(1) ...(older output trimmed: read it again if you need it)"})}
+        assert _already_have({"name": "read_file", "arguments": '{"path": "x.py"}'}, folder.resolve(), held) == ""
+
+
+class TestABusyModel:
+    """Nabh says MODEL_BUSY for one model while others answer (seen for many minutes on 2026-11-06). That is not our limit: the next model answers at once."""
+
+    def test_nabh_says_which_kind_of_429_it_is(self):
+        import io
+        import urllib.error
+
+        from app.integrations.nabh import Nabh
+
+        busy = urllib.error.HTTPError("u", 429, "busy", {}, io.BytesIO(b'{"error":{"message":"The model is busy right now.","code":"MODEL_BUSY","type":"rate_limit_error"}}'))
+        ours = urllib.error.HTTPError("u", 429, "limit", {"Retry-After": "30"}, io.BytesIO(b'{"error":{"message":"Too many requests"}}'))
+        assert Nabh._http_error(busy).busy and Nabh._http_error(busy).kind == "rate_limit"
+        assert not Nabh._http_error(ours).busy and Nabh._http_error(ours).retry_after == 30
+
+    def test_an_agent_goes_straight_to_the_next_model(self, tmp_path, root, monkeypatch):
+        from app.integrations.nabh import NabhError
+
+        slept = []
+        real = asyncio.sleep
+
+        async def nap(s):
+            slept.append(s)
+            await real(0)
+
+        monkeypatch.setattr("app.foundry.runtime.asyncio.sleep", nap)
+        turn, client = run(tmp_path, root, NabhError("rate_limit", "busy", None, busy=True), "done here", models=("m1", "m2"))
+        assert [p["model"] for p in client.seen] == ["m1", "m2"] and turn.text == "done here" and not [s for s in slept if s >= 1]
+
+    def test_when_every_model_is_busy_it_waits_a_little_and_goes_round_again(self, tmp_path, root, monkeypatch):
+        from app.integrations.nabh import NabhError
+
+        slept = []
+        real = asyncio.sleep
+
+        async def nap(s):
+            slept.append(s)
+            await real(0)
+
+        monkeypatch.setattr("app.foundry.runtime.asyncio.sleep", nap)
+        busy = lambda: NabhError("rate_limit", "busy", None, busy=True)  # noqa: E731
+        turn, client = run(tmp_path, root, busy(), busy(), "back now", models=("m1", "m2"))
+        assert [p["model"] for p in client.seen] == ["m1", "m2", "m1"] and turn.text == "back now" and 15.0 in slept
+
+    def test_the_manager_skips_a_busy_model_without_waiting(self, monkeypatch):
+        from app.foundry.models import ModelRouter
+        from app.integrations.nabh import NabhError
+
+        calls = []
+
+        class Busy:
+            def stream_text(self, payload, timeout=0, on_piece=None):
+                calls.append(payload["model"])
+                if payload["model"] == "glm-5-2":
+                    raise NabhError("rate_limit", "this model is busy on Nabh right now", None, busy=True)
+                return "fine"
+
+        monkeypatch.setattr("app.foundry.models.time.sleep", lambda s: (_ for _ in ()).throw(AssertionError("it waited")))
+        text, model = ModelRouter(nabh_factory=lambda: Busy()).think([{"role": "user", "content": "hi"}])
+        assert text == "fine" and calls == ["glm-5-2", "deepseek-v4-pro"]

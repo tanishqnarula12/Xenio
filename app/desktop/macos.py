@@ -412,6 +412,25 @@ def screen_access(request: bool = False) -> bool:
     return bool(L.cg.CGRequestScreenCaptureAccess() if request else L.cg.CGPreflightScreenCaptureAccess())
 
 
+def safari_scripting(runner=subprocess.run) -> str:
+    """Whether this process may drive Safari through Safari's own scripting: "" if it may, else what is missing.
+
+    It only counts windows, and only if Safari is already open: nothing is opened and no page is touched. The first time,
+    macOS itself asks the person whether XENIO may control Safari."""
+    try:
+        done = runner(["osascript", "-e", 'if application "Safari" is running then tell application "Safari" to count windows'],
+                      capture_output=True, text=True, timeout=8)
+    except subprocess.TimeoutExpired:
+        return "your yes to macOS's question whether XENIO may control Safari"
+    except OSError:
+        return "osascript, which comes with macOS"
+    if done.returncode == 0:
+        return ""
+    if "-1743" in (done.stderr or ""):
+        return "permission for XENIO to control Safari, in System Settings, Privacy & Security, Automation"
+    return "Safari answering XENIO: " + " ".join((done.stderr or "no answer").split())[:120]
+
+
 def double_click_interval() -> float:
     try:
         L = lib()
@@ -1262,6 +1281,76 @@ class AX:
             self.L.release(el)
         self._form_refs = {}
 
+    def _walk_for(self, wid: int, wanted, max_nodes: int, budget: float):
+        """The first control in this window that ``wanted(info, fields)`` says yes to, retained for the caller, with its centre."""
+        pid, root = self._find_window(wid)
+        queue, seen = [root], 0
+        deadline = time.monotonic() + budget
+        found = None
+        while queue and seen < max_nodes and time.monotonic() < deadline and found is None:
+            el = queue.pop(0)
+            seen += 1
+            f = self.get_many(el, self._names, _NODE_ATTRS, keep_elements=True)
+            children = f.pop("AXChildren", None) or []
+            info = self.describe(f)
+            if wanted(info, f):
+                found = (el, info)
+            else:
+                self.L.release(el)
+            for child in children:
+                if child and found is None and len(queue) < max_nodes:
+                    queue.append(child)
+                else:
+                    self.L.release(child)
+        for rest in queue:
+            self.L.release(rest)
+        return found
+
+    def background_press(self, wid: int, name: str, max_nodes: int = 4000, budget: float = 3.0) -> dict:
+        """Press a named control, however far back its window is. The way VoiceOver does it: the mouse does not move, nothing comes to the front, and you can carry on with what you are doing."""
+        want = " ".join(str(name or "").lower().split())
+        hit = self._walk_for(wid, lambda info, f: info["enabled"] and info["type"] in ("button", "checkbox", "radiobutton", "menuitem", "hyperlink", "tabitem", "listitem", "combobox") and " ".join(info["name"].lower().split()) == want, max_nodes, budget)
+        if hit is None:
+            return {"found": False, "pressed": False}
+        el, info = hit
+        try:
+            return {"found": True, "pressed": bool(self.act(el, "AXPress")), "name": info["name"], "type": info["type"], "center": info.get("center")}
+        finally:
+            self.L.release(el)
+
+    def background_fill(self, wid: int, name: str, text: str, max_nodes: int = 4000, budget: float = 3.0) -> dict:
+        """Put text in a named box without focusing it, then read it back. Some web pages say yes and do nothing without focus: the reading back is how that gets caught. Never a password box."""
+        want = " ".join(str(name or "").lower().split())
+
+        def fits(info: dict, fields: dict) -> bool:
+            if info["type"] not in ("edit", "document", "combobox") or fields.get("AXSubrole") == "AXSecureTextField":
+                return False
+            names = [" ".join(str(fields.get(k) or "").lower().split()) for k in ("AXTitle", "AXDescription", "AXPlaceholderValue", "AXIdentifier")]
+            return want in names or " ".join(info["name"].lower().split()) == want
+
+        hit = self._walk_for(wid, fits, max_nodes, budget)
+        if hit is None:
+            return {"found": False, "set": False}
+        el, info = hit
+        try:
+            accepted = self.set(el, "AXValue", str(text))
+            got = self.get(el, "AXValue") if accepted else None
+            return {"found": True, "set": bool(accepted) and str(got) == str(text), "name": info["name"], "center": info.get("center")}
+        finally:
+            self.L.release(el)
+
+    def background_read(self, wid: int, name: str, max_nodes: int = 4000, budget: float = 3.0) -> dict:
+        want = " ".join(str(name or "").lower().split())
+        hit = self._walk_for(wid, lambda info, f: f.get("AXSubrole") != "AXSecureTextField" and want in " ".join(str(f.get(k) or "").lower() for k in ("AXTitle", "AXDescription", "AXPlaceholderValue", "AXIdentifier", "AXValue")), max_nodes, budget)
+        if hit is None:
+            return {"found": False}
+        el, info = hit
+        try:
+            value = self.get(el, "AXValue")
+            return {"found": True, "value": value if isinstance(value, (str, int, float)) else None, "name": info["name"]}
+        finally:
+            self.L.release(el)
+
     def form_scan(self, wid: int, max_nodes: int = 8000, budget: float = 3.0) -> dict:
         """The window's page (or the window) as a flat list in document order: controls with an index for ``form_*``, and
         the headings and text around them, from which labels come. A secure field's value is never read."""
@@ -1759,6 +1848,12 @@ def _handle(ax: AX, cmd: str, a: dict):
             return ocr.read_here(int(a["id"]), tuple(a["rect"]))
         except ocr.OcrError as exc:
             raise MacError(str(exc)) from None
+    if cmd == "background_press":
+        return ax.background_press(int(a["id"]), str(a.get("name") or ""))
+    if cmd == "background_fill":
+        return ax.background_fill(int(a["id"]), str(a.get("name") or ""), str(a.get("text") or ""))
+    if cmd == "background_read":
+        return ax.background_read(int(a["id"]), str(a.get("name") or ""))
     if cmd == "find":
         return ax.find(int(a["id"]), str(a.get("query") or ""), int(a.get("limit") or 8), int(a.get("max_nodes") or 2500),
                        float(a.get("budget") or 2.5))

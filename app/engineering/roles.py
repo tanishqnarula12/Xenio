@@ -33,6 +33,13 @@ CAPABILITIES: dict[str, tuple[frozenset[str], str]] = {
     "scoped_file_write": (frozenset({"write_file", "patch", "xenio_create_directory", "terminal"}), "write"),
     "docs_write": (frozenset({"write_file", "patch", "xenio_create_directory"}), "none"),
     "web_research": (frozenset({"web_search", "web_extract"}), "none"),
+    # XENIO's own tools (app/foundry/toolbox.py), which only exist in its own runtime. None of them is a Hermes tool: the names below are checked by that runtime, and a Hermes session has none of them.
+    "vision": (frozenset({"look_at_image"}), "none"),
+    "image_make": (frozenset({"make_image"}), "none"),
+    "deliverables": (frozenset({"make_document", "make_spreadsheet", "make_presentation", "check_deliverable"}), "none"),
+    "agent_browser": (frozenset({"page_open", "page_read", "page_click", "page_type", "page_choose", "page_key", "page_scroll", "page_back", "page_look", "page_sign_in", "page_ask_ceo", "page_tabs", "page_use_tab"}), "none"),
+    "connectors": (frozenset({"mail_search", "mail_read", "calendar_events", "github_repos", "github_issues"}), "none"),
+    "computer_use": (frozenset({"screen_windows", "screen_read", "screen_find", "screen_look", "screen_open_app", "screen_click", "screen_type", "screen_keys", "screen_scroll", "screen_drag", "screen_menu", "screen_apps", "photo_edit", "video_edit", "look_at_file"}), "none"),
 }
 _MODE_ORDER = ("none", "read", "test", "write")
 # Never available to an engineering session, whatever the configuration: no hidden second level of agents, no shared

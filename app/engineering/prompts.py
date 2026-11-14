@@ -35,7 +35,8 @@ def tools_line(role: Role) -> str:
     tools = sorted(role.tools - {"terminal"})
     edit = (" Edit files with patch (mode replace: path, old_string, new_string) or write_file (path, content)."
             if {"patch", "write_file"} & role.tools else "")
-    return (f"YOUR TOOLS (anything else is blocked, including browser, execute_code and delegate_task): "
+    blocked = "anything else is blocked" if "page_open" in role.tools else "anything else is blocked, including browser, execute_code and delegate_task"
+    return (f"YOUR TOOLS ({blocked}): "
             f"{', '.join(tools)}; {_TERMINAL[role.terminal_mode]}.{edit}")
 
 

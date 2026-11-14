@@ -302,6 +302,14 @@ def _handler_for(server: UiServer):
                 return self._json(200, ctl.foundry_overview())
             if method == "GET" and (hit := m(r"/foundry/workflows/([\w-]{4,40})", route)):
                 return self._json(200, ctl.foundry_command("state", {"workflow": hit.group(1)}))
+            if method == "GET" and (hit := m(r"/foundry/live/([\w-]{4,40})/([\w-]{1,80})", route)):
+                return self._send(200, ctl.foundry_picture(hit.group(1), hit.group(2)), "image/jpeg", {"Cache-Control": "no-store"})
+            if method == "GET" and (hit := m(r"/foundry/file/([\w-]{4,40})/(.{1,400})", route)):
+                data, kind, name = ctl.foundry_file(hit.group(1), unquote(hit.group(2)))
+                extra = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+                if kind in ("application/octet-stream",):
+                    extra["Content-Disposition"] = 'attachment; filename="' + re.sub(r'[^\w. -]', "_", name)[:120] + '"'
+                return self._send(200, data, kind, extra)
             if method == "POST" and (hit := m(r"/foundry/([a-z_]{3,30})", route)):
                 return self._json(200, ctl.foundry_command(hit.group(1), self._payload()))
             if method == "GET" and route == "/agents":

@@ -1,0 +1,6 @@
+# Everything needed to work on XENIO and to run its checks. Includes the runtime.
+-r requirements.txt
+pytest>=9,<10
+pytest-asyncio>=1.0,<2
+ruff==0.17.5               # lint (correctness rules: see ruff.toml)
+pip-audit==2.10.1          # known-vulnerability scan of the dependencies
