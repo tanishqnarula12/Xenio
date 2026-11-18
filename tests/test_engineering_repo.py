@@ -65,8 +65,8 @@ def test_a_run_never_touches_the_users_checkout_and_builds_on_their_work(project
     assert ws.changed_files(ws.integration_branch) == [("M", "src/api.py")]  # only the agent's change
     assert "notes.txt" not in ws.patch()
     assert state_of(project) == before
-    log = sh(project, "log", "--format=%an", ws.integration_branch, "-3")
-    assert "XENIO engineering" in log  # agent commits are labelled as such
+    log = sh(project, "log", "--format=%an%n%b", ws.integration_branch, "-3")
+    assert "XENIO" in log  # agent commits are labelled as such: XENIO is the author, or a co-author of yours
 
 
 def test_disjoint_parallel_tasks_merge_and_overlapping_ones_conflict(project, tmp_path):

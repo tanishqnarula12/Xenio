@@ -6,6 +6,9 @@ versions follow [Semantic Versioning](https://semver.org/): see [docs/RELEASING.
 ## [Unreleased]
 
 ### Added
+- **Commits are yours, with XENIO as co-author**, like Claude Code: a `Co-Authored-By: XENIO` line on every commit
+  XENIO makes, linked to XENIO's GitHub account ([@xenio101](https://github.com/xenio101)) so its picture shows. A
+  hook in `.githooks/` adds the same line to commits you make in this repository.
 - **The War Room grew into a digital company.** One sentence starts a team; you can talk to any agent mid-task; every
   message is acknowledged.
 - **Agents in your own Safari**, through Safari's own scripting, on any desktop and without your mouse, with

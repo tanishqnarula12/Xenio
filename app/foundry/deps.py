@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app.engineering import identity
 from app.foundry import sandbox
 
 _NOT_A_REGISTRY_NAME = re.compile(r"(^|[\s;])(-e|--editable|-r|--requirement|-c|--constraint|-f|--find-links|-i|--index-url|--extra-index-url|--trusted-host|--no-binary)\b|git\+|\bhttps?://|\bfile:|\bssh://|\s@\s", re.I)
@@ -268,6 +269,6 @@ def in_words(result: dict) -> str:
 
 def commit_project(project: Path, message: str) -> subprocess.CompletedProcess:
     """A finished build lands in the project XENIO made, committed, so you find it there and not in a hidden worktree."""
-    for args in (["add", "-A"], ["-c", "user.name=XENIO", "-c", "user.email=xenio@localhost", "commit", "-q", "-m", message]):
+    for args in (["add", "-A"], [*identity.config(), "commit", "-q", "-m", identity.message(message)]):
         done = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=project, capture_output=True, text=True, timeout=60)
     return done

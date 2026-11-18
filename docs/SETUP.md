@@ -52,6 +52,21 @@ Web search uses Hermes' own configuration. Without a search API key, Hermes uses
 | `XENIO_ENGINEERING_TASK_TIMEOUT` | `1800` | seconds one agent task may take |
 | `XENIO_ENGINEERING_TEST_TIMEOUT` | `600` | seconds one test run may take |
 
+### Commits: you and XENIO
+
+Like Claude Code, a commit XENIO makes is yours (your name and email from `git config --global`) and names XENIO in a
+`Co-Authored-By:` line, so GitHub shows you both, with XENIO's picture from its account,
+[@xenio101](https://github.com/xenio101). If git does not know you on this Mac, XENIO is the author, on the same account.
+
+| Setting | Default | Effect |
+|---|---|---|
+| `XENIO_GIT_EMAIL` | `358429157+xenio101@users.noreply.github.com` | XENIO's address in the line: GitHub links it to @xenio101 |
+| `XENIO_GIT_NAME` | `XENIO` | the name in the line |
+| `XENIO_COMMIT_AS_XENIO` | `false` | `true` makes XENIO the author instead |
+
+For your own name to appear next to XENIO's, tell git who you are, once, with the email of your GitHub account:
+`git config --global user.name "Your Name"` and `git config --global user.email you@example.com`.
+
 Token limits per job and per agent task are set in the War Room itself (Options when you start a job, and Limits on a
 running one). How the sandbox works and what it does not cover: [SANDBOX.md](SANDBOX.md).
 

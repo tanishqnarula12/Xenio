@@ -34,6 +34,8 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from app.engineering import identity
+
 AGENT_NAME, AGENT_EMAIL = "XENIO engineering", "xenio-engineering@localhost"
 BRANCH_PREFIX = "xenio"
 _COPY_IGNORE = ("node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", "dist", "build", ".next", "target",
@@ -61,7 +63,7 @@ def git(cwd: Path, *args: str, timeout: float = 60, env: dict | None = None, che
     """Run git with everything that could execute repository-supplied programs switched off."""
     cmd = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat",
            "-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "diff.external=",
-           "-c", f"user.name={AGENT_NAME}", "-c", f"user.email={AGENT_EMAIL}", *args]
+           *identity.config((AGENT_NAME, identity.xenio()[1])), *args]  # labelled XENIO engineering, on XENIO's GitHub account
     try:
         done = subprocess.run(cmd, cwd=str(cwd), capture_output=True, timeout=timeout, env=_safe_env(env),
                               text=not binary, stdin=subprocess.DEVNULL)
@@ -255,12 +257,12 @@ class Workspace:
     # ---- recording and integrating ------------------------------------------------------------------------------
 
     def commit_task(self, task_id: str, message: str) -> str:
-        """Commit whatever the task changed in its worktree (as XENIO engineering). '' when nothing changed."""
+        """Commit whatever the task changed in its worktree (yours, with XENIO as co-author; or XENIO engineering's when git does not know you). '' when nothing changed."""
         path = Path(self.task_dirs[task_id])
         git(path, "add", "-A")
         if git(path, "diff", "--cached", "--quiet", check=False).returncode == 0:
             return ""
-        git(path, "commit", "-q", "-m", message)
+        git(path, "commit", "-q", "-m", identity.message(message))
         return git(path, "rev-parse", "HEAD").strip()
 
     def changed_files(self, ref: str, since: str | None = None) -> list[tuple[str, str]]:

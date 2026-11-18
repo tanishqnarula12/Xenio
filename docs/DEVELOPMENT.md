@@ -77,3 +77,15 @@ that is installed: `-sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk`.
 ## Pull requests
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## XENIO as co-author of your commits
+
+`.githooks/prepare-commit-msg` adds `Co-Authored-By: XENIO` to every commit you make here, so GitHub shows XENIO's mark
+([@xenio101](https://github.com/xenio101)) next to yours. Switch it on once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`XENIO_NO_COAUTHOR=1 git commit ...` leaves it out of one commit.
+

@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from app.engineering import identity
 from app.engineering import repo as R
 from app.engineering import prompts, security, verify
 from app.engineering.graph import PlanError, Task, TaskGraph, in_scope, scopes_overlap
@@ -1363,7 +1364,7 @@ class FoundryEngine:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "README.md").write_text(f"# {live.wf['goal'][:80]}\n\nStarted by XENIO's engineering team.\n", encoding="utf-8")
         (folder / ".gitignore").write_text(".venv\nnode_modules\n.deps\n__pycache__/\n.env\n", encoding="utf-8")
-        for args in (["init", "-q", "-b", "main"], ["add", "-A"], ["-c", "user.name=XENIO", "-c", "user.email=xenio@localhost", "commit", "-q", "-m", "A new project"]):
+        for args in (["init", "-q", "-b", "main"], ["add", "-A"], [*identity.config(), "commit", "-q", "-m", identity.message("A new project")]):
             subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=folder, check=True, capture_output=True, timeout=30)
         Dependencies(folder).exclude_from_git()
         return str(folder)
@@ -1989,7 +1990,7 @@ class FoundryEngine:
             return ""  # nothing was built, so there is nothing to hand over
 
         def merge() -> None:
-            done = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=XENIO", "-c", "user.email=xenio@localhost", "merge", "--no-ff", "--no-edit", "-m", f"{live.wf['goal'][:60]}: built by XENIO's engineering team", ws.integration_branch], cwd=live.wf["project"], capture_output=True, text=True, timeout=120)
+            done = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *identity.config(), "merge", "--no-ff", "--no-edit", "-m", identity.message(f"{live.wf['goal'][:60]}: built by XENIO's engineering team"), ws.integration_branch], cwd=live.wf["project"], capture_output=True, text=True, timeout=120)
             if done.returncode != 0:
                 raise OSError((done.stderr or done.stdout).strip()[-300:])
 
