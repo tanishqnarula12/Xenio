@@ -7,6 +7,7 @@ import { XenioMark } from "../components/XenioMark";
 import { RichText } from "../components/RichText";
 import { Button, Empty, ErrorNote, PageHeader, Section, Status, StatusOf, Time } from "../components/ui";
 import { useApp, useAppState } from "../state/context";
+import { useReducedMotion } from "../motion/motion";
 import { href } from "../state/router";
 
 const OPEN = ["starting", "running", "paused", "waiting"];
@@ -359,7 +360,7 @@ function DecisionCard({ d, workflowOpen, act }: { d: FoundryDecision; workflowOp
 
 // ---- the graph -------------------------------------------------------------------------------------------------------
 
-const NODE_W = 176, NODE_H = 56, GAP_X = 30, GAP_Y = 10;
+const NODE_W = 176, NODE_H = 56, GAP_X = 64, GAP_Y = 18; // room for the lines between steps to curve instead of crossing
 
 export function placeNodes(nodes: FoundryNode[]) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -386,8 +387,12 @@ export function placeNodes(nodes: FoundryNode[]) {
 
 const NODE_ICON: Record<string, LucideIcon> = { done: Check, failed: AlertTriangle, blocked: AlertTriangle, running: Loader2, waiting: Hand, cancelled: Square, skipped: CircleDashed, pending: CircleDashed };
 
+const LIVE = new Set(["running", "waiting"]);
+
 function Graph({ state, names, act }: { state: FoundryState; names: Map<string, string>; act: (c: string, b: Record<string, unknown>) => Promise<unknown> }) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [hover, setHover] = useState<string | null>(null);
+  const reduced = useReducedMotion();
   const scroller = useRef<HTMLDivElement | null>(null);
   const shownOnce = useRef(false);
   useEffect(() => { // a long graph opens where the work is, not at its beginning
@@ -401,21 +406,42 @@ function Graph({ state, names, act }: { state: FoundryState; names: Map<string, 
   const { placed, width, height } = placeNodes(steps);
   const at = new Map(placed.map((p) => [p.node.id, p]));
   const node = selected ? state.graph.find((n) => n.id === selected) : null;
+  const focus = hover ?? selected;
+  const edges = placed.flatMap((p) => p.node.deps.filter((d) => at.has(d)).map((d) => {
+    const a = at.get(d)!;
+    const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = p.x, y2 = p.y + NODE_H / 2, bend = Math.max(22, (x2 - x1) / 2);
+    const live = a.node.status === "done" && LIVE.has(p.node.status); // the work is flowing into this step right now
+    const lit = focus !== null && (d === focus || p.node.id === focus);
+    return { id: `${d}-${p.node.id}`, from: a.node, to: p.node, live, lit, d: `M${x1} ${y1} C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}` };
+  }));
+  const count = (...s: string[]) => steps.filter((n) => s.includes(n.status)).length;
+  const tally = [["done", count("done"), "done"], ["running", count("running"), "running"], ["waiting", count("waiting"), "waiting for you"], ["failed", count("failed", "blocked"), "stuck"]] as const;
   return (
     <div className="wr-graph">
+      <div className="wr-graph__strip" aria-label="Where the work is">
+        {tally.filter(([, n], i) => n > 0 || i < 2).map(([key, n, label]) => (
+          <span key={key} className={`wr-graph__count wr-graph__count--${key}`}><span className="wr-graph__dot" aria-hidden="true" />{n} {label}</span>
+        ))}
+        <span className="wr-graph__total">{steps.length} steps</span>
+      </div>
       <div className="wr-graph__scroll" ref={scroller} tabIndex={0} role="group" aria-label="The workflow as a graph">
-        <div className="wr-graph__canvas" style={{ width, height }}>
+        <div className={`wr-graph__canvas ${focus ? "has-focus" : ""}`} style={{ width, height }}>
           <svg width={width} height={height} aria-hidden="true">
-            {placed.flatMap((p) => p.node.deps.filter((d) => at.has(d)).map((d) => {
-              const a = at.get(d)!;
-              const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = p.x, y2 = p.y + NODE_H / 2;
-              return <path key={`${d}-${p.node.id}`} className={`wr-edge wr-edge--${a.node.status}`} d={`M${x1} ${y1} C${x1 + 22} ${y1} ${x2 - 22} ${y2} ${x2} ${y2}`} />;
-            }))}
+            {edges.map((e) => (
+              <path key={e.id} className={`wr-edge wr-edge--${e.from.status} ${e.live ? "wr-edge--live" : ""} ${e.to.status === "pending" ? "wr-edge--ahead" : ""} ${e.lit ? "is-lit" : ""}`} d={e.d} />
+            ))}
           </svg>
+          {!reduced && edges.filter((e) => e.live).map((e) => [0, 1].map((k) => ( // work travelling into the step that is running, along the same curve
+            <span key={`${e.id}-p${k}`} aria-hidden="true" className={`wr-packet wr-packet--${e.to.status}`} style={{ offsetPath: `path("${e.d}")`, animationDelay: `-${k * 0.9}s` }} />
+          )))}
           {placed.map(({ node: n, x, y }) => {
             const Icon = NODE_ICON[n.status] ?? CircleDashed;
+            const near = focus !== null && (n.id === focus || edges.some((e) => e.lit && (e.from.id === n.id || e.to.id === n.id)));
             return (
-              <button key={n.id} type="button" className={`wr-node wr-node--${n.status} ${selected === n.id ? "is-selected" : ""}`} style={{ left: x, top: y, width: NODE_W, height: NODE_H }} aria-pressed={selected === n.id} onClick={() => setSelected(selected === n.id ? null : n.id)}>
+              <button key={n.id} type="button" className={`wr-node wr-node--${n.status} ${selected === n.id ? "is-selected" : ""} ${near ? "is-near" : ""}`} style={{ left: x, top: y, width: NODE_W, height: NODE_H }} aria-pressed={selected === n.id}
+                      onClick={() => setSelected(selected === n.id ? null : n.id)} onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)} onFocus={() => setHover(n.id)} onBlur={() => setHover(null)}>
+                <span className="wr-node__c wr-node__c--tl" aria-hidden="true" /><span className="wr-node__c wr-node__c--tr" aria-hidden="true" />
+                <span className="wr-node__c wr-node__c--bl" aria-hidden="true" /><span className="wr-node__c wr-node__c--br" aria-hidden="true" />
                 <span className="wr-node__title"><Icon size={13} aria-hidden="true" className={n.status === "running" ? "wr-spin" : ""} /> <span className="wr-node__name">{n.title}</span></span>
                 <span className="wr-node__sub">{n.agent ? names.get(n.agent) ?? n.agent : n.type} · {n.status}</span>
               </button>

@@ -65,6 +65,11 @@ Your digital company. You are the CEO, XENIO is the manager, and the agents do t
 
 <img src="docs/media/war-room-conversation.png" alt="The conversation: the engineer's report, XENIO's test run (16 passed, sandboxed), the security and code reviews" width="100%">
 
+**Watch it move.** The live graph shows where the work is: finished steps in green, a pulsing frame on the one running, work flowing into it along its line, and what is waiting for you in gold. Point at a step to light up what it depends on and what depends on it.
+
+<img src="docs/media/war-room-live-graph.png" alt="The War Room's live graph: five steps done, 'Test, review, fix' running with work flowing into it, 'Push to GitHub?' waiting for you, and the goal check and report still ahead" width="100%">
+<sub>The live graph component, shown here with sample steps.</sub>
+
 **4. Test, review, fix, until it is clean.** Every round is shown. Here round 1 passed all 16 tests, the review was clean, and an independent check confirmed the goal was met.
 
 <img src="docs/media/war-room-rounds.png" alt="The graph: build, test-review-fix (round 1: 16 passed, clean), goal check, report" width="100%">

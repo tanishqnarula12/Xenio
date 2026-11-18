@@ -513,6 +513,22 @@ describe("the graph", () => {
     await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("cancel_task", { workflow: "w1", node: "b" }));
   });
 
+  it("shows where the work is: a count, the edge feeding the running step flows, and hovering a step lights its own lines", async () => {
+    const { container } = await workflow(state({}, { graph: nodes })).then(() => ({ container: document.body }));
+    open();
+    const strip = screen.getByLabelText("Where the work is");
+    expect(within(strip).getByText(/1 done/)).toBeInTheDocument();
+    expect(within(strip).getByText(/1 running/)).toBeInTheDocument();
+    expect(within(strip).getByText(/1 stuck/)).toBeInTheDocument();
+    expect(container.querySelectorAll(".wr-edge--live")).toHaveLength(1); // goal (done) -> API (running)
+    expect(container.querySelectorAll(".wr-edge.is-lit")).toHaveLength(0);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: /Tests/ }));
+    expect(container.querySelectorAll(".wr-edge.is-lit")).toHaveLength(2); // API -> Tests and UI -> Tests
+    expect(container.querySelector(".wr-graph__canvas")).toHaveClass("has-focus");
+    fireEvent.mouseLeave(screen.getByRole("button", { name: /Tests/ }));
+    expect(container.querySelectorAll(".wr-edge.is-lit")).toHaveLength(0);
+  });
+
   it("says so before there is anything to show", async () => {
     await workflow(state({}, { graph: [] }));
     open();

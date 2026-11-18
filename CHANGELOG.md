@@ -24,6 +24,9 @@ versions follow [Semantic Versioning](https://semver.org/): see [docs/RELEASING.
 - `requirements.lock` (exact, tested versions) and `requirements-dev.txt`.
 
 ### Changed
+- **The War Room's live graph:** a count of where the work is, work flowing along the line into the running step,
+  corner brackets on what is running or waiting for you, and pointing at a step lights its own lines. Motion stops
+  when you ask for reduced motion.
 - **One builder per small or medium job**, end to end, instead of hand-overs between agents: real jobs failed at every
   hand-over.
 - Agents get the files they work on at the start, and **a read of a file they already have, unchanged, does not run**.

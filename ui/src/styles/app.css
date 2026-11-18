@@ -1016,30 +1016,71 @@ details[open].lesson-check summary::before { transform: rotate(90deg); }
 .wr-dissent h4 { margin: 0; font-size: var(--t-meta); font-weight: 600; color: var(--attention); }
 
 .wr-graph { display: grid; gap: 10px; }
-.wr-graph__scroll { overflow: auto; background: var(--surface-1); border-radius: 12px; padding: 12px; max-height: 62vh; }
+/* where the work is, at a glance */
+.wr-graph__strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12px; color: var(--ink-2); }
+.wr-graph__count { display: inline-flex; align-items: center; gap: 6px; }
+.wr-graph__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+.wr-graph__count--done .wr-graph__dot { background: var(--ok); }
+.wr-graph__count--running .wr-graph__dot { background: var(--running); box-shadow: 0 0 0 0 var(--running); animation: wr-ping 1.8s ease-out infinite; }
+.wr-graph__count--waiting .wr-graph__dot { background: var(--attention); }
+.wr-graph__count--failed .wr-graph__dot { background: var(--danger); }
+.wr-graph__total { margin-left: auto; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+/* the canvas: a hatched page, like a drawing board */
+.wr-graph__scroll { overflow: auto; border-radius: 12px; padding: 18px; max-height: 62vh;
+  background-color: var(--surface-1);
+  background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.028) 0 1px, transparent 1px 11px); }
 .wr-graph__canvas { position: relative; }
-.wr-graph__canvas > svg { position: absolute; inset: 0; pointer-events: none; }
-.wr-edge { fill: none; stroke: var(--surface-3); stroke-width: 1.25; }
-.wr-edge--done { stroke: var(--ok); opacity: 0.55; }
-.wr-edge--running { stroke: var(--running); }
-.wr-node { position: absolute; display: grid; gap: 2px; text-align: left; padding: 8px 10px; border-radius: 10px; background: var(--surface-3); color: var(--ink); border: 1px solid transparent; cursor: pointer; font: inherit; overflow: hidden; }
-.wr-node:hover { background: var(--surface-4); }
+.wr-graph__canvas > svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+/* edges: settled work is solid, work still ahead is dashed, the edge feeding a running step flows */
+.wr-edge { fill: none; stroke: var(--surface-4, rgba(255,255,255,.14)); stroke-width: 1.25; transition: stroke .3s, opacity .3s, stroke-width .3s; }
+.wr-edge--done { stroke: var(--ok); opacity: 0.5; }
+.wr-edge--ahead { stroke: rgba(255,255,255,.2); stroke-dasharray: 3 5; }
+.wr-edge--live { stroke: var(--running); opacity: 1; stroke-width: 1.6; stroke-dasharray: 4 5; animation: wr-flow 1s linear infinite; }
+.wr-packet { position: absolute; top: 0; left: 0; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--running); box-shadow: 0 0 8px var(--running); pointer-events: none; offset-rotate: 0deg; offset-distance: 0%; animation: wr-travel 1.8s cubic-bezier(.4,0,.6,1) infinite; z-index: 1; }
+.wr-packet--waiting { background: var(--attention); box-shadow: 0 0 8px var(--attention); }
+@keyframes wr-travel { 0% { offset-distance: 0%; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { offset-distance: 100%; opacity: 0; } }
+.wr-graph__canvas.has-focus .wr-edge:not(.is-lit) { opacity: .18; }
+.wr-edge.is-lit { stroke: var(--xenon); opacity: 1; stroke-width: 1.8; }
+/* nodes, with corner brackets that open when you look at them */
+.wr-node { position: absolute; display: grid; gap: 2px; text-align: left; padding: 8px 10px; border-radius: 6px; background: linear-gradient(180deg, var(--surface-3), var(--surface-2)); color: var(--ink); border: 1px solid rgba(255,255,255,.06); cursor: pointer; font: inherit; overflow: visible; transition: border-color .25s, box-shadow .3s, opacity .3s, transform .3s cubic-bezier(.2,.8,.2,1); }
+.wr-node:hover { border-color: rgba(255,255,255,.16); box-shadow: 0 8px 24px -12px rgba(0,0,0,.7); transform: translateY(-1px); }
 .wr-node.is-selected { border-color: var(--xenon); }
+.wr-graph__canvas.has-focus .wr-node:not(.is-near):not(.is-selected) { opacity: .45; }
+.wr-node__c { position: absolute; width: 9px; height: 9px; border: 0 solid transparent; pointer-events: none; transition: border-color .25s, transform .35s cubic-bezier(.2,.8,.2,1); }
+.wr-node__c--tl { top: -5px; left: -5px; border-top-width: 1.5px; border-left-width: 1.5px; }
+.wr-node__c--tr { top: -5px; right: -5px; border-top-width: 1.5px; border-right-width: 1.5px; }
+.wr-node__c--bl { bottom: -5px; left: -5px; border-bottom-width: 1.5px; border-left-width: 1.5px; }
+.wr-node__c--br { bottom: -5px; right: -5px; border-bottom-width: 1.5px; border-right-width: 1.5px; }
+.wr-node:hover .wr-node__c, .wr-node.is-selected .wr-node__c, .wr-node:focus-visible .wr-node__c { border-color: var(--xenon); }
+.wr-node:hover .wr-node__c--tl, .wr-node.is-selected .wr-node__c--tl { transform: translate(-3px,-3px); }
+.wr-node:hover .wr-node__c--tr, .wr-node.is-selected .wr-node__c--tr { transform: translate(3px,-3px); }
+.wr-node:hover .wr-node__c--bl, .wr-node.is-selected .wr-node__c--bl { transform: translate(-3px,3px); }
+.wr-node:hover .wr-node__c--br, .wr-node.is-selected .wr-node__c--br { transform: translate(3px,3px); }
 .wr-node__title { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; min-width: 0; }
 .wr-node__title svg { flex: none; }
 .wr-node__name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .wr-node__sub { font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wr-node--done .wr-node__title svg { color: var(--ok); }
-.wr-node--running { background: var(--running-wash); }
+.wr-node--running { background: linear-gradient(180deg, var(--running-wash), var(--surface-2)); border-color: rgba(127,178,245,.35); animation: wr-glow 2.2s ease-in-out infinite; }
+.wr-node--running .wr-node__c { border-color: var(--running); }
 .wr-node--running .wr-node__title svg { color: var(--running); }
-.wr-node--waiting { background: var(--attention-wash); }
+.wr-node--waiting { background: linear-gradient(180deg, var(--attention-wash), var(--surface-2)); border-color: rgba(232,184,79,.35); }
+.wr-node--waiting .wr-node__c { border-color: var(--attention); }
 .wr-node--waiting .wr-node__title svg { color: var(--attention); }
-.wr-node--failed, .wr-node--blocked { background: var(--danger-wash); }
+.wr-node--failed, .wr-node--blocked { background: linear-gradient(180deg, var(--danger-wash), var(--surface-2)); border-color: rgba(242,116,116,.3); }
 .wr-node--failed .wr-node__title svg, .wr-node--blocked .wr-node__title svg { color: var(--danger); }
 .wr-node--skipped, .wr-node--cancelled { opacity: 0.55; }
+.wr-node--pending { background: var(--surface-2); border-style: dashed; border-color: rgba(255,255,255,.1); }
 .wr-spin { animation: wr-spin 1.2s linear infinite; }
 @keyframes wr-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .wr-spin { animation: none; } }
+@keyframes wr-flow { to { stroke-dashoffset: -18; } }
+@keyframes wr-glow { 0%, 100% { box-shadow: 0 0 0 0 rgba(127,178,245,0); } 50% { box-shadow: 0 0 0 4px rgba(127,178,245,.14), 0 0 22px -4px rgba(127,178,245,.45); } }
+@keyframes wr-ping { 0% { box-shadow: 0 0 0 0 rgba(127,178,245,.6); } 100% { box-shadow: 0 0 0 7px rgba(127,178,245,0); } }
+@media (prefers-reduced-motion: reduce) {
+  .wr-spin, .wr-edge--live, .wr-node--running, .wr-graph__count--running .wr-graph__dot { animation: none; }
+  .wr-packet { display: none; }
+  .wr-node, .wr-node__c, .wr-edge { transition: none; }
+}
 .wr-detail { background: var(--surface-2); padding: 12px 14px; border-radius: 12px; display: grid; gap: 8px; min-width: 0; }
 .wr-detail h3 { margin: 0; font-size: var(--t-body); }
 .wr-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; margin: 0; font-size: var(--t-meta); }
