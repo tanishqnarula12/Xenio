@@ -360,6 +360,8 @@ class TestWhatItBuiltRuns:
     @needs_mac
     def test_a_python_kept_in_the_home_folder_can_still_start(self, tmp_path):
         """The home folder is shut, and uv keeps Python's own files in it: without them Python dies before it can read a line."""
+        if not Path(sys.executable).resolve().is_relative_to(Path.home().resolve()):
+            pytest.skip("this machine's Python is not kept in the home folder (CI's is in /Library/Frameworks), so there is nothing to check")
         from app.foundry.preview import Previews
         source = tmp_path / "src"
         source.mkdir()
