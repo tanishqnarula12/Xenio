@@ -5,7 +5,7 @@ Like Claude Code: the commit is yours (your own git name and email, from `git co
 left out. Either way a commit XENIO made always says so.
 
 GitHub shows a picture next to a co-author only when the email belongs to a GitHub account. XENIO has one, @xenio101,
-and its private "noreply" address is the default here, so XENIO's mark appears on every commit it made or helped with,
+and its email (xenio0120@gmail.com, verified there) is the default here, so XENIO's mark appears on every commit it made or helped with,
 for anyone who runs XENIO. XENIO_GIT_EMAIL points it somewhere else.
 """
 
@@ -17,7 +17,7 @@ import re
 import subprocess
 
 _EMAIL = re.compile(r"[^@\s<>]+@[^@\s<>]+")
-ACCOUNT = "358429157+xenio101@users.noreply.github.com"  # github.com/xenio101: GitHub links this address to that account, and shows its picture
+ACCOUNT = "xenio0120@gmail.com"  # github.com/xenio101: GitHub links this address to that account, and shows its picture
 
 
 def xenio() -> tuple[str, str]:

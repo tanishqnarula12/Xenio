@@ -5,6 +5,6 @@
 [ "${XENIO_NO_COAUTHOR:-}" = "1" ] && exit 0
 case "$2" in merge|squash) exit 0 ;; esac
 name="${XENIO_GIT_NAME:-XENIO}"
-email="${XENIO_GIT_EMAIL:-358429157+xenio101@users.noreply.github.com}"
+email="${XENIO_GIT_EMAIL:-xenio0120@gmail.com}"
 grep -qi "^Co-Authored-By: $name <$email>" "$1" && exit 0
 git interpret-trailers --in-place --if-exists addIfDifferent --trailer "Co-Authored-By: $name <$email>" "$1"

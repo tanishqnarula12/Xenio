@@ -60,7 +60,7 @@ Like Claude Code, a commit XENIO makes is yours (your name and email from `git c
 
 | Setting | Default | Effect |
 |---|---|---|
-| `XENIO_GIT_EMAIL` | `358429157+xenio101@users.noreply.github.com` | XENIO's address in the line: GitHub links it to @xenio101 |
+| `XENIO_GIT_EMAIL` | `xenio0120@gmail.com` | XENIO's address in the line: GitHub links it to @xenio101 |
 | `XENIO_GIT_NAME` | `XENIO` | the name in the line |
 | `XENIO_COMMIT_AS_XENIO` | `false` | `true` makes XENIO the author instead |
 
