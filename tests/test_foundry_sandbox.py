@@ -366,7 +366,7 @@ class TestWhatItBuiltRuns:
         (source / "app.py").write_text("import http.server, os\nhttp.server.HTTPServer(('127.0.0.1', int(os.environ['PORT'])), http.server.SimpleHTTPRequestHandler).serve_forever()\n")
         previews = Previews()
         out = previews.start("k", source, tmp_path / "work", sys.executable, keep=False)
-        assert out["ok"], out
+        assert out["ok"], f"{out.get('detail')}: {out.get('command')}\n{out.get('log')}"
 
     def test_a_failure_to_start_is_remembered_with_its_reason(self, tmp_path):
         from app.foundry.preview import Previews

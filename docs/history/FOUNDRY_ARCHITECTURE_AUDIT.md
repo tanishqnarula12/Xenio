@@ -92,7 +92,7 @@ The guard, roles and capabilities, worktrees, verification, test tampering check
 
 **Known limit, now mostly closed:** under Hermes, agents' terminal commands have no OS sandbox (only XENIO's own test runs do). The native runtime added later runs every command in one. Agents pinned to a Hermes-only model keep the guard alone.
 
-**Added after this audit:** the user directed that they will be CEO ("whatever i say i just have to give command") and that Hermes can go if it blocks anything. So The Foundry gained a supervisor mode, milestones with an independent coverage check, sandboxed package installs, and its own agent runtime. See [FOUNDRY.md](FOUNDRY.md).
+**Added after this audit:** the user directed that they will be CEO ("whatever i say i just have to give command") and that Hermes can go if it blocks anything. So The Foundry gained a supervisor mode, milestones with an independent coverage check, sandboxed package installs, and its own agent runtime. See [FOUNDRY.md](../FOUNDRY.md).
 
 ## Many models, one protocol
 

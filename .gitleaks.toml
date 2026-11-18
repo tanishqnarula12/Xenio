@@ -11,4 +11,5 @@ regexes = [
   '''testsecretvalue''',
   '''should_not_leak''',
   '''PASTE_YOUR_KEY_HERE''',
+  '''0123456789abcdef''',
 ]

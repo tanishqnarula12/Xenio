@@ -52,6 +52,10 @@ versions follow [Semantic Versioning](https://semver.org/): see [docs/RELEASING.
   is `/private/var`).
 - A one-answer build cut off at its token limit was paid for again and reported as finished; it now keeps what came
   complete, says what is missing, and is not run again.
+- The demo video plays as it downloads (its index was at the end), and the README shows a moving preview of it.
+- CI: tests that assumed India's time zone, a `~/.zshrc`, or being run from `.venv` now pass on any Mac.
+- The repository holds only XENIO: coding-assistant skill packs and a stray root `package.json` were removed, and
+  version notes moved to `docs/history/`.
 - A one-page site skipped its fast single-call path after the planner shortcut for small apps; pages keep it.
 - A review written as JSON showed raw braces in the conversation.
 - On the home screen, a running job's title was squeezed to one word per line.

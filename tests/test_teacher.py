@@ -499,8 +499,12 @@ class TestTheSandbox:
         assert not out["ok"] and "ZeroDivisionError" in out["stderr"]
 
     def test_it_cannot_read_the_home_folder(self, tmp_path):
-        out = sandbox.run("python", f"print(open({str(Path.home() / '.zshrc')!r}).read())")
+        out = sandbox.run("python", f"import os; print(os.listdir({str(Path.home())!r}))")  # the home folder is on every Mac; a .zshrc is not (CI has none, so it said "no such file")
         assert not out["ok"] and "not permitted" in out["stderr"]
+        rc = Path.home() / ".zshrc"
+        if rc.is_file():
+            out = sandbox.run("python", f"print(open({str(rc)!r}).read())")
+            assert not out["ok"] and "not permitted" in out["stderr"]
 
     def test_it_cannot_write_outside(self):
         target = Path.home() / ".xenio_never_written"

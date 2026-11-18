@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+import subprocess
 import sys
 from pathlib import Path
 
@@ -643,7 +644,8 @@ class TestAProjectsOwnPythonRuns:
     @needs_mac
     def test_python_in_a_project_venv_can_start_inside_the_sandbox(self, tmp_path, root):
         """Its real files are in the home folder, which the sandbox shuts. Every python command in a project died on start, and agents burned whole turns on it."""
-        project_venv = Path(sys.prefix)
+        project_venv = tmp_path / "project" / ".venv"  # a real project venv, wherever the tests run (CI runs them without one)
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(project_venv)], check=True, capture_output=True, timeout=120)
         client = Scripted([call("terminal", command="python -c 'print(6 * 7)'")], "done")
         registry = SessionRegistry(tmp_path / "s.json")
         native = NativeSessions(registry, PathPolicy(workspace=tmp_path / "workspace"), nabh_factory=lambda: client, models=("m1",))

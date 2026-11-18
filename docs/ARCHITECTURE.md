@@ -324,7 +324,7 @@ xenio_engineering (chat's Hermes) ─socket+token─► EngineeringService ─�
 xenio-guard: every tool call of an engineering session → normal policy + role tools, worktree, file scope
 ```
 
-Details: [ENGINEERING_TEAM.md](ENGINEERING_TEAM.md), [V6_BASELINE.md](V6_BASELINE.md).
+Details: [ENGINEERING_TEAM.md](ENGINEERING_TEAM.md), [V6_BASELINE.md](history/V6_BASELINE.md).
 
 ## Extension points
 

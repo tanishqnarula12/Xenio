@@ -53,7 +53,7 @@ Where XENIO stands against its engineering roadmap. **Done** means built and che
 | Runtime and development split | **Done** |
 | Audit vulnerable packages | **Done**: `certifi` updated for PYSEC-2026-4320; npm 0 vulnerabilities |
 | Outdated packages | **Partly**: listed. Minor updates are pending; `sherpa-onnx` 2.0 is a major update that needs testing with the wake word. |
-| Root and interface npm manifests | **Done**: the root one holds `gsap` for built pages |
+| npm manifests | **Done**: one, for the interface (`ui/`); a stray root manifest was removed |
 | How to update dependencies | **Done** ([DEVELOPMENT.md](DEVELOPMENT.md#dependencies)) |
 
 ### 5. Testing and reliability

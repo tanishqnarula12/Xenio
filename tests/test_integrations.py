@@ -19,6 +19,18 @@ TZ = timezone(timedelta(hours=5, minutes=30))
 NOW = datetime(2026, 10, 3, 10, 30, tzinfo=TZ)  # a Saturday morning
 
 
+@pytest.fixture(autouse=True)
+def _in_india(monkeypatch):
+    """These tests are written in India's time (+05:30). CI machines run in UTC, where 'this morning' moved by 5.5 hours."""
+    import time
+
+    monkeypatch.setenv("TZ", "Asia/Kolkata")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
 class FakeHTTP:
     """Records requests; answers from a list of (status, body) per URL substring."""
 

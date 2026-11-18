@@ -6,7 +6,7 @@ database, tester, security reviewer, code reviewer, documentation), runs them in
 tests the result itself, reviews it, and reports with evidence. You stay in control: nothing leaves the isolated
 copies (your files, your branches, a remote, production) without your confirmation.
 
-* How it is built and why: this page. Audit and decisions: [V6_BASELINE.md](V6_BASELINE.md).
+* How it is built and why: this page. Audit and decisions: [V6_BASELINE.md](history/V6_BASELINE.md).
 * Roles and their enforced capabilities: [AGENT_ROLES.md](AGENT_ROLES.md).
 * What you can ask, run lifecycle, statuses, cancel, apply/push/PR: [ENGINEERING_WORKFLOWS.md](ENGINEERING_WORKFLOWS.md).
 * Threats and controls: [ENGINEERING_SECURITY.md](ENGINEERING_SECURITY.md).
@@ -40,7 +40,7 @@ concurrency (up to 4 agent turns per Hermes process), the plugin hooks XENIO's g
 **Added by XENIO** (what Hermes does not offer in a usable, safe form for this): the engineering workflow and task
 graph, roles with *enforced* tool and file scopes, repository preflight and isolation that never touches the user's
 checkout, deterministic verification and security checks, evidence-based outcomes, reports, and the boundary where
-your confirmation is required. Why not Hermes' `delegate_task` or kanban: see [V6_BASELINE.md](V6_BASELINE.md#6-what-this-means-for-v6-decisions)
+your confirmation is required. Why not Hermes' `delegate_task` or kanban: see [V6_BASELINE.md](history/V6_BASELINE.md#6-what-this-means-for-v6-decisions)
 (no per-child model or tool limits; kanban workers run unattended outside XENIO's guard).
 
 ## Configuration

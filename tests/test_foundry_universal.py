@@ -1116,7 +1116,7 @@ class TestAskingTheCEO:
             state = engine.get(wid)
             await engine.stop(wid)
             gate.release.set()
-            return answer, record, state, len(thinker.asked) - asked, engine.bus.history(wid, kind="ACK")
+            return answer, record, state, sum("linkedin.com/in/asha" in a for a in thinker.asked[asked:]), engine.bus.history(wid, kind="ACK")  # your reply never went to a model to be read as an order (the job's own calls can land in between on a slow machine)
 
         (text, ok), record, wf, models_asked, acks = asyncio.run(go())
         assert ok and "linkedin.com/in/asha" in text and not wf.get("orders") and models_asked == 0

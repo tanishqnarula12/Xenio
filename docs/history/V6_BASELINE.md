@@ -30,7 +30,7 @@ policy *inside* Hermes through the `xenio-guard` plugin (`pre_tool_call` allow/a
 redaction and source tracking, `pre_llm_call` notes). The policy (`app/safety/policy.py`) is standard-library only and
 covers paths, shell commands, git/gh, web, browser, memory, personal tools, vision and desktop actions. V4 adds
 projects and tasks (`personal.db`), V5 screen vision, V5.5 desktop control and multilingual intents. See
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](../ARCHITECTURE.md).
 
 Relevant existing pieces for V6:
 
@@ -143,11 +143,11 @@ XENIO's process over a local socket, the `--engineer` CLI, and notifications for
 | Existing implementation audited | done | sections 1-5 |
 | Baseline recorded | done | section 2 |
 | Hermes capabilities verified | done | section 5; ACP gateway behaviour re-checked live (section 10) |
-| Engineering orchestrator works | done | `tests/test_engineering_orchestrator.py`; live tests 1-12 ([ENGINEERING_TEAM.md](ENGINEERING_TEAM.md#live-acceptance-results-2026-101718-this-mac-free-models)) |
+| Engineering orchestrator works | done | `tests/test_engineering_orchestrator.py`; live tests 1-12 ([ENGINEERING_TEAM.md](../ENGINEERING_TEAM.md#live-acceptance-results-2026-101718-this-mac-free-models)) |
 | Task graph works | done | `tests/test_engineering_core.py`; live test 4 (dependencies, parallel disjoint scopes) |
 | Specialized roles are configurable | done | `roles.py`, TOML overrides, cost policy; tests |
 | Delegation works | done | Hermes ACP sessions per task (real stdio in `tests/test_engineering_service.py`; live tests) |
-| Natural-language use from XENIO's chat | done (fixed 2026-10-18) | cause: Hermes 0.22's multiplexing gateway read `tools.tool_search.enabled: ${XENIO_TOOL_SEARCH}` as `auto` and hid every `xenio_*` tool, and the gateway never had the engineering socket's address ([HERMES_INTEGRATION.md](HERMES_INTEGRATION.md)). Live after the fix: "Is your engineering team working on anything?" -> `xenio_engineering` status; "explain the architecture of <repo>" -> explain run 1018-0146-26de, answered read-only; follow-up questions read the report (also after a restart) |
+| Natural-language use from XENIO's chat | done (fixed 2026-10-18) | cause: Hermes 0.22's multiplexing gateway read `tools.tool_search.enabled: ${XENIO_TOOL_SEARCH}` as `auto` and hid every `xenio_*` tool, and the gateway never had the engineering socket's address ([HERMES_INTEGRATION.md](../HERMES_INTEGRATION.md)). Live after the fix: "Is your engineering team working on anything?" -> `xenio_engineering` status; "explain the architecture of <repo>" -> explain run 1018-0146-26de, answered read-only; follow-up questions read the report (also after a restart) |
 | Repository isolation works | done | `tests/test_engineering_repo.py`; live runs left every source repo unchanged |
 | Existing user changes are preserved | done | tests; live test 7 checked on disk |
 | Conflicts are detected and handled | done (tested with fakes) | merge-conflict abort + one controlled re-apply; a real conflict did not occur live (scopes keep writers apart) |

@@ -32,8 +32,8 @@
 ## Watch it work
 
 <p align="center">
-  <a href="docs/media/xenio-demo.mp4"><img src="docs/media/xenio-demo-poster.jpg" alt="XENIO's home screen with its orb: click to watch the two-minute demo" width="85%"></a><br>
-  <sub><b>▶ Two-minute demo</b> (<a href="docs/media/xenio-demo.mp4">xenio-demo.mp4</a>): home, chat, the War Room, skills, memory, the profile vault and settings. Personal details in it are blurred.</sub>
+  <a href="https://github.com/tanishqnarula12/Xenio/raw/main/docs/media/xenio-demo.mp4"><img src="docs/media/xenio-demo-preview.gif" alt="The two-minute demo, sped up: home, chat, the War Room, skills, memory, the profile vault and settings" width="85%"></a><br>
+  <sub>The two-minute demo, sped up four times. <b><a href="https://github.com/tanishqnarula12/Xenio/raw/main/docs/media/xenio-demo.mp4">▶ Watch it at full speed (MP4, 23 MB)</a></b>: home, chat, the War Room, skills, memory, the profile vault and settings. Personal details in it are blurred.</sub>
 </p>
 
 ## The idea
@@ -274,6 +274,7 @@ native/              Swift helpers (orb, hands, vault) and the Figma plugin
 hermes_plugin/       xenio-guard: policy enforcement inside Hermes
 tests/               Python test suite (the interface's tests are in ui/src/test)
 docs/                guides, architecture, security, media
+docs/history/        design notes from earlier versions
 ```
 
 ## Development

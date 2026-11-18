@@ -44,3 +44,15 @@ native/build/
 # The original, full-size screen recording (over GitHub's 100 MB limit, and unblurred). The repo has docs/media/xenio-demo.mp4.
 /xenio .mp4
 *.mov
+
+# Coding-assistant skill packs installed on this machine (`npx skills add`): local tooling, not part of XENIO
+/.agents/
+/.claude/
+/.hermes/
+/skills-lock.json
+# gsap installed at the root for experiments; the interface has its own in ui/
+/package.json
+/package-lock.json
+/node_modules/
+# Design images saved from Figma runs
+/native/figma-plugin/*.png
