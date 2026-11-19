@@ -64,6 +64,9 @@ versions follow [Semantic Versioning](https://semver.org/): see [docs/RELEASING.
 - Django projects' own tests are found and run; a multi-line `.xenio-run` start script runs as a whole.
 
 ### Fixed
+- **XENIO quit unexpectedly on every start.** The window could open before the orb app had finished starting, and
+  reaching for the orb panel that did not exist yet crashed it. What XENIO says while the orb is starting now waits for
+  it, and the window code checks the panel is there.
 - **Security:** agent-written tests ran unsandboxed when the sandbox was missing; they are now refused.
 - **Security:** the test runner's sandbox let agent-written tests read your home folder; it no longer does.
 - **Security:** the menu tool built AppleScript from an agent's text, so a crafted menu name could run a shell

@@ -78,6 +78,8 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
                     WKUIDelegate, CLLocationManagerDelegate {
     let launch: Launch
     var panel: OrbPanel!
+    private var launched = false
+    private var waiting: [[String: Any]] = []
     var web: WKWebView!
     var size = NSSize(width: 96, height: 96)
     var dragMonitor: Any?
@@ -116,6 +118,10 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
         applyShortcut("triple_space")
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(openWindowFromOutside), name: openWindowNotice, object: nil)
+        launched = true
+        let early = waiting
+        waiting.removeAll()
+        early.forEach(command)  // what XENIO said while this was still starting, in order
     }
 
     /// Clicking the Dock icon while XENIO is running, with its window closed.
@@ -202,6 +208,10 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
     /// A command from XENIO itself (stdin): a summon on XENIO's behalf (Mission Control's "Quick chat"), with the way
     /// to talk when it is known ("chat" or "voice"), or Mission Control.
     func command(_ body: [String: Any]) {
+        guard launched else {  // XENIO's first word is often "open the window", and it can come before the orb exists: it crashed on every start
+            waiting.append(body)
+            return
+        }
         switch body["type"] as? String {
         case "summon":
             var mode: String?
@@ -429,7 +439,7 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         } else if window === appWindow {
             appFocused = true
             spaceTap?.setPaused(true)
-            if !panel.keyable { panel.orderOut(nil) }  // Mission Control shows everything; an open quick chat stays
+            if let panel, !panel.keyable { panel.orderOut(nil) }  // Mission Control shows everything; an open quick chat stays
         }
     }
 
@@ -439,8 +449,8 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
             if !appFocused { spaceTap?.setPaused(false) }
         } else if window === appWindow {
             appFocused = false
-            if !panel.isKeyWindow { spaceTap?.setPaused(false) }
-            if wantPanel { panel.orderFrontRegardless() }
+            if !(panel?.isKeyWindow ?? false) { spaceTap?.setPaused(false) }
+            if wantPanel { panel?.orderFrontRegardless() }
         }
     }
 
