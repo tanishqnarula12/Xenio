@@ -32,6 +32,9 @@ versions follow [Semantic Versioning](https://semver.org/): see [docs/RELEASING.
 - `requirements.lock` (exact, tested versions) and `requirements-dev.txt`.
 
 ### Changed
+- **A builder's own tests run straight after its answer.** One that wrote everything in one go could not run anything;
+  XENIO now runs its tests at once, and when they fail the builder gets the real output back once, with tools, before
+  any reviewer spends a turn on it.
 - **The War Room's live graph:** a count of where the work is, work flowing along the line into the running step,
   corner brackets on what is running or waiting for you, and pointing at a step lights its own lines. Motion stops
   when you ask for reduced motion.

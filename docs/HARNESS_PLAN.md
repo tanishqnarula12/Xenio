@@ -47,7 +47,9 @@ for risky actions; secrets masked; nothing outside the project's folder.
 
 ### Order
 1. ~~`todo` tool and its display.~~ Done 2026-11-19.
-2. Self-checking within a turn (type check, lint, tests) before "done".
+2. ~~Self-checking before "done".~~ Done 2026-11-19 for builders that answer in one go: XENIO runs their tests in
+   their own copy straight away, and failing output goes back to them once, with tools, before any review. (Builders
+   with tools were already told to run the tests.) Type check and lint in the same step are still open.
 3. `XENIO.md` project memory.
 4. Summarising long sessions.
 5. Sub-agents for searches.

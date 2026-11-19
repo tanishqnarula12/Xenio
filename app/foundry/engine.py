@@ -647,6 +647,29 @@ class FoundryOrchestrator(EngineeringOrchestrator):
         self.reviewed[run.id] = {"head": head, "reviews": reviews}
         self.save(run)
 
+    async def _check_first_answer(self, run: Run, live: Live, task: Task, role, cwd: Path, out: str) -> None:
+        """A builder that answered in one go could not run anything. XENIO runs the tests in its own copy right away, and when
+        they fail it gets the output back once, with tools, before the test-and-review round: that round costs every
+        reviewer a turn, and a real one started from a build whose own tests were failing."""
+        try:
+            changed = [str(p) for p in (json.loads(out).get("changed_files") or [])]
+        except ValueError:
+            changed = []
+        ws = self.workspaces.get(run.id)
+        if ws is None or not changed:
+            return
+        results = await self._run_tests(ws, cwd, changed)
+        failing = [r for r in results if r.status in ("failed", "error", "timeout")]
+        engine = self.engine
+        engine.store.event("agent.selfcheck", live.id, role.name, task.id, ok=not failing, ran=[r.command for r in results][:6],
+                           failed=sum(r.failed + r.errors for r in failing), passed=sum(r.passed for r in results))
+        if not failing:
+            return
+        task.result["first_answer_failed"] = "\n\n".join(f"$ {r.command}\n{(r.tail or r.detail)[-1800:]}" for r in failing)[:4000]
+        count = sum(r.failed + r.errors for r in failing)
+        engine.bus.send(live.id, XENIO, TEAM, "INFORMATION", f"Ran the tests on {engine._name(live, role.name)}'s work straight away: {count or 'some'} failing. Back to them once, with the output, before anyone reviews it.", trusted=True)
+        raise HermesError("its own tests failed straight after its first answer")
+
     async def _ask_planner(self, run: Run, ws) -> dict:
         """A project XENIO made is planned straight from the file list, in seconds and with no tools, with the same checks on the plan."""
         if not self.live_flow.wf.get("greenfield"):
@@ -768,6 +791,9 @@ class FoundryOrchestrator(EngineeringOrchestrator):
             prompt = engine.one_file_prompt(live, task, cwd, art.brief_text(direction, []) if wants_a_look else "")
         elif wants_a_look:
             prompt = f"The deck should look like this, through make_presentation's theme and its fonts:\n{art.brief_text(direction, [])}\n\nMake it in one go. Do not read back what you made: XENIO checks it.\n\n{prompt}"
+        if task.attempts > 1 and task.result.get("first_answer_failed"):  # its first answer was saved and its own tests failed on it: the second attempt starts from that output
+            prompt += ("\n\nYour first answer is saved in the files, and XENIO ran the tests on it straight away. They failed:\n"
+                       + str(task.result["first_answer_failed"]) + "\n\nFix what fails, with edits to the files as they are now, run the tests once, and finish.")
         batching, files_now = False, ""
         if (role.writes and getattr(role, "writes_code", False) and role.provider == "nabh" and not task.id.endswith("-review") and not (one_call or updating or patching or one_file or in_figma)
                 and live.wf.get("greenfield") and not engine._not_software(live) and (live.team is None or live.team.size in ("small", "medium")) and task.attempts <= 1
@@ -923,6 +949,8 @@ class FoundryOrchestrator(EngineeringOrchestrator):
                 done = json.loads(out)
                 done["needs"] = ["the answer was cut off at its token limit: anything after the last complete file is missing", *done["needs"]]
                 out = json.dumps(done)
+            elif task.attempts < role.max_attempts:
+                await self._check_first_answer(run, live, task, role, Path(cwd), out)  # failing tests send it back once, with the output, before anyone reviews it
             return out
         if one_file:
             return await engine.make_one_file(live, task, Path(cwd), turn.text, role.name)
