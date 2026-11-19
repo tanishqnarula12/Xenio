@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from app.engineering import identity
+from app.engineering import identity, notes
 from app.foundry import naming
 from app.engineering import repo as R
 from app.engineering import prompts, security, verify
@@ -35,6 +35,7 @@ from app.foundry.loop import EngineeringLoop, LoopPolicy, identify_issues, owner
 from app.foundry.messages import TEAM, XENIO, YOU, MessageBus, frame, neutral
 from app.foundry.models import POOLS, Budget, BudgetExceeded, ModelError, ModelPool, ModelRouter, OutOfCredit, work_of
 from app.foundry.preview import Previews
+from app.foundry.preview import detect as detect_start
 from app.foundry.skills.manager import PROJECT_SKILLS
 from app.foundry.registry import Agent, AgentMemory, AgentRegistry, new_id
 from app.foundry.runtime import OutOfCreditTurn
@@ -2056,10 +2057,22 @@ class FoundryEngine:
                 commit_project(Path(live.wf["project"]), "Keep the skills the team used: " + ", ".join(kept)[:120])
                 self.bus.send(live.id, XENIO, YOU, "INFORMATION", f"Kept in the project, in {PROJECT_SKILLS}: {', '.join(kept)}, because the team used them.", trusted=True)
 
+        def keep_notes() -> None:
+            """XENIO.md: how it starts, how it is tested, what was decided. The next job's agents read it first."""
+            project = Path(live.wf["project"])
+            plain = lambda argv: " ".join([Path(argv[0]).name, *argv[1:]])  # noqa: E731 - never this Mac's paths, in a file that may go to GitHub
+            started = detect_start(project, "python3")
+            start = re.sub(r'"[^"]*/([^/"]+)"', r"\1", started.how) if started is not None else ""
+            tests = [plain(c.argv) for c in verify.detect(project)]
+            decided = [(str(d.get("question") or ""), str(d.get("decision") or "")) for d in self.decisions.list(live.id) if d.get("decision")]
+            if notes.write(project, naming.title(str(live.wf.get("name") or project.name)), live.wf["goal"], start, tests, decided):
+                commit_project(project, "Keep the project's notes in XENIO.md")
+
         try:
             await asyncio.to_thread(merge)
             await asyncio.to_thread(record_extras)
             await asyncio.to_thread(keep_skills)
+            await asyncio.to_thread(keep_notes)
         except (OSError, subprocess.SubprocessError) as exc:
             self.bus.send(live.id, XENIO, YOU, "BLOCKER", f"The work is finished but could not be copied into the project folder: {exc}", trusted=True)
             return ""

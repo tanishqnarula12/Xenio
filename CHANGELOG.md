@@ -6,6 +6,9 @@ versions follow [Semantic Versioning](https://semver.org/): see [docs/RELEASING.
 ## [Unreleased]
 
 ### Added
+- **Project notes in `XENIO.md`.** Every agent reads a project's notes first (`XENIO.md`, or `AGENTS.md` / `CLAUDE.md`
+  in your own repositories), so nobody rediscovers the basics or undoes a decision. After a job on a project XENIO made,
+  it updates how the project starts, how it is tested and what was decided. The "Your notes" section is yours alone.
 - **Agents keep a task list you can watch.** A `todo` tool: each agent writes its plan, marks one step doing and
   each step done, and its seat on the Floor shows the list live. One short line per update, so it costs almost nothing.
 - **Real names for what the War Room makes.** A project is named for what it is (`arts-college-landing-page`, not

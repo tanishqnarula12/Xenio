@@ -37,7 +37,7 @@ After editing, the agent runs the type check, lint and tests, reads the failures
 The War Room's test → review → fix loop does this today; every agent should do it within its own turn too.
 
 ### Memory and context
-- `XENIO.md` in each project: its rules and commands, read at the start of every session.
+- `XENIO.md` in each project: its rules and commands, read at the start of every session. **Built** (2026-11-19).
 - Long sessions are summarised instead of running out of room.
 - What it learned about a project carries over to the next session.
 
@@ -50,7 +50,9 @@ for risky actions; secrets masked; nothing outside the project's folder.
 2. ~~Self-checking before "done".~~ Done 2026-11-19 for builders that answer in one go: XENIO runs their tests in
    their own copy straight away, and failing output goes back to them once, with tools, before any review. (Builders
    with tools were already told to run the tests.) Type check and lint in the same step are still open.
-3. `XENIO.md` project memory.
+3. ~~`XENIO.md` project memory.~~ Done 2026-11-19: every agent reads a project's `XENIO.md` (or `AGENTS.md`,
+   `CLAUDE.md`) first; after a job on a project XENIO made, XENIO updates how it starts, how it is tested and what was
+   decided, and never touches the "Your notes" section.
 4. Summarising long sessions.
 5. Sub-agents for searches.
 

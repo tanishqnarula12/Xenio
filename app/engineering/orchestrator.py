@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from app.engineering import notes
 from app.engineering import prompts, security, verify
 from app.engineering import repo as R
 from app.engineering.agents import AgentSessions, ProviderUnavailable, SessionRegistry
@@ -145,7 +146,8 @@ class EngineeringOrchestrator:
 
     def _context(self, run: Run, cwd: Path) -> str:
         tests = [" ".join(c.argv) for c in verify.detect(cwd, Path(run.source))]  # exact commands, interpreter included
-        return prompts.repo_context(run.repo_state, tests, prompts.tree(cwd))
+        project_notes = notes.read(cwd)  # XENIO.md (or AGENTS.md, CLAUDE.md): read before anyone starts
+        return prompts.repo_context(run.repo_state, tests, prompts.tree(cwd)) + (f"\n\n{project_notes}" if project_notes else "")
 
     # ---- 1. planning ------------------------------------------------------------------------------------------
 
