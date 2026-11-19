@@ -1,4 +1,4 @@
-import { ArrowUp, FileText, Mic, MicOff, Paperclip, Square, Volume2, VolumeX, X } from "lucide-react";
+import { ArrowUp, Check, Copy, FileText, Mic, MicOff, Paperclip, Sparkles, Square, Volume2, VolumeX, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { Message, ToolActivity, UploadedFile } from "../api/types";
 import { ImageCard } from "../images/ImageCard";
@@ -8,6 +8,8 @@ import { friendlyTool } from "../orb/machine";
 import { ApprovalCard } from "./ApprovalCard";
 import { RichText, safeUrl } from "./RichText";
 import { Status } from "./ui";
+import { useOrbState } from "./useOrbState";
+import { XenioMark } from "./XenioMark";
 
 function ActionLine({ line }: { line: string }) {
   const m = /^\s*\[(done|FAILED|declined|NOT CONFIRMED)\]\s*(.*)$/i.exec(line);
@@ -18,7 +20,7 @@ function ActionLine({ line }: { line: string }) {
   return <li><Status tone={tone}>{word}</Status> <span className="action-text">{m[2]}</span></li>;
 }
 
-function MessageView({ message }: { message: Message }) {
+function MessageView({ message, arrived = false }: { message: Message; arrived?: boolean }) {
   if (message.role === "user") {
     return (
       <div className="msg msg--user">
@@ -29,7 +31,9 @@ function MessageView({ message }: { message: Message }) {
     );
   }
   return (
-    <div className={`msg msg--assistant ${message.ok === false && !message.cancelled ? "msg--failed" : ""}`}>
+    <div className={`msg msg--assistant ${message.ok === false && !message.cancelled ? "msg--failed" : ""} ${arrived ? "msg--arrived" : ""}`}>
+      <span className="msg__mark" aria-hidden="true"><XenioMark size={16} /></span>
+      <div className="msg__body">
       {message.cancelled && <Status tone="neutral">Stopped</Status>}
       {message.ok === false && !message.cancelled && <Status tone="danger">This request failed</Status>}
       {message.text ? <RichText text={message.text} /> : !message.cancelled && <p className="meta">No answer came back.</p>}
@@ -44,6 +48,32 @@ function MessageView({ message }: { message: Message }) {
           {message.sources.length > 3 && <li className="meta sources__more">and {message.sources.length - 3} more</li>}
         </ul>
       )}
+      {message.text && <CopyAnswer text={message.text} />}
+      </div>
+    </div>
+  );
+}
+
+/** Copy an answer as it was written. It says so for a moment once it is copied. */
+function CopyAnswer({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <div className="msg__tools">
+      <button type="button" className="msg__tool" onClick={() => void copy()} aria-label={copied ? "Copied" : "Copy the answer"}>
+        {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}<span>{copied ? "Copied" : "Copy"}</span>
+      </button>
     </div>
   );
 }
@@ -60,6 +90,31 @@ function LiveTools({ tools }: { tools: ToolActivity[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+/** What XENIO is really doing while it answers: the tool it is running, "Writing" once words arrive, else "Thinking". */
+export function workingLabel(tools: ToolActivity[], writing: boolean): string {
+  const running = [...tools].reverse().find((t) => t.status !== "completed" && t.status !== "failed");
+  if (running) {
+    const words = friendlyTool(running.title.split(":")[0] ?? running.title);
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+  return writing ? "Writing" : "Thinking";
+}
+
+const DOING: ReadonlySet<string> = new Set(["SEARCHING", "EXECUTING", "PLANNING", "ORCHESTRATING", "WAITING_APPROVAL"]);
+
+function WorkingLine({ tools, writing }: { tools: ToolActivity[]; writing: boolean }) {
+  const orb = useOrbState(); // the same words as the orb, at the same moment
+  const label = DOING.has(orb.state) ? orb.label : workingLabel(tools, writing);
+  const [shown, setShown] = useState<{ cur: string; prev: string | null; n: number }>({ cur: label, prev: null, n: 0 });
+  useEffect(() => { setShown((s) => (s.cur === label ? s : { cur: label, prev: s.cur, n: s.n + 1 })); }, [label]);
+  return (
+    <p className="working" role="status" aria-live="polite">
+      {shown.prev !== null && <span key={`p${shown.n}`} className="working__label working__label--out" aria-hidden="true">{shown.prev}</span>}
+      <span key={`c${shown.n}`} className="working__label working__label--in">{shown.cur}<span className="working__dots" aria-hidden="true"><i /><i /><i /></span></span>
+    </p>
   );
 }
 
@@ -81,6 +136,8 @@ export function Transcript({ limit, quiet = false }: { limit?: number; quiet?: b
   const tools = useAppState((s) => s.tools);
   const box = useRef<HTMLDivElement>(null);
   const shown = limit ? conversation.slice(-limit) : conversation;
+  const known = useRef<Set<string> | null>(null); // answers already there when this opened do not animate in
+  if (known.current === null) known.current = new Set(conversation.map((m) => m.id));
 
   // keep the newest words in view by scrolling the transcript's own scroll area - never the page (that would push
   // the orb and the rest of the screen away)
@@ -113,12 +170,16 @@ export function Transcript({ limit, quiet = false }: { limit?: number; quiet?: b
   }
   return (
     <div className="transcript" ref={box}>
-      {shown.map((m) => <MessageView key={m.id} message={m} />)}
+      {shown.map((m) => <MessageView key={m.id} message={m} arrived={m.role === "assistant" && !known.current!.has(m.id)} />)}
       {!streaming && shown.at(-1)?.role === "assistant" && !!shown.at(-1)?.next?.length && <NextSteps choices={shown.at(-1)!.next!} quiet={quiet} />}
       {streaming && (
         <div className="msg msg--assistant msg--live" aria-live="polite" aria-busy="true">
-          <LiveTools tools={tools} />
-          {streaming.text ? <RichText text={streaming.text} /> : null}
+          <span className="msg__mark msg__mark--live" aria-hidden="true"><XenioMark size={16} /></span>
+          <div className="msg__body">
+            <WorkingLine tools={tools} writing={Boolean(streaming.text)} />
+            <LiveTools tools={tools} />
+            {streaming.text ? <RichText text={streaming.text} /> : null}
+          </div>
         </div>
       )}
     </div>
@@ -158,6 +219,11 @@ export function Composer({ autoFocus = false, quiet = false, idleHint }: { autoF
   const [uploading, setUploading] = useState<string[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
   const [dropping, setDropping] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const [nudge, setNudge] = useState(false);
+  const typingTimer = useRef<number | undefined>(undefined);
+  const nudgeTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => { window.clearTimeout(typingTimer.current); window.clearTimeout(nudgeTimer.current); }, []);
   const busy = Boolean(assistant?.turn);
   const engine = voiceInfo?.engine === true;
   const sttReady = engine || (voiceInfo?.stt ?? false);
@@ -174,6 +240,7 @@ export function Composer({ autoFocus = false, quiet = false, idleHint }: { autoF
 
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
+    if (!text.trim() && !files.length && !sending && !uploading.length) { setNudge(true); window.clearTimeout(nudgeTimer.current); nudgeTimer.current = window.setTimeout(() => setNudge(false), 320); return; } // an empty send gets a small shake, not silence
     if ((!text.trim() && !files.length) || sending || uploading.length) return;
     setSending(true);
     const ok = await app.send(text, "text", quiet, files.map((f) => f.id));
@@ -217,7 +284,7 @@ export function Composer({ autoFocus = false, quiet = false, idleHint }: { autoF
     : busy ? "XENIO is answering. Stop it, or wait for the answer." : null;
 
   return (
-    <form className={`composer ${dropping ? "composer--drop" : ""}`} onSubmit={submit} aria-label="Talk to XENIO"
+    <form className={`composer ${dropping ? "composer--drop" : ""}`} onSubmit={submit} aria-label="Talk to XENIO" data-typing={typing ? "" : undefined} data-busy={busy ? "" : undefined}
       onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDropping(true); } }} onDragLeave={() => setDropping(false)} onDrop={onDrop}>
       {voiceError && <p className="voice-error" role="alert">{voiceError}</p>}
       {fileError && <p className="voice-error" role="alert">{fileError}</p>}
@@ -228,10 +295,12 @@ export function Composer({ autoFocus = false, quiet = false, idleHint }: { autoF
         </ul>
       )}
       {hint && <p className="meta composer__hint" id="composer-hint">{hint}</p>}
-      <div className="composer__row">
+      <div className="composer__row" data-nudge={nudge ? "" : undefined}>
+        <span className="composer__aurora" aria-hidden="true" />
+        <Sparkles className="composer__spark" size={16} aria-hidden="true" />
         <label htmlFor="composer-input" className="sr-only">Message XENIO</label>
         <textarea id="composer-input" ref={input} rows={1} value={text} placeholder="Ask or tell XENIO…"
-          onChange={(e) => setText(e.target.value)} onKeyDown={onKey} onPaste={onPaste} maxLength={4000}
+          onChange={(e) => { setText(e.target.value); setTyping(true); window.clearTimeout(typingTimer.current); typingTimer.current = window.setTimeout(() => setTyping(false), 320); }} onKeyDown={onKey} onPaste={onPaste} maxLength={4000}
           aria-describedby={hint ? "composer-hint" : undefined} />
         <input ref={picker} type="file" multiple hidden aria-label="Add files" onChange={onPick} />
         <button type="button" className="icon-btn" onClick={() => picker.current?.click()} aria-label="Add files" title="Add files: PDFs, documents, photos, code"><Paperclip size={18} aria-hidden="true" /></button>
@@ -253,7 +322,7 @@ export function Composer({ autoFocus = false, quiet = false, idleHint }: { autoF
             <Square size={16} aria-hidden="true" />
           </button>
         ) : (
-          <button type="submit" className="send-btn" disabled={(!text.trim() && !files.length) || uploading.length > 0 || sending || !connected || paused} aria-label="Send">
+          <button type="submit" className="send-btn" data-ready={text.trim() || files.length ? "" : undefined} disabled={(!text.trim() && !files.length) || uploading.length > 0 || sending || !connected || paused} aria-label="Send">
             <ArrowUp size={18} aria-hidden="true" />
           </button>
         )}

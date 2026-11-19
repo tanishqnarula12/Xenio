@@ -35,6 +35,15 @@ versions follow [Semantic Versioning](https://semver.org/): see [docs/RELEASING.
 - `requirements.lock` (exact, tested versions) and `requirements-dev.txt`.
 
 ### Changed
+- **An agent on a long task keeps its place.** Before older steps are trimmed to save room, XENIO writes down what
+  they did: the files changed, the commands run and how they ended, and what failed. It is read from the conversation
+  itself, so it costs no tokens and invents nothing.
+- **The chat feels alive.** A soft light in the input bar, a send button that lights up, a nudge on an empty send, a
+  line saying what XENIO is really doing (the tool it is running, then Writing), and answers that settle in. XENIO's
+  orb is unchanged. Motion follows your Mac's and XENIO's reduce-motion settings.
+- **The orb moves with the answer.** As a typed answer's words arrive, the orb swells with them, as it does with a
+  spoken one; the orb and the chat say the same thing at the same moment ("Writing", "Searching the web"). The
+  chat reads as a column, each answer carries XENIO's mark (breathing while it works), and answers can be copied.
 - **A builder's own tests run straight after its answer.** One that wrote everything in one go could not run anything;
   XENIO now runs its tests at once, and when they fail the builder gets the real output back once, with tools, before
   any reviewer spends a turn on it.

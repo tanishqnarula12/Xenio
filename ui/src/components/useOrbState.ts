@@ -19,8 +19,9 @@ export function useOrbState(): OrbView {
   const target = deriveOrbState(stream, assistant, voice);
   const state = nextState(previous.current, target);
   previous.current = state;
+  const writing = useAppState((s) => Boolean(s.streaming));
   const engine = assistant?.voice === "listening" || assistant?.voice === "speaking";
-  const level = voice.listening ? app.micLevel : voice.speaking ? app.speaker.level : engine ? app.engineLevel : null;
-  const copy = useMemo(() => describe(state, assistant), [state, assistant]);
+  const level = voice.listening ? app.micLevel : voice.speaking ? app.speaker.level : engine ? app.engineLevel : writing ? app.writingLevel : null; // a typed answer moves the orb with its words, as a spoken one does with the voice
+  const copy = useMemo(() => (state === "THINKING" && writing ? { label: "Writing", sentence: "Writing the answer." } : describe(state, assistant)), [state, assistant, writing]); // the orb and the chat say the same thing at the same moment
   return { ...copy, state, level, agents: assistant?.background.agents ?? 0 };
 }

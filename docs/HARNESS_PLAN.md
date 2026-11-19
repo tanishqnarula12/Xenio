@@ -38,7 +38,7 @@ The War Room's test → review → fix loop does this today; every agent should 
 
 ### Memory and context
 - `XENIO.md` in each project: its rules and commands, read at the start of every session. **Built** (2026-11-19).
-- Long sessions are summarised instead of running out of room.
+- Long sessions keep their place: before older steps are trimmed, what they did is written down. **Built** (2026-11-20).
 - What it learned about a project carries over to the next session.
 
 ### Safety (already XENIO's)
@@ -53,7 +53,9 @@ for risky actions; secrets masked; nothing outside the project's folder.
 3. ~~`XENIO.md` project memory.~~ Done 2026-11-19: every agent reads a project's `XENIO.md` (or `AGENTS.md`,
    `CLAUDE.md`) first; after a job on a project XENIO made, XENIO updates how it starts, how it is tested and what was
    decided, and never touches the "Your notes" section.
-4. Summarising long sessions.
+4. ~~Summarising long sessions.~~ Done 2026-11-20, without a model call: before older steps are trimmed, XENIO writes
+   down what they did (files changed, commands run and how they ended, what failed), read from the conversation
+   itself, so nothing is invented and it costs no tokens.
 5. Sub-agents for searches.
 
 ---

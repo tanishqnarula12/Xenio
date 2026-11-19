@@ -49,6 +49,8 @@ MAX_READ = 60_000
 # The whole conversation goes out again on every step, so what is kept here gets paid for over and over. 8.7 million tokens went on 16 turns before this.
 MAX_CONTEXT = 48_000  # characters, re-sent on every step: the files a task works from are trimmed last
 KEEP_RESULTS = 4
+LEDGER = "WHAT YOU HAVE DONE SO FAR"  # kept by XENIO when older steps are trimmed, so an agent on a long task does not lose its place
+LEDGER_CHARS = 2_500
 READS_BEFORE_NUDGE = 3  # the same unchanged file read this often means it is going round in circles
 KEEP_WRITES = 1
 BIG_WRITE = 6_000
@@ -419,6 +421,14 @@ class NativeSessions:
     @staticmethod
     def _trim(messages: list[dict]) -> None:
         """Keep what the next step needs. A file already written does not need its whole text sent again on every later step, and an old result can be fetched again if it matters. The task itself is never touched."""
+        if _size(messages[2:]) > MAX_CONTEXT:  # older steps are about to be cut: first, what they did is written down, from the conversation itself (no model call, nothing invented)
+            note = _ledger(messages)
+            if note:
+                at = next((i for i, m in enumerate(messages[2:], 2) if m.get("role") == "user" and str(m.get("content") or "").startswith(LEDGER)), None)
+                if at is None:
+                    messages.insert(2, {"role": "user", "content": note})
+                else:
+                    messages[at]["content"] = note
         results = [m for m in messages[2:] if m.get("role") == "tool"]
         made = {c["id"]: c["function"] for m in messages[2:] for c in m.get("tool_calls") or []}
 
@@ -539,6 +549,45 @@ class NativeSessions:
         if done.timed_out:
             return f"Stopped after {int(limit)} s.\n{tail}", False
         return f"exit code {done.code}\n{tail}", done.code == 0
+
+
+def _ledger(messages: list[dict]) -> str:
+    """What an agent has done so far, read from its own conversation: the files it changed, the commands it ran and how
+    they ended, and what failed. Agents whose older steps were trimmed went round in circles, redoing work they no
+    longer remembered doing."""
+    results = {m.get("tool_call_id"): str(m.get("content") or "") for m in messages if m.get("role") == "tool"}
+    changed: list[str] = []
+    ran: list[str] = []
+    failed: list[str] = []
+    for message in messages[2:]:
+        for call in message.get("tool_calls") or []:
+            name = call["function"]["name"]
+            try:
+                args = json.loads(call["function"]["arguments"] or "{}")
+            except ValueError:
+                args = {}
+            result = results.get(call.get("id"), "")
+            first = result.split("\n", 1)[0].strip()
+            if name in ("write_file", "patch") and args.get("path"):
+                path = str(args["path"])
+                if path in changed:
+                    changed.remove(path)
+                changed.append(path)
+            elif name == "terminal" and args.get("command"):
+                ran.append(f"`{' '.join(str(args['command']).split())[:120]}`" + (f" -> {first}" if first.startswith("exit code") else ""))
+            if first.startswith(("Blocked", "That did not work", "Not done", "That call was cut off")):
+                failed.append(f"{name}: {first[:120]}")
+    if not (changed or ran or failed):
+        return ""
+    lines = [f"{LEDGER} (written by XENIO, because your older steps were trimmed to save room; your files are as you left them):"]
+    if changed:
+        lines.append("Files you changed: " + ", ".join(changed[-30:]))
+    if ran:
+        lines.append("Commands you ran, latest last:\n" + "\n".join(f"- {r}" for r in ran[-8:]))
+    if failed:
+        lines.append("What did not work:\n" + "\n".join(f"- {f}" for f in failed[-5:]))
+    lines.append("Do not redo what is done. Carry on from here.")
+    return "\n".join(lines)[:LEDGER_CHARS]
 
 
 def _size(messages: list[dict]) -> int:

@@ -91,6 +91,7 @@ export function ChatPage() {
   const empty = useAppState((s) => s.conversation.length === 0 && !s.streaming);
   const busy = useAppState((s) => Boolean(s.assistant?.turn));
   const approvals = useAppState((s) => s.approvals.length);
+  const answering = useAppState((s) => Boolean(s.streaming)); // the answer shows what XENIO is doing, beside its mark
   const { sentence } = useOrbState();
   const [side, setSide] = useState(() => window.innerWidth > 820);
   const newConversation = () => void app.api.newConversation().catch((e: Error) =>
@@ -123,7 +124,7 @@ export function ChatPage() {
             {approvals > 0 && <PendingApprovals compact />}
             <PlansToStart />
           </div>
-          {busy && !approvals && <p className="chat-status" role="status"><span className="chat-status__dot" aria-hidden="true" /> {sentence}</p>}
+          {busy && !approvals && !answering && <p className="chat-status" role="status"><span className="chat-status__dot" aria-hidden="true" /> {sentence}</p>}
           <Composer autoFocus quiet idleHint="Enter to send, Shift+Enter for a new line. Replies stay on screen here." />
         </div>
       </div>

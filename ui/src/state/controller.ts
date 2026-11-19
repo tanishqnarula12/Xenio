@@ -18,6 +18,7 @@ export class AppController {
   private speakAbort: AbortController | null = null;
   private loading: Promise<void> | null = null;
   private engineLevelValue = 0;
+  private written = { at: 0, size: 0 }; // the newest words of an answer: the orb swells with them
   /** the floating orb's page: never plays audio itself (the main page or XENIO's engine does) */
   silent = false;
   private levelTimer: ReturnType<typeof setTimeout> | null = null;
@@ -71,6 +72,7 @@ export class AppController {
       void this.loadSnapshot();
       return;
     }
+    if (event.type === "chat.chunk") this.written = { at: performance.now(), size: String((event.data as { text?: unknown }).text ?? "").length };
     this.store.apply(event);
     if (event.type === "chat.user" && (event.data as { quiet?: boolean }).quiet) this.quietTurns.add(String(event.data.turn));
     if (event.type === "chat.done") void this.maybeSpeak(event.data as { turn: string; text: string; ok?: boolean });
@@ -112,6 +114,13 @@ export class AppController {
 
   /** the talk engine's level (its microphone while listening, XENIO's voice while speaking), polled while it is in use */
   engineLevel = (): number => this.engineLevelValue;
+
+  /** a soft swell with each piece of the answer as it arrives, fading in a fraction of a second, so the orb moves with the words */
+  writingLevel = (): number => {
+    const since = performance.now() - this.written.at;
+    if (since > 900) return 0;
+    return Math.min(0.85, 0.3 + this.written.size / 90) * Math.exp(-since / 260);
+  };
 
   get listening(): boolean {
     return this.recording !== null;

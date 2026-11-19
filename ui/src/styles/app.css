@@ -177,12 +177,21 @@
 .system-summary { display: grid; gap: var(--s-2); }
 
 /* ---- conversation ------------------------------------------------------------------------------------------------ */
-.transcript { display: flex; flex-direction: column; gap: var(--s-4); }
+.transcript { display: flex; flex-direction: column; gap: 26px; width: 100%; max-width: 760px; margin-inline: auto; } /* a reading column: long lines are tiring to read */
 .transcript__empty { color: var(--ink-3); padding: var(--s-2) 0 var(--s-4); }
 .msg { max-width: 100%; }
 .msg--user { align-self: flex-end; max-width: 85%; background: var(--surface-3); border-radius: 14px 14px 4px 14px; padding: var(--s-2) var(--s-3); }
 .msg--user .meta { display: block; margin-top: 2px; }
-.msg--assistant { align-self: stretch; }
+.msg--assistant { align-self: stretch; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: start; }
+.msg__mark { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); color: var(--ink); margin-top: -2px; }
+.msg__mark--live { color: var(--xenon); box-shadow: 0 0 0 0 rgba(169,200,255,0); }
+.msg__body { min-width: 0; display: grid; gap: var(--s-2); }
+.msg--assistant .rich { line-height: 1.65; }
+.msg__tools { display: flex; gap: 4px; opacity: 0; transition: opacity .2s var(--ease-out); margin-top: 2px; }
+.msg--assistant:hover .msg__tools, .msg__tools:focus-within { opacity: 1; }
+.msg__tool { display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--ink-3); font: inherit; font-size: var(--t-meta); padding: 3px 7px; border-radius: 7px; cursor: pointer; }
+.msg__tool:hover { background: var(--surface-2); color: var(--ink); }
+@media (hover: none) { .msg__tools { opacity: 1; } }
 .msg--failed .rich { color: var(--ink-2); }
 .rich { display: grid; gap: var(--s-2); overflow-wrap: anywhere; }
 .rich ul { list-style: disc; padding-left: var(--s-5); display: grid; gap: 2px; }
@@ -193,8 +202,25 @@
 .live-tools { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-bottom: var(--s-2); }
 .pending-approvals { display: grid; gap: var(--s-3); margin-bottom: var(--s-4); }
 
-.composer { display: grid; gap: var(--s-2); margin-top: var(--s-4); }
-.composer__row { display: flex; align-items: flex-end; gap: var(--s-2); background: var(--surface-2); border-radius: 12px; padding: 6px 6px 6px var(--s-3); }
+.composer { display: grid; gap: var(--s-2); margin-top: var(--s-4); width: 100%; max-width: 760px; margin-inline: auto; }
+.composer__row { position: relative; isolation: isolate; display: flex; align-items: flex-end; gap: var(--s-2); background: var(--surface-2); border-radius: 14px; padding: 6px 6px 6px var(--s-3); transition: box-shadow .35s var(--ease-out); }
+/* a slow, living light inside the bar: it brightens while you type and while XENIO works */
+.composer__aurora { position: absolute; inset: 0; z-index: -1; border-radius: inherit; overflow: hidden; pointer-events: none; opacity: .5; transition: opacity .4s var(--ease-out); }
+.composer__aurora::before { content: ""; position: absolute; inset: -60% -25%;
+  background: radial-gradient(38% 60% at 18% 55%, rgba(169,200,255,.20), transparent 70%), radial-gradient(34% 55% at 78% 45%, rgba(127,178,245,.15), transparent 70%), radial-gradient(28% 50% at 50% 70%, rgba(190,160,255,.10), transparent 70%); }
+/* the glow under the bar */
+.composer__row::after { content: ""; position: absolute; left: 12%; right: 12%; bottom: -12px; height: 22px; z-index: -2; border-radius: 50%; background: radial-gradient(50% 100% at 50% 0, rgba(169,200,255,.32), transparent 75%); filter: blur(10px); opacity: 0; transition: opacity .45s var(--ease-out); pointer-events: none; }
+.composer__row:focus-within::after, .composer[data-busy] .composer__row::after { opacity: .9; }
+.composer[data-typing] .composer__aurora, .composer[data-busy] .composer__aurora { opacity: .95; }
+.composer__spark { flex: none; align-self: center; color: var(--xenon); opacity: .7; transition: opacity .3s, transform .4s var(--ease-out); }
+.composer[data-typing] .composer__spark { opacity: 1; transform: rotate(12deg) scale(1.08); }
+.send-btn[data-ready]:not(:disabled) { box-shadow: 0 0 0 3px rgba(169,200,255,.16), 0 0 18px -2px rgba(169,200,255,.55); }
+/* what XENIO is doing right now, with the label crossing over when it changes */
+.working { position: relative; display: grid; margin: 0 0 var(--s-2); min-height: 1.4em; font-size: var(--t-meta); color: var(--ink-2); }
+.working__label { grid-area: 1 / 1; display: inline-flex; align-items: baseline; gap: 2px; }
+.working__dots { display: inline-flex; gap: 3px; margin-left: 4px; }
+.working__dots i { width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: .3; display: inline-block; }
+.working__label--out { opacity: 0; }
 .composer__row:focus-within { outline: 2px solid var(--xenon); outline-offset: 0; }
 .composer textarea {
   flex: 1; min-width: 0; resize: none; border: 0; background: transparent; padding: 7px 0; min-height: 34px; max-height: 160px;
@@ -1364,3 +1390,27 @@ details[open].lesson-check summary::before { transform: rotate(90deg); }
 .wr-pictures { flex: 1 1 100%; margin: 0 0 4px; grid-column: 1 / -1; }
 .wr-composer--change { grid-template-columns: auto minmax(0, 1fr) auto; }
 .wr-vault > .btn { justify-self: start; }
+
+/* ---- motion for the chat: only when neither the Mac nor XENIO's Settings ask for less ---- */
+@keyframes composer-drift { from { transform: translateX(-12%); } to { transform: translateX(12%); } }
+@keyframes composer-nudge { 0%, 100% { transform: none; } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+@keyframes working-dot { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+@keyframes working-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@keyframes working-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-5px); } }
+@keyframes msg-settle { from { opacity: .4; transform: translateY(4px); } to { opacity: 1; transform: none; } } /* starts readable: if motion is ever frozen, the answer is still there */
+@keyframes mark-breathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(169,200,255,0); } 50% { box-shadow: 0 0 0 4px rgba(169,200,255,.12), 0 0 14px -2px rgba(169,200,255,.55); } }
+@media (prefers-reduced-motion: no-preference) {
+  html:not([data-motion="reduced"]) .composer__aurora::before { animation: composer-drift 9s ease-in-out infinite alternate; }
+  html:not([data-motion="reduced"]) .composer__row[data-nudge] { animation: composer-nudge .26s ease-in-out; }
+  html:not([data-motion="reduced"]) .working__dots i { animation: working-dot 1.2s ease-in-out infinite; }
+  html:not([data-motion="reduced"]) .working__dots i:nth-child(2) { animation-delay: .15s; }
+  html:not([data-motion="reduced"]) .working__dots i:nth-child(3) { animation-delay: .3s; }
+  html:not([data-motion="reduced"]) .working__label--in { animation: working-in .3s var(--ease-out) both; }
+  html:not([data-motion="reduced"]) .working__label--out { animation: working-out .25s ease-in both; }
+  html:not([data-motion="reduced"]) .msg--arrived .rich > * { animation: msg-settle .5s cubic-bezier(.2,.7,.2,1) backwards; }
+  html:not([data-motion="reduced"]) .msg__mark--live { animation: mark-breathe 1.6s ease-in-out infinite; } /* breathes while XENIO works, with the orb */
+  html:not([data-motion="reduced"]) .msg--arrived .rich > :nth-child(2) { animation-delay: .06s; }
+  html:not([data-motion="reduced"]) .msg--arrived .rich > :nth-child(3) { animation-delay: .12s; }
+  html:not([data-motion="reduced"]) .msg--arrived .rich > :nth-child(4) { animation-delay: .18s; }
+  html:not([data-motion="reduced"]) .msg--arrived .rich > :nth-child(n+5) { animation-delay: .24s; }
+}
