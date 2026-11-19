@@ -1015,6 +1015,15 @@ details[open].lesson-check summary::before { transform: rotate(90deg); }
 .wr-mark--ok { background: var(--ok-wash); color: var(--ok); }
 .wr-dissent h4 { margin: 0; font-size: var(--t-meta); font-weight: 600; color: var(--attention); }
 
+/* an agent's own task list, on its seat */
+.wr-todo { list-style: none; margin: 6px 0 2px; padding: 8px 10px; display: grid; gap: 4px; border-radius: 8px; background: var(--surface-2); font-size: 12px; }
+.wr-todo__item { display: flex; gap: 8px; align-items: baseline; color: var(--ink-2); }
+.wr-todo__mark { flex: none; width: 12px; text-align: center; color: var(--ink-3); }
+.wr-todo__item--done { color: var(--ink-3); }
+.wr-todo__item--done > span:nth-child(2) { text-decoration: line-through; text-decoration-color: rgba(255,255,255,.25); }
+.wr-todo__item--done .wr-todo__mark { color: var(--ok); }
+.wr-todo__item--doing { color: var(--ink); font-weight: 600; }
+.wr-todo__item--doing .wr-todo__mark { color: var(--running); }
 .wr-graph { display: grid; gap: 10px; }
 /* where the work is, at a glance */
 .wr-graph__strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12px; color: var(--ink-2); }

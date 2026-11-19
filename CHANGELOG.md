@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/): see [docs/RELEASING.
 ## [Unreleased]
 
 ### Added
+- **Agents keep a task list you can watch.** A `todo` tool: each agent writes its plan, marks one step doing and
+  each step done, and its seat on the Floor shows the list live. One short line per update, so it costs almost nothing.
+- **Real names for what the War Room makes.** A project is named for what it is (`arts-college-landing-page`, not
+  `build-a-landing-page-for-a-new-a-b69f`): the folder, the README's title, and the name offered for GitHub, which the
+  plan chooses and you can change. A repository already on GitHub can be renamed from the War Room.
 - **Commits are yours, with XENIO as co-author**, like Claude Code: a `Co-Authored-By: XENIO` line on every commit
   XENIO makes, linked to XENIO's GitHub account ([@xenio101](https://github.com/xenio101)) so its picture shows. A
   hook in `.githooks/` adds the same line to commits you make in this repository.

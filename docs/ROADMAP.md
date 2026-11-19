@@ -101,6 +101,11 @@ About 3,500 Python tests and 400 interface tests, many written from real failure
 | Contribution guidelines, security policy, roadmap | **Done** |
 | Benchmark methodology and results | **Open** |
 
+## Next: the harness
+
+The plan, in order: a single agent as good as it can be, many agents on one project without conflicts, then the VS
+Code extension, all measured on real tasks. See [HARNESS_PLAN.md](HARNESS_PLAN.md).
+
 ## The War Room itself
 
 What real jobs showed, and what is next:

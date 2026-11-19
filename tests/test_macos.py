@@ -303,5 +303,9 @@ def test_real_capture_is_jpeg_in_memory():
         with pytest.raises(CaptureError, match="Screen"):
             ScreenCapture(320).capture_screen()
         return
+    if M.session_locked():  # a locked Mac shows nothing to capture: it comes back black, as XENIO then says
+        with pytest.raises(CaptureError, match="black"):
+            ScreenCapture(320).capture_screen()
+        return
     image = ScreenCapture(320).capture_screen()
     assert image.mime == "image/jpeg" and image.data[:3] == b"\xff\xd8\xff" and max(image.width, image.height) == 320

@@ -620,6 +620,11 @@ function Floor({ state }: { state: FoundryState }) {
     for (const e of state.events) if (e.agent && ["agent.tool", "web", "computer.action", "artifact", "vision"].includes(e.type)) out.set(e.agent, e);
     return out;
   }, [state.events]);
+  const lists = useMemo(() => { // each agent's own task list, as it last wrote it
+    const out = new Map<string, { text: string; status: string }[]>();
+    for (const e of state.events) if (e.type === "agent.todo" && e.agent && Array.isArray(e.data.items)) out.set(e.agent, e.data.items as { text: string; status: string }[]);
+    return out;
+  }, [state.events]);
   return (
     <div className="wr-floor">
       {state.team.map((m) => {
@@ -631,6 +636,16 @@ function Floor({ state }: { state: FoundryState }) {
             <header><Avatar id={m.agent} name={m.name} /><div><h3>{m.name}</h3><p className="wr-muted">{m.work || m.role}</p></div><Status tone={busy ? "running" : "neutral"}>{busy ? "working" : "idle"}</Status></header>
             <p className="wr-seat__task">{busy ? m.task : m.why || "Ready when needed."}</p>
             {what && <p className="wr-seat__tool">{busy ? "Now" : "Last"}: {what}</p>}
+            {busy && lists.get(m.agent)?.length ? (
+              <ul className="wr-todo" aria-label={`${m.name}'s task list`}>
+                {lists.get(m.agent)!.map((t, i) => (
+                  <li key={`${i}-${t.text}`} className={`wr-todo__item wr-todo__item--${t.status}`}>
+                    <span className="wr-todo__mark" aria-hidden="true">{t.status === "done" ? "✓" : t.status === "doing" ? "●" : "○"}</span>
+                    <span>{t.text}</span><span className="sr-only"> ({t.status === "pending" ? "to do" : t.status})</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             <p className="wr-msg__meta"><Arrow colour={arrowColour(m.name)} label={m.name} /> <span>{m.model || "balanced"}</span>{m.tools_used ? <span>{m.tools_used} tool calls</span> : null}{m.writing && busy ? <span>{m.writing} pieces of reply so far</span> : null}</p>
           </article>
         );
@@ -770,7 +785,8 @@ function GitHubPanel({ state }: { state: FoundryState }) {
   const { app } = useApp();
   const wf = state.workflow;
   const folder = (wf.project || wf.delivered || "").split("/").filter(Boolean).pop() ?? "project";
-  const [name, setName] = useState(folder);
+  const [name, setName] = useState(wf.name || folder); // the name the plan chose, like arts-college-landing-page
+  const [renaming, setRenaming] = useState(false);
   const [isPrivate, setPrivate] = useState(true);
   const [github, setGithub] = useState<{ remote: string; branch: string; ahead: number; behind: number } | null>((wf as unknown as { github?: { remote: string; branch: string; ahead: number; behind: number } }).github ?? null);
   const [busy, setBusy] = useState(false);
@@ -781,7 +797,8 @@ function GitHubPanel({ state }: { state: FoundryState }) {
     try {
       const out = (await app.api.foundryDo(command, { workflow: wf.id, ...body })) as { github?: typeof github };
       setGithub(out.github ?? null);
-      setSaid(command === "github_publish" ? "It is on GitHub." : command === "github_push" ? "Pushed." : "Pulled.");
+      setSaid(command === "github_publish" ? "It is on GitHub." : command === "github_push" ? "Pushed." : command === "github_rename" ? "Renamed. The old address still leads here." : "Pulled.");
+      if (command === "github_rename") setRenaming(false);
     } catch (e) {
       setSaid((e as Error).message);
     } finally {
@@ -795,12 +812,19 @@ function GitHubPanel({ state }: { state: FoundryState }) {
           <p><a href={github.remote} target="_blank" rel="noreferrer">{github.remote.replace("https://github.com/", "github.com/")}</a> <span className="wr-muted">{github.branch}{github.ahead > 0 ? `, ${github.ahead} commit${github.ahead === 1 ? "" : "s"} not pushed yet` : github.ahead < 0 ? ", not pushed yet" : ", up to date"}</span></p>
           <Button onClick={() => void run("github_push")} disabled={busy}>Push latest</Button>
           <Button variant="quiet" onClick={() => void run("github_pull")} disabled={busy}>Pull</Button>
+          <Button variant="quiet" onClick={() => { setName(github.remote.split("/").filter(Boolean).pop() ?? name); setRenaming(!renaming); }} disabled={busy} aria-expanded={renaming}>Rename</Button>
+          {renaming && (
+            <form onSubmit={(e) => { e.preventDefault(); void run("github_rename", { name: name.trim() }); }} className="wr-github__new">
+              <div className="field"><label htmlFor={`gh-rename-${wf.id}`}>New name on GitHub</label><input id={`gh-rename-${wf.id}`} value={name} onChange={(e) => setName(e.target.value)} /></div>
+              <Button type="submit" disabled={busy || !/^[A-Za-z0-9._-]{1,100}$/.test(name.trim())}>Rename the repository</Button>
+            </form>
+          )}
         </>
       ) : (
         <form onSubmit={(e) => { e.preventDefault(); void run("github_publish", { name, private: isPrivate }); }} className="wr-github__new">
           <div className="field"><label htmlFor={`gh-${wf.id}`}>Put it on your GitHub as</label><input id={`gh-${wf.id}`} value={name} onChange={(e) => setName(e.target.value)} /></div>
           <label className="wr-check"><input type="checkbox" checked={isPrivate} onChange={(e) => setPrivate(e.target.checked)} /> Private</label>
-          <Button type="submit" disabled={busy || !name.trim()}>Create the repository and push</Button>
+          <Button type="submit" disabled={busy || !/^[A-Za-z0-9._-]{1,100}$/.test(name.trim())}>Create the repository and push</Button>
         </form>
       )}
       {said && <p className="wr-muted" role="status">{said}</p>}

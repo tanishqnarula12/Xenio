@@ -248,7 +248,7 @@ class FoundryService:
                     return engine.set_budget(wid, a.get("job_tokens") if "job_tokens" in a else None, a.get("task_tokens") if "task_tokens" in a else None)
                 case "github_status":
                     return await engine.github_action(wid, "status")
-                case "github_publish" | "github_push" | "github_pull":
+                case "github_publish" | "github_push" | "github_pull" | "github_rename":
                     self._yours(by)
                     return await engine.github_action(wid, command.removeprefix("github_"), str(a.get("name") or ""), a.get("private") is not False)
                 case "figma_status":

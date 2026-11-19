@@ -101,6 +101,29 @@ describe("the command", () => {
     await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("github_publish", { workflow: "w1", name: "notes-app", private: true }));
   });
 
+  it("offers the name the plan chose, not the folder's", async () => {
+    await workflow(state({ status: "done", greenfield: true, name: "arts-college-landing-page", delivered: "/Users/me/Xenio/projects/arts-college-landing", project: "/Users/me/Xenio/projects/arts-college-landing", outcome: "Done and verified" }));
+    expect(await screen.findByLabelText("Put it on your GitHub as")).toHaveValue("arts-college-landing-page");
+  });
+
+  it("a repository already on GitHub can be renamed, and only when you ask", async () => {
+    const api = new FakeApi();
+    const s = state({ status: "done", greenfield: true, delivered: "/Users/me/Xenio/projects/old", project: "/Users/me/Xenio/projects/old", outcome: "Done and verified" });
+    const gh = { remote: "https://github.com/me/build-a-landing-page-for-a-new-a-b69f", branch: "main", ahead: 0, behind: 0 };
+    api.foundryDo = vi.fn(async (c: string) => ({ github: c === "github_rename" ? { ...gh, remote: "https://github.com/me/arts-college-landing-page" } : gh }));
+    await workflow(s, api);
+    fireEvent.click(await screen.findByRole("button", { name: "Rename" }));
+    const field = screen.getByLabelText("New name on GitHub");
+    expect(field).toHaveValue("build-a-landing-page-for-a-new-a-b69f");
+    fireEvent.change(field, { target: { value: "arts college" } });
+    expect(screen.getByRole("button", { name: "Rename the repository" })).toBeDisabled(); // not a name GitHub accepts
+    fireEvent.change(field, { target: { value: "arts-college-landing-page" } });
+    expect(api.foundryDo).not.toHaveBeenCalledWith("github_rename", expect.anything());
+    fireEvent.click(screen.getByRole("button", { name: "Rename the repository" }));
+    await waitFor(() => expect(api.foundryDo).toHaveBeenCalledWith("github_rename", { workflow: "w1", name: "arts-college-landing-page" }));
+    expect(await screen.findByText(/Renamed/)).toBeInTheDocument();
+  });
+
   it("a number of tokens is read as you would type it", () => {
     expect([asTokens("150k"), asTokens("1.5m"), asTokens("150,000"), asTokens(""), asTokens("lots")]).toEqual([150_000, 1_500_000, 150_000, 0, 0]);
   });
@@ -737,6 +760,17 @@ describe("the digital company", () => {
     expect((await screen.findAllByText("Find competitors")).length).toBeGreaterThan(0);
     expect(screen.getByText(/Now: best crm/)).toBeInTheDocument();
     expect(screen.getAllByText("Researcher").length).toBeGreaterThan(1);
+  });
+
+  it("shows a working agent's own task list on its seat, as it last wrote it", async () => {
+    const items = [{ text: "Read the brief", status: "done" }, { text: "Compare three CRMs", status: "doing" }, { text: "Write the summary", status: "pending" }];
+    const s = working();
+    s.events = [...s.events, { id: "e2", seq: 2, type: "agent.todo", workflow: "w1", agent: "researcher", task: "t", at: AT, data: { items: [{ text: "old list", status: "pending" }] } }, { id: "e3", seq: 3, type: "agent.todo", workflow: "w1", agent: "researcher", task: "t", at: AT, data: { items } }];
+    await workflow(s);
+    fireEvent.click(await screen.findByRole("tab", { name: /Floor/ }));
+    const list = await screen.findByRole("list", { name: "Researcher's task list" });
+    expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["✓Read the brief (done)", "●Compare three CRMs (doing)", "○Write the summary (to do)"]);
+    expect(screen.queryByText("old list")).not.toBeInTheDocument();
   });
 
   it("lets you take over, and says what is real", async () => {

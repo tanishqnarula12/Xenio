@@ -82,6 +82,25 @@ class GitHubOps:
         self._do(argv, root, timeout=240)
         return self.status(root)
 
+    def rename(self, project: str | Path, name: str) -> dict:
+        """Gives the project's repository a new name on GitHub; GitHub sends the old address on to the new one."""
+        root = self._project(project)
+        name = str(name or "").strip()
+        if not REPO_NAME.match(name):
+            raise GitHubError("a repository name is letters, numbers, dots, dashes and underscores", 422)
+        state = self.status(root)
+        if not state["remote"]:
+            raise GitHubError("this project is not on GitHub yet: name it when you put it there", 409)
+        if state["remote"].rstrip("/").rsplit("/", 1)[-1] == name:
+            return state
+        if not self.signed_in():
+            raise GitHubError("GitHub is not signed in on this Mac: run gh auth login once", 401)
+        before = self._do([*GIT, "remote", "get-url", "origin"], root)
+        self._do(["gh", "repo", "rename", name, "--yes"], root, timeout=60)  # the repository this folder's origin points at
+        after = re.sub(r"[^/:]+?(\.git)?/?$", lambda m: name + (m.group(1) or ""), before.strip(), count=1)
+        self._do([*GIT, "remote", "set-url", "origin", after], root)  # so pushes go to the new name, whether or not gh already moved it
+        return self.status(root)
+
     def push(self, project: str | Path) -> dict:
         root = self._project(project)
         state = self.status(root)

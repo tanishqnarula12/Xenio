@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from app.foundry.naming import slug
 from app.foundry.models import Budget, ModelRouter
 from app.foundry.registry import Agent, AgentRegistry, new_id, tokens
 
@@ -37,7 +38,7 @@ KINDS = ("software", "page", "research", "document", "spreadsheet", "presentatio
 RISKS = ("low", "medium", "high")
 
 PROMPT = """You staff software engineering teams, and every other kind of digital team: research, content, design, data, operations, anything done on a computer. Given a goal, say what it really is and what expertise it really needs. Reply with only this JSON:
-{"kind": "software", "objective": "what the CEO really wants to end up with", "deliverables": [{"name": "report.docx", "what": "one line"}], "capabilities": ["web_search"], "apps": ["only real services it touches, like LinkedIn"], "risk": "low", "approvals": ["what must be asked first: publishing, sending, spending, deleting"], "verify": ["how anyone could check that it is done"], "question": "", "trivial": false, "size": "small or medium or large", "summary": "the goal in one sentence", "needs": [{"name": "Database Architect", "expertise": ["postgresql", "schema design"], "work": "build", "why": "one sentence", "responsibilities": ["..."], "instructions": "how this specialist should work, 2 to 5 sentences"}]}
+{"kind": "software", "objective": "what the CEO really wants to end up with", "deliverables": [{"name": "report.docx", "what": "one line"}], "capabilities": ["web_search"], "apps": ["only real services it touches, like LinkedIn"], "risk": "low", "approvals": ["what must be asked first: publishing, sending, spending, deleting"], "verify": ["how anyone could check that it is done"], "question": "", "trivial": false, "size": "small or medium or large", "summary": "the goal in one sentence", "name": "what is made, as a short repository name of 2 to 4 words, like arts-college-landing-page", "needs": [{"name": "Database Architect", "expertise": ["postgresql", "schema design"], "work": "build", "why": "one sentence", "responsibilities": ["..."], "instructions": "how this specialist should work, 2 to 5 sentences"}]}
 
 Rules:
 - "kind" is one of: software (an app, a tool, code in a repository), page (one web page or simple website), research, document, spreadsheet, presentation, design, browser (work on a website the CEO uses, like checking or updating their profile: a link to their own profile or account means work on that site, never building a website), desktop (work in apps on this Mac), files (organising files), answer (a question needing only a reply), mixed (only when it needs code and something else). Research that ends in a report or a deck is document or presentation, not mixed.
@@ -101,7 +102,7 @@ def read_brief(analysis: dict) -> dict:
     if kind == "mixed" and "code" not in wanted:  # models call anything with two steps "mixed", and "research it, then make a deck" has no code in it: on a real run that was planned as a website with a tester
         made = " ".join(d["name"].lower() for d in deliverables)
         kind = "presentation" if ".pptx" in made or "presentations" in wanted else "spreadsheet" if ".xlsx" in made or "spreadsheets" in wanted else "document" if re.search(r"\.(docx|md|pdf|txt)\b", made) or "documents" in wanted else "research" if "web_search" in wanted else kind
-    return {"kind": kind, "objective": " ".join(str(analysis.get("objective") or "").split())[:300], "deliverables": deliverables[:8], "capabilities": listed("capabilities", 12, 40), "apps": listed("apps", 6, 40), "risk": risk if risk in RISKS else "medium", "approvals": listed("approvals"), "verify": listed("verify"), "question": " ".join(str(analysis.get("question") or "").split())[:300]}
+    return {"kind": kind, "objective": " ".join(str(analysis.get("objective") or "").split())[:300], "deliverables": deliverables[:8], "capabilities": listed("capabilities", 12, 40), "apps": listed("apps", 6, 40), "risk": risk if risk in RISKS else "medium", "approvals": listed("approvals"), "verify": listed("verify"), "question": " ".join(str(analysis.get("question") or "").split())[:300], "name": slug(str(analysis.get("name") or ""))}
 
 
 class AgentFactory:

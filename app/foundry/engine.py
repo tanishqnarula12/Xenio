@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from app.engineering import identity
+from app.foundry import naming
 from app.engineering import repo as R
 from app.engineering import prompts, security, verify
 from app.engineering.graph import PlanError, Task, TaskGraph, in_scope, scopes_overlap
@@ -101,6 +102,9 @@ TEAM_TOOL = "xenio_team"
 FIGMA_WAIT = 180  # seconds XENIO waits, at no cost, for the CEO to open the plugin again
 GITHUB_TOOL = "github"
 FIGMA_TOOL = "figma"
+TODO_TOOL = "todo"
+TODO_STATES = {"pending": "pending", "todo": "pending", "to do": "pending", "doing": "doing", "in_progress": "doing", "in progress": "doing", "done": "done", "completed": "done"}
+MAX_TODOS = 20
 CONNECTOR_TOOL = "connector"  # every MCP server the CEO switched on, through one tool: fifty tool descriptions on every step would cost more than the work
 INSTALL_TOOL = "xenio_install"
 AUTONOMY = ("supervisor", "careful")
@@ -1084,7 +1088,7 @@ class FoundryEngine:
         raise FoundryError("this work has no project folder of XENIO's to put on GitHub. For your own repository, push the branch instead", 409)
 
     async def github_action(self, workflow_id: str, action: str, name: str = "", private: bool = True) -> dict:
-        """The CEO's click: create the repository and push, push again, or pull. Never forced."""
+        """The CEO's click: create the repository and push, push again, pull, or rename it. Never forced."""
         from app.foundry.github_ops import GitHubError
 
         wf = self.get(workflow_id)
@@ -1093,19 +1097,23 @@ class FoundryEngine:
             if action == "status":
                 state = await asyncio.to_thread(self.github.status, project)
             elif action == "publish":
-                state = await asyncio.to_thread(self.github.publish, project, name or project.name, private, str(wf.get("goal") or "")[:200])
+                state = await asyncio.to_thread(self.github.publish, project, name or wf.get("name") or project.name, private, str(wf.get("goal") or "")[:200])
             elif action == "push":
                 state = await asyncio.to_thread(self.github.push, project)
             elif action == "pull":
                 state = await asyncio.to_thread(self.github.pull, project)
+            elif action == "rename":
+                state = await asyncio.to_thread(self.github.rename, project, name)
             else:
                 raise FoundryError(f"{action} is not something XENIO does on GitHub", 422)
         except GitHubError as exc:
             raise FoundryError(str(exc), exc.status) from None
         if action != "status":
             live = self.flows.get(workflow_id)
-            said = {"publish": f"Put it on GitHub: {state['remote']}", "push": f"Pushed {state['branch']} to {state['remote']}", "pull": f"Pulled {state['branch']} from {state['remote']}"}[action]
+            said = {"publish": f"Put it on GitHub: {state['remote']}", "push": f"Pushed {state['branch']} to {state['remote']}", "pull": f"Pulled {state['branch']} from {state['remote']}", "rename": f"Renamed on GitHub: {state['remote']}"}[action]
             if live is not None:
+                if action in ("publish", "rename"):
+                    live.wf["name"] = state["remote"].rstrip("/").rsplit("/", 1)[-1] or live.wf.get("name", "")
                 self._save(live, github=state)
                 self._intervention(live, f"github_{action}", said, effect=[said])
                 self.bus.send(live.id, XENIO, YOU, "INFORMATION", said, trusted=True)
@@ -1275,6 +1283,8 @@ class FoundryEngine:
         attached = f"\nThe CEO attached a picture, which someone looked at: {neutral(live.wf['seen'])[:1200]}" if live.wf.get("seen") else ""
         team = await asyncio.to_thread(self.factory.assemble, goal, live.id, self._with_constraints(live, evidence.facts) + attached, live.budget)
         live.team = team
+        if live.wf.get("folder") and not live.wf.get("repository"):  # a project of XENIO's: the name the plan chose, for its repository (your folders keep theirs)
+            live.wf["name"] = naming.checked(str(team.brief.get("name") or ""), goal)
         if live.wf.get("autonomy") == "supervisor":
             live.budget.max_tokens = int(live.wf.get("budget_tokens") or 0) or TOKENS_BY_SIZE[team.size]  # the CEO's limit, when they set one
         self._save(live, team=team.public(), summary=team.summary, project=state.root, greenfield=not live.wf.get("repository"), size=team.size)
@@ -1357,12 +1367,15 @@ class FoundryEngine:
 
     def _new_project(self, live: Live) -> str:
         """No repository was named, so the work starts in a new one of XENIO's, never in your folders."""
-        slug = re.sub(r"[^a-z0-9]+", "-", live.wf["goal"].lower()).strip("-")[:32] or "project"
-        folder = self.projects_root / f"{slug}-{live.id[-4:]}"
-        if (folder / ".git").is_dir():  # a second try at assembling the team: the project is already there, and committing it again fails
-            return str(folder)
+        made = live.wf.get("folder")
+        if made and (Path(made) / ".git").is_dir():  # a second try at assembling the team: the project is already there, and committing it again fails
+            return str(made)
+        name = naming.from_goal(live.wf["goal"])  # a real repository was once called build-a-landing-page-for-a-new-a-b69f
+        folder = naming.unique(self.projects_root, name)
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "README.md").write_text(f"# {live.wf['goal'][:80]}\n\nStarted by XENIO's engineering team.\n", encoding="utf-8")
+        live.wf["folder"], live.wf["name"] = str(folder), folder.name
+        goal = " ".join(live.wf["goal"].split())
+        (folder / "README.md").write_text(f"# {naming.title(name)}\n\n> {goal[:600]}\n\nStarted by XENIO's engineering team.\n", encoding="utf-8")
         (folder / ".gitignore").write_text(".venv\nnode_modules\n.deps\n__pycache__/\n.env\n", encoding="utf-8")
         for args in (["init", "-q", "-b", "main"], ["add", "-A"], [*identity.config(), "commit", "-q", "-m", identity.message("A new project")]):
             subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=folder, check=True, capture_output=True, timeout=30)
@@ -3523,7 +3536,7 @@ class TeamTools:
                 return str(exc), False
         if action not in ("publish", "push"):
             return "action is status, publish or push.", False
-        name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(args.get("name") or Path(live.wf.get("project") or "project").name)).strip("-")[:100] or "project"
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(args.get("name") or live.wf.get("name") or Path(live.wf.get("project") or "project").name)).strip("-")[:100] or "project"
         private = args.get("private") is not False
         what = f"put this job's project on your GitHub as {'a private' if private else 'a PUBLIC'} repository named {name}" if action == "publish" else "push this job's finished work to its GitHub repository"
         decision = safety_policy.Decision(RiskLevel.HIGH_RISK, "foundry.github", f"{self.toolbox._name(scope) if self.toolbox else 'An agent'} wants to {what}, once the work is finished")
@@ -3545,6 +3558,9 @@ class TeamTools:
         connector = self._connector_schema(scope)
         if connector is not None:
             out.append(connector)
+        if scope.get("workflow") and scope.get("tools"):  # anyone working with tools keeps a list the CEO can watch; reviewers only read
+            out.append({"type": "function", "function": {"name": TODO_TOOL, "description": "Your task list for this task, shown live to the CEO. Send the whole list each time, every item with status pending, doing or done; at most one doing. Use it when the task has three or more steps: write the list first, mark an item doing when you start it and done as soon as it is finished, and add what you discover. Skip it for a one-step task.",
+                                                         "parameters": {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"text": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "doing", "done"]}}, "required": ["text", "status"]}}}, "required": ["items"]}}})
         if scope.get("can_install"):
             out.append({"type": "function", "function": {"name": INSTALL_TOOL, "description": "Install packages this project needs, right now. Plain names from PyPI or npm only. XENIO installs them with no install scripts, in the project's own environment. Then list them in requirements.txt or package.json.", "parameters": {"type": "object", "properties": {"packages": {"type": "array", "items": {"type": "string"}}, "ecosystem": {"type": "string", "enum": ["python", "node"]}}, "required": ["packages"]}}})
         if scope.get("workflow"):
@@ -3557,12 +3573,36 @@ class TeamTools:
         return out
 
     def owns(self, tool: str) -> bool:
-        return tool in (TEAM_TOOL, INSTALL_TOOL, CONNECTOR_TOOL, GITHUB_TOOL, FIGMA_TOOL) or (self.toolbox is not None and self.toolbox.owns(tool)) or (self.skills is not None and self.skills.owns(tool))
+        return tool in (TEAM_TOOL, INSTALL_TOOL, CONNECTOR_TOOL, GITHUB_TOOL, FIGMA_TOOL, TODO_TOOL) or (self.toolbox is not None and self.toolbox.owns(tool)) or (self.skills is not None and self.skills.owns(tool))
 
     async def senior(self, scope: dict, what: str, output: str) -> str:
         return await self.engine.senior_help(scope, what, output)
 
+    def _todo(self, args: dict, scope: dict) -> tuple[str, bool]:
+        """An agent's own task list: checked, recorded for the CEO to watch, and answered in one short line so it costs almost nothing."""
+        raw = args.get("items")
+        if not isinstance(raw, list) or not raw:
+            return "items is the whole list: [{text, status: pending|doing|done}, ...].", False
+        items = []
+        for item in raw[:MAX_TODOS]:
+            if not isinstance(item, dict):
+                continue
+            text = neutral(" ".join(str(item.get("text") or "").split()))[:140]
+            status = TODO_STATES.get(str(item.get("status") or "pending").strip().lower())
+            if text and status:
+                items.append({"text": text, "status": status})
+        if not items:
+            return "Each item needs text and a status of pending, doing or done.", False
+        doing = [i for i in items if i["status"] == "doing"]
+        if len(doing) > 1:
+            return f"Only one item can be doing at a time; you marked {len(doing)}. Finish one first.", False
+        self.engine.store.event("agent.todo", str(scope.get("workflow") or ""), str(scope.get("role") or ""), str(scope.get("task") or ""), items=items)
+        count = lambda s: sum(i["status"] == s for i in items)  # noqa: E731
+        return f"Saved: {count('done')} done, {count('doing')} doing, {count('pending')} to do." + (f" Now: {doing[0]['text']}" if doing else " Nothing is marked doing." if count("pending") else " All done."), True
+
     async def call(self, tool: str, args: dict, scope: dict) -> tuple[str, bool]:
+        if tool == TODO_TOOL:
+            return self._todo(args, scope)
         if tool == CONNECTOR_TOOL:
             return await self._connector(args, scope)
         if tool == GITHUB_TOOL:

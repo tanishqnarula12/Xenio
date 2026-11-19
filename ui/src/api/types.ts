@@ -582,7 +582,7 @@ export interface FoundryDecision {
 }
 export interface FoundryEventRow { id: string; seq: number; type: string; workflow: string; agent: string; task: string; at: string; data: Record<string, unknown> }
 export interface FoundryIntervention { id: string; kind: string; text: string; to: string; effect: string[]; at: string }
-export interface FoundryWorkflow extends FoundryLine { team?: { brief?: { kind?: string } }; orders?: FoundryOrder[]; design?: Record<string, unknown>; missing?: { id: string; name: string; missing: string }[]; greenfield?: boolean; constraints: string[]; require_evidence: boolean; run_id: string; report?: string; verified?: boolean; model_use?: Record<string, number> }
+export interface FoundryWorkflow extends FoundryLine { name?: string; team?: { brief?: { kind?: string } }; orders?: FoundryOrder[]; design?: Record<string, unknown>; missing?: { id: string; name: string; missing: string }[]; greenfield?: boolean; constraints: string[]; require_evidence: boolean; run_id: string; report?: string; verified?: boolean; model_use?: Record<string, number> }
 export interface FoundryPreview { state: string; url?: string; command?: string; kind?: string; detail?: string; log?: string; since?: number }
 export interface FoundryState { workflow: FoundryWorkflow; team: FoundryMember[]; graph: FoundryNode[]; counts: Record<string, number>; messages: FoundryMessage[]; decisions: FoundryDecision[]; interventions: FoundryIntervention[]; loop: { iteration: number; stage: string; outcome: string; issues?: { summary: string; severity: string }[] }[]; events: FoundryEventRow[]; live: boolean; seq: number; preview?: FoundryPreview }
 
