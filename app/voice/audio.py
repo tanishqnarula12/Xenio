@@ -13,6 +13,8 @@ import io
 import logging
 import os
 import struct
+import subprocess
+import sys
 import threading
 import time
 import wave
@@ -53,6 +55,35 @@ def _sd():
     return sounddevice
 
 
+def mac_microphone_instead_of_bluetooth(sd, runner=subprocess.run) -> int | None:
+    """On a Mac with Bluetooth earbuds as the default microphone: the Mac's own microphone, as a PortAudio index.
+
+    Recording from Bluetooth earbuds switches them from their music profile to the call one, so everything they play
+    (Spotify) turns flat and mono the moment XENIO starts listening (seen with Boult Airbass). The built-in microphone
+    leaves them in music quality. None when the default microphone is not Bluetooth, or there is no built-in one."""
+    try:
+        done = runner(["/usr/sbin/system_profiler", "SPAudioDataType", "-json"], capture_output=True, text=True, timeout=5)
+        import json
+
+        items = [it for group in json.loads(done.stdout or "{}").get("SPAudioDataType", []) for it in group.get("_items", [])]
+    except Exception:
+        log.debug("Could not read the Mac's audio devices", exc_info=True)
+        return None
+    default = next((it for it in items if it.get("coreaudio_default_audio_input_device") == "spaudio_yes"), None)
+    if default is None or default.get("coreaudio_device_transport") != "coreaudio_device_type_bluetooth":
+        return None
+    builtin = next((it["_name"] for it in items if it.get("coreaudio_device_input")
+                    and it.get("coreaudio_device_transport") == "coreaudio_device_type_builtin"), None)
+    if not builtin:
+        return None
+    for index, info in enumerate(sd.query_devices()):
+        if info["name"] == builtin and info["max_input_channels"] > 0:
+            log.info("Listening with the Mac's microphone: the Bluetooth one would drop the earbuds to call quality",
+                     extra={"fields": {"bluetooth": default.get("_name"), "microphone": builtin}})
+            return index
+    return None
+
+
 def resolve_input_device(device: int | str | None):
     """(device, extra_settings) for capture.
 
@@ -60,6 +91,8 @@ def resolve_input_device(device: int | str | None):
     an Intel Smart Sound mic array) delivers near-silence (RMS < 1) while the same mic via
     WASAPI carries the real signal. So by default XENIO captures from the WASAPI default
     input and lets Windows convert to 16 kHz (``auto_convert``)."""
+    if sys.platform == "darwin" and device is None:  # XENIO_INPUT_DEVICE, when set, is always used as it is
+        return mac_microphone_instead_of_bluetooth(_sd()), None
     if os.name != "nt":
         return device, None
     sd = _sd()

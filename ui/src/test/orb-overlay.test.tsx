@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OrbOverlay } from "../overlay/OrbOverlay";
@@ -99,9 +99,15 @@ describe("the floating orb", () => {
     await renderOrb(api);
     act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
     await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
+    const glass = () => (last("glass") as { shapes: { w: number; h: number }[]; instant?: boolean });
+    await waitFor(() => expect(glass().shapes[0]).toMatchObject({ r: 26 }));  // the deck's glass became the pill (no layout here: its size reads 0)
     await userEvent.type(await screen.findByRole("textbox", { name: "Ask XENIO" }), "{Escape}");
+    expect(glass().shapes).toEqual([expect.objectContaining({ w: 40, h: 6 })]);  // first it melts back into the handle,
+    expect(last("size")).toMatchObject({ width: 340 });  // while the window keeps its size
     await waitFor(() => expect(screen.queryByRole("textbox", { name: "Ask XENIO" })).toBeNull());
     expect(screen.getByRole("button", { name: "Chat" })).toBeInTheDocument();  // back to the orb and its deck
+    await waitFor(() => expect(last("size")).toMatchObject({ width: 232, anchor: "top-center" }));
+    expect(glass()).toMatchObject({ instant: true });  // the glass moves with the narrower window, in the same frame
   });
 
   it("asks Chat or Voice when summoned: Voice listens", async () => {
@@ -169,6 +175,94 @@ describe("the floating orb", () => {
     expect(last("surface")).toEqual({ type: "surface", glass: true });  // no card: the orb floats
   });
 
+  it("talking to the floating orb keeps it the orb: what you say and its answers build up in one thread under it", async () => {
+    const api = new FakeApi();
+    api.snap = engineSnap();
+    await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
+    await screen.findByRole("button", { name: "Chat" });
+    const say = (n: number, words: string, answer: string) => act(() => {
+      api.emit("assistant.state", { ...assistant({ state: "THINKING" }), turn: `v${n}` });
+      api.emit("chat.user", { id: `v${n}-u`, turn: `v${n}`, role: "user", text: words, at: "" });
+      api.emit("chat.done", { id: `v${n}-a`, turn: `v${n}`, role: "assistant", text: answer, ok: true, actions: [], sources: [], at: "" });
+      api.emit("assistant.state", { ...assistant({ state: "IDLE" }), turn: null });
+    });
+    say(1, "play some lofi", "Playing lofi beats.");
+    expect(await screen.findByText("Playing lofi beats.")).toBeInTheDocument();
+    say(2, "a bit louder", "Volume up.");
+    expect(await screen.findByText("Volume up.")).toBeInTheDocument();
+    expect(screen.getByText("Playing lofi beats.")).toBeInTheDocument();  // the same thread, not a new one each time
+    expect(screen.getByText("a bit louder")).toBeInTheDocument();
+    expect(document.querySelector(".orb-overlay")).toBeNull();  // never the old card
+    await userEvent.click(screen.getByRole("button", { name: "Continue here" }));  // and you can carry on typing in it
+    expect(await screen.findByRole("textbox", { name: "Ask XENIO" })).toBeInTheDocument();
+    expect(screen.getByText("Volume up.")).toBeInTheDocument();
+  });
+
+  it("Esc keeps what you were typing for when you open the pill again", async () => {
+    const api = new FakeApi();
+    api.snap = engineSnap();
+    await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
+    await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
+    await userEvent.type(await screen.findByRole("textbox", { name: "Ask XENIO" }), "half a thought{Escape}");
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Ask XENIO" })).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "Chat" }));
+    expect(await screen.findByRole("textbox", { name: "Ask XENIO" })).toHaveValue("half a thought");
+  });
+
+  it("moves the window only when its size changes, not on every streamed word", async () => {
+    const api = new FakeApi();
+    api.snap = engineSnap();
+    await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
+    await screen.findByRole("button", { name: "Chat" });
+    const sizes = () => posted.filter((m) => m.type === "size" || m.type === "show").length;
+    const before = sizes();
+    for (let i = 0; i < 5; i++) act(() => window.xenioNative!.receive({ type: "hover", on: i % 2 === 0 }));  // renders, same size
+    expect(sizes()).toBe(before);
+  });
+
+  it("the whole chat resizes from its corner grip, keeps that size, and its glass stays inside the window's edge", async () => {
+    const api = new FakeApi();
+    api.snap = engineSnap();
+    await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
+    await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Open the whole chat" }));
+    await screen.findByRole("textbox", { name: "Message XENIO" });
+    const glass = () => (last("glass") as { shapes: { x: number; y: number; w: number; h: number }[] }).shapes[0]!;
+    await waitFor(() => expect(glass()).toMatchObject({ x: 10, y: 10, w: 400, h: 560 }));  // rounded inside, never cut square
+    const grip = document.querySelector(".qc-grip")!;
+    fireEvent.pointerDown(grip);
+    expect(last("resizeStart")).toMatchObject({ minWidth: 360, minHeight: 420 });
+    act(() => window.xenioNative!.receive({ type: "resized", width: 600, height: 700 }));
+    act(() => window.xenioNative!.receive({ type: "resized", width: 640, height: 760, done: true }));
+    await waitFor(() => expect(glass()).toMatchObject({ w: 620, h: 740 }));
+    expect(JSON.parse(localStorage.getItem("xenio.orb.chatSize")!)).toEqual({ w: 640, h: 760 });
+    act(() => window.xenioNative!.receive({ type: "resized", width: 100, height: 5000, done: true }));  // never past its limits
+    await waitFor(() => expect(last("size")).toMatchObject({ width: 360, height: 1100 }));
+    localStorage.removeItem("xenio.orb.chatSize");
+  });
+
+  it("Esc in the whole chat draws it back into the orb, and the floating orb it came from stays", async () => {
+    const api = new FakeApi();
+    api.snap = engineSnap();
+    await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
+    await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Open the whole chat" }));
+    await screen.findByRole("textbox", { name: "Message XENIO" });
+    const before = posted.length;
+    await userEvent.keyboard("{Escape}");
+    expect(document.querySelector(".qc-frame--closing")).not.toBeNull();  // first it shrinks,
+    const shape = (last("glass") as { shapes: { w: number; h: number; r: number }[] }).shapes[0]!;
+    expect(shape.w).toBe(shape.h);  // its glass drawing in to a circle where the orb is
+    expect(shape.r).toBe(shape.w / 2);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Chat" })).toBeInTheDocument());  // then the orb, still there
+    expect(posted.slice(before).some((m) => m.type === "hide")).toBe(false);  // never gone, not even for a moment
+  });
+
   it("floats as a pet: real glass behind a deck that shows only on hover, a handle otherwise, and it stays until hidden", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const api = new FakeApi();
@@ -182,7 +276,13 @@ describe("the floating orb", () => {
     act(() => window.xenioNative!.receive({ type: "hover", on: true }));
     await waitFor(() => expect(shape()!.w).toBe(220));
     act(() => window.xenioNative!.receive({ type: "hover", on: false }));
+    act(() => { vi.advanceTimersByTime(120); });
+    expect(shape()!.w).toBe(220);  // passing over the orb does not flicker the deck: it waits a moment
+    act(() => window.xenioNative!.receive({ type: "hover", on: true }));  // and coming back keeps it open
+    act(() => window.xenioNative!.receive({ type: "hover", on: false }));
+    act(() => { vi.advanceTimersByTime(300); });
     await waitFor(() => expect(shape()).toMatchObject({ w: 40, h: 6 }));
+    expect([...posted].reverse().find((m) => m.type === "size" || m.type === "show")).toMatchObject({ anchor: "top-center" });  // the window stays put around the orb
     const before = posted.length;
     act(() => { vi.advanceTimersByTime(60_000); });  // a minute later it is still there: only you hide it
     expect(posted.slice(before).some((m) => m.type === "hide")).toBe(false);

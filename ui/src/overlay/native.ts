@@ -8,6 +8,7 @@ export type NativeMessage =
   | { type: "closeChat" }
   | { type: "status"; shortcut: string; shortcut_status: string; accessibility: boolean; screens: number; location?: string }
   | { type: "location"; lat: number; lon: number; accuracy_m: number; label: string }
+  | { type: "resized"; width: number; height: number; done?: boolean }  // the whole chat resized by its grip (done: the mouse let go)
   | { type: "moved"; dx: number; dy: number }  // the panel is being dragged: how far since the last move (page pixels, y down)
   | { type: "hover"; on: boolean }
   | { type: "app"; away: boolean }
@@ -16,16 +17,17 @@ export type NativeMessage =
 
 type Outgoing =
   | { type: "ready" }
-  | { type: "show" | "size"; width: number; height: number }
+  | { type: "show" | "size"; width: number; height: number; anchor?: "top-center" }  // top-center: the floating orb stays put
   | { type: "hide" }
   | { type: "chat"; on: boolean }  // the quick chat is open: the panel takes the keyboard (without activating the helper)
   | { type: "openApp"; route?: string }  // Mission Control: XENIO's full page in a real window (at a page: "/orchestration/ID")
   | { type: "dragStart" }
+  | { type: "resizeStart"; minWidth: number; minHeight: number; maxWidth: number; maxHeight: number }  // the corner grip: the helper follows the mouse
   | { type: "config"; shortcut: string; interval_ms: number; location: boolean }
   | { type: "open"; url: string }
   | { type: "surface"; glass: boolean }
   | { type: "music"; on: boolean }  // music mode: the orb moves with what the Mac is playing  // glass: no card, the orb floats; otherwise the dark card the chat sits on
-  | { type: "glass"; shapes: { x: number; y: number; w: number; h: number; r: number; style?: "regular" | "clear" | "tinted" }[] };  // real Liquid Glass behind these
+  | { type: "glass"; shapes: { x: number; y: number; w: number; h: number; r: number; style?: "regular" | "clear" | "tinted" }[]; instant?: boolean };  // real Liquid Glass behind these
 
 interface WebkitBridge {
   messageHandlers?: { xenio?: { postMessage: (message: Outgoing) => void } };

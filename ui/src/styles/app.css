@@ -429,6 +429,7 @@
 /* summoned: Chat or Voice, one click each */
 /* the orb on its own, floating like a pet: no card, the orb, and a Liquid Glass deck under it (real glass from the helper) */
 .orb-view.orb-view--pet, .orb-view.orb-view--pet body { background: transparent; }
+.orb-view--pet .pet { margin-left: auto; margin-right: auto; } /* centred in its window, which stays put around the orb */
 .pet { position: relative; width: 232px; height: 222px; color: #fff; }
 .pet__orb { position: absolute; left: 0; top: 0; width: 232px; height: 232px; display: grid; place-items: center; pointer-events: none; }
 .pet__orb > .orb { grid-area: 1 / 1; }
@@ -441,11 +442,29 @@
 .pet--native .pet__handle { background: transparent; } /* the helper draws it in glass */
 .pet--open .pet__handle { opacity: 0; }
 .pet__btn { width: 46px; height: 38px; border: 0; border-radius: 19px; background: transparent; color: rgba(255,255,255,.92); display: grid; place-items: center; cursor: pointer;
-  opacity: 0; transform: scale(.82); pointer-events: none; transition: opacity .22s ease, transform .32s cubic-bezier(.2,.9,.25,1), background-color .12s ease; }
-.pet--open .pet__btn { opacity: 1; transform: none; pointer-events: auto; }
+  opacity: 0; transform: scale(.86); pointer-events: none; transition: opacity .14s ease-out, transform .2s cubic-bezier(.4,0,.6,1), background-color .12s ease; }
+/* open: the buttons arrive with the glass, one after another from the middle out; closing they go together, quicker */
+.pet--open .pet__btn { opacity: 1; transform: none; pointer-events: auto; transition: opacity .2s ease-out var(--d, 0ms), transform .38s cubic-bezier(.2,.9,.25,1) var(--d, 0ms), background-color .12s ease; }
+.pet--open .pet__btn:nth-of-type(2), .pet--open .pet__btn:nth-of-type(3) { --d: 20ms; }
+.pet--open .pet__btn:nth-of-type(1), .pet--open .pet__btn:nth-of-type(4) { --d: 55ms; }
 .pet__btn:hover { background: rgba(255,255,255,.14); }
 .pet__btn--on { color: var(--xenon); background: rgba(169,200,255,.18); }
 /* the whole chat in Liquid Glass: the helper draws tinted glass behind it, and its own surfaces let it show through */
+/* the whole chat sits inside the glass's rounded edge (the window is a little larger, so nothing is cut square) */
+.qc-frame--glass { height: 100vh; padding: 10px; box-sizing: border-box; }
+.qc-frame--glass .qc { height: 100%; border-radius: 22px; overflow: hidden; transform-origin: 50% 12%;
+  transition: opacity .2s ease-in, transform .24s cubic-bezier(.4,0,.7,.2); }
+/* Esc: it draws in toward the orb, the glass shrinking with it, and the orb takes its place */
+.qc-frame--closing .qc { opacity: 0; transform: translateY(-14px) scale(.9); pointer-events: none; }
+.qc-grip { position: fixed; right: 14px; bottom: 14px; width: 18px; height: 18px; cursor: nwse-resize; z-index: 5; border-radius: 0 0 12px 0; opacity: .55;
+  background: linear-gradient(135deg, transparent 0 52%, rgba(255,255,255,.7) 52% 58%, transparent 58% 68%, rgba(255,255,255,.7) 68% 74%, transparent 74%);
+  transition: opacity .15s ease; }
+.qc-grip:hover { opacity: 1; }
+.qc-frame--closing .qc-grip { opacity: 0; }
+/* the floating orb arriving (after the whole chat, or the card): it grows in rather than popping up */
+.pet__orb { animation: pet-orb-in .42s cubic-bezier(.2,.9,.25,1) both; }
+@keyframes pet-orb-in { from { opacity: 0; transform: scale(.84); } }
+@media (prefers-reduced-motion: reduce) { .qc-frame--glass .qc { transition: none; } .pet__orb { animation: none; } }
 .orb-view--glass-chat .qc-head { background: transparent; border-color: rgba(255,255,255,.1); }
 .orb-view--glass-chat .qc .composer__row { background: rgba(255,255,255,.09); }
 .orb-view--glass-chat .qc .msg--user { background: rgba(255,255,255,.13); }
@@ -467,8 +486,24 @@
 .pet__preview:active { transform: scale(.985); }
 .pet__preview-text { font-size: 13.5px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
   overflow-wrap: anywhere; text-shadow: 0 1px 2px rgba(0,0,0,.2); }
+/* the thread under the orb: your words dimmer, XENIO's brighter; the newest at the bottom, older ones fading out the top */
+.pet__thread { display: flex; flex-direction: column; justify-content: flex-end; gap: 5px; max-height: 128px; overflow: hidden; }
+.pet__thread--long { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px); mask-image: linear-gradient(to bottom, transparent 0, #000 22px); }
+.pet__line { font-size: 13.5px; line-height: 1.42; flex: none; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  overflow-wrap: anywhere; text-shadow: 0 1px 2px rgba(0,0,0,.2); animation: pet-line-in .32s cubic-bezier(.2,.9,.25,1) both; }
+.pet__line--user { color: rgba(255,255,255,.62); font-size: 12.5px; -webkit-line-clamp: 2; }
+.pet__line--user::before { content: "You · "; color: rgba(255,255,255,.42); }
+.pet__line--wait { color: rgba(255,255,255,.7); }
+@keyframes pet-line-in { from { opacity: 0; transform: translateY(5px); } }
+.pet--talking .pet__preview { animation: pet-line-in .3s cubic-bezier(.2,.9,.25,1) both; }
+@media (prefers-reduced-motion: reduce) { .pet__line, .pet--talking .pet__preview { animation: none; } }
 .pet__preview-hint { font-size: 11.5px; color: rgba(255,255,255,.65); }
 .pet__pill { width: 320px; height: 52px; margin-top: 10px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: 26px; }
+/* the pill and its answer grow out of the deck with the glass, and melt back into the handle on Esc */
+.pet__pill, .pet__preview { transform-origin: 50% 0; transition: opacity .22s ease-out, transform .34s cubic-bezier(.2,.9,.25,1); }
+.pet--entering .pet__pill, .pet--entering .pet__preview { opacity: 0; transform: translateY(-6px) scale(.94); transition: none; }
+.pet--leaving .pet__pill, .pet--leaving .pet__preview { opacity: 0; transform: translateY(-8px) scale(.9); pointer-events: none;
+  transition: opacity .16s ease-in, transform .24s cubic-bezier(.4,0,.7,.2); }
 .pet__pill.is-nudged { animation: composer-nudge .26s ease-in-out; }
 .pet__pill-btn { width: 36px; height: 36px; flex: none; border: 0; border-radius: 50%; background: rgba(255,255,255,.16); color: #fff; display: grid; place-items: center; cursor: pointer; }
 .pet__pill-btn:active, .pet__send:active:not(:disabled) { transform: scale(.92); }
@@ -486,7 +521,7 @@
 /* outside the helper (a browser tab, tests) there is no native glass: an honest stand-in */
 .pet:not(.pet--native).pet--open .pet__deck { background: rgba(28,30,36,.55); -webkit-backdrop-filter: blur(24px) saturate(1.7); backdrop-filter: blur(24px) saturate(1.7);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.35), inset 0 -1px 0 rgba(255,255,255,.08), 0 8px 24px -8px rgba(0,0,0,.5); }
-@media (prefers-reduced-motion: reduce) { .pet__btn, .pet__handle, .pet__divider { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .pet__btn, .pet--open .pet__btn, .pet__handle, .pet__divider, .pet__pill, .pet__preview { transition: none; } }
 .orb-overlay--choose { align-items: center; padding: 8px var(--s-2) 8px 8px; position: relative; }
 .ov-orb--choose { width: 64px; height: 64px; }
 .ov-choose { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding-right: 22px; }

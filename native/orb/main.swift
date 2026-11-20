@@ -102,6 +102,7 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
     var dragMonitor: Any?
     var dragStart: (mouse: NSPoint, origin: NSPoint)?
     var dragLast: NSPoint?
+    var resizing = false  // the corner grip is held: the window follows the mouse, not the page's (older) sizes
     var glassViews: [NSView] = []  // Liquid Glass behind the page's deck, where the page asks for it
     var musicTap: AnyObject?  // music mode: the orb moves with what the Mac is playing
 
@@ -119,6 +120,7 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
     var appURL: URL?
     var appFocused = false  // while it is in front, the orb steps aside: the window shows everything
     var wantPanel = false  // what the orb page last asked for (shown or hidden)
+    var typedFrom: NSRunningApplication?  // the app you were in when a chat took the keyboard: it gets it back
 
     // location
     var locator: CLLocationManager?
@@ -199,9 +201,10 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
             sendAway()
         case "show":
             wantPanel = true
-            resize(to: dimension(body), show: !appFocused || panel.keyable)
+            resize(to: dimension(body), show: !appFocused || panel.keyable, anchor: body["anchor"] as? String)
         case "size":
-            resize(to: dimension(body), show: panel.isVisible)
+            if resizing { break }
+            resize(to: dimension(body), show: panel.isVisible, anchor: body["anchor"] as? String)
         case "hide":
             wantPanel = false
             panel.orderOut(nil)
@@ -211,10 +214,15 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
             openMissionControl(route: body["route"] as? String)
         case "dragStart":
             beginDrag()
+        case "resizeStart":
+            func n(_ key: String, _ fallback: CGFloat) -> CGFloat { CGFloat((body[key] as? NSNumber)?.doubleValue ?? Double(fallback)) }
+            beginResize(min: NSSize(width: n("minWidth", 360), height: n("minHeight", 420)),
+                        max: NSSize(width: n("maxWidth", 960), height: n("maxHeight", 1100)))
         case "surface":
             setSurface(glass: (body["glass"] as? Bool) ?? false)
         case "glass":
-            setGlass((body["shapes"] as? [[String: Any]]) ?? [])
+            if resizing { break }
+            setGlass((body["shapes"] as? [[String: Any]]) ?? [], instant: (body["instant"] as? Bool) ?? false)
         case "music":
             setMusic((body["on"] as? Bool) ?? false)
         case "config":
@@ -279,6 +287,8 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
     /// the chat has the keyboard (every Space is just a space there).
     func setChat(_ on: Bool) {
         if on {
+            let front = NSWorkspace.shared.frontmostApplication
+            if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { typedFrom = front }
             panel.keyable = true
             if !panel.isVisible { panel.orderFrontRegardless() }
             panel.makeKey()
@@ -286,9 +296,19 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
             return
         }
         panel.keyable = false
-        if panel.isKeyWindow {
-            panel.orderOut(nil)  // hands the keyboard back to the user's app
-            if wantPanel { panel.orderFrontRegardless() }
+        guard panel.isKeyWindow else { return }
+        // Hand the keyboard back to the app you were in, with the orb left on screen. Hiding the panel for a moment
+        // did it too, but the page stops drawing while hidden and the orb vanished for about a second.
+        if let app = typedFrom, !app.isTerminated { app.activate(options: []) }
+        typedFrom = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, self.panel.isKeyWindow, !self.panel.keyable else {
+                NSLog("XENIO Orb: keyboard handed back without hiding the orb")
+                return
+            }
+            NSLog("XENIO Orb: keyboard handed back by hiding the panel for a moment")
+            self.panel.orderOut(nil)  // the fallback: still the keyboard goes back to your app
+            if self.wantPanel { self.panel.orderFrontRegardless() }
         }
     }
 
@@ -307,7 +327,7 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
 
     // MARK: the panel: size, place, drag
 
-    func resize(to new: NSSize, show: Bool) {
+    func resize(to new: NSSize, show: Bool, anchor: String? = nil) {
         // keep the corner nearest the screen edge where it is (bottom-right by default): it grows inwards
         let old = panel.frame
         let screen = (panel.screen ?? NSScreen.main)?.visibleFrame ?? old
@@ -316,6 +336,15 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         var origin = old.origin
         if anchorRight { origin.x = old.maxX - new.width }
         if anchorTop { origin.y = old.maxY - new.height }
+        if anchor == "top-center" && panel.isVisible {
+            // the floating orb: it stays exactly where it is and the page grows around it, in the same frame (an
+            // animated frame would slide the orb sideways while the page lays out at the new width)
+            origin = NSPoint(x: (old.midX - new.width / 2).rounded(), y: old.maxY - new.height)
+            size = new
+            panel.setFrame(clamp(NSRect(origin: origin, size: new)), display: true)
+            if show && !panel.isVisible { panel.orderFrontRegardless() }
+            return
+        }
         size = new
         let frame = clamp(NSRect(origin: origin, size: new))
         NSAnimationContext.runAnimationGroup { ctx in
@@ -343,7 +372,7 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
     /// Real Liquid Glass (macOS 26 and later; the frosted material before that) behind the page, at the shapes it gives:
     /// [{x, y, w, h, r, style: "regular" | "clear"}] in the page's pixels. New shapes fade in where they are, moved ones
     /// glide, and ones no longer asked for fade out.
-    func setGlass(_ shapes: [[String: Any]]) {
+    func setGlass(_ shapes: [[String: Any]], instant: Bool = false) {
         guard let content = panel.contentView else { return }
         func number(_ value: Any?) -> CGFloat { CGFloat((value as? NSNumber)?.doubleValue ?? 0) }
         while glassViews.count < shapes.count {
@@ -360,7 +389,9 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
             let shape = shapes[index]
             let rect = NSRect(x: number(shape["x"]), y: number(shape["y"]), width: number(shape["w"]), height: number(shape["h"]))
             shapeGlass(view, radius: number(shape["r"]), style: (shape["style"] as? String) ?? "regular")
-            if view.alphaValue < 0.01 { view.frame = rect }  // appears where it is, rather than flying in
+            // appears where it is, rather than flying in; and when the window just changed size the glass stays put on
+            // screen, so it moves with the page in the same frame
+            if view.alphaValue < 0.01 || instant { view.frame = rect }
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.32
                 ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)  // quick out, soft landing
@@ -421,6 +452,39 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         }
         view.layer?.cornerRadius = radius
         view.layer?.masksToBounds = true
+    }
+
+    /// The whole chat's corner grip: the window follows the mouse with its top-left corner kept where it is, and the glass
+    /// behind the page follows in the same frame (the page tells the size it ended at, and keeps it for next time).
+    func beginResize(min lo: NSSize, max hi: NSSize) {
+        if dragMonitor != nil { return }
+        resizing = true
+        let startMouse = NSEvent.mouseLocation, startFrame = panel.frame
+        let inset: CGFloat = 10
+        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            guard let self else { return event }
+            let now = NSEvent.mouseLocation
+            let screen = (self.panel.screen ?? NSScreen.main)?.visibleFrame ?? startFrame
+            let width = Swift.min(hi.width, Swift.max(lo.width, startFrame.width + now.x - startMouse.x)).rounded()
+            let tallest = Swift.min(hi.height, startFrame.maxY - screen.minY)
+            let height = Swift.min(tallest, Swift.max(lo.height, startFrame.height + startMouse.y - now.y)).rounded()
+            let frame = NSRect(x: startFrame.minX, y: startFrame.maxY - height, width: width, height: height)
+            if frame != self.panel.frame {
+                self.size = frame.size
+                self.panel.setFrame(frame, display: true)
+                if let glass = self.glassViews.first, glass.alphaValue > 0.01 {
+                    glass.frame = NSRect(x: inset, y: inset, width: width - 2 * inset, height: height - 2 * inset)
+                }
+            }
+            let done = event.type == .leftMouseUp
+            if done { self.resizing = false }
+            self.send(["type": "resized", "width": width, "height": height, "done": done])
+            if done {
+                if let m = self.dragMonitor { NSEvent.removeMonitor(m) }
+                self.dragMonitor = nil
+            }
+            return event
+        }
     }
 
     func beginDrag() {

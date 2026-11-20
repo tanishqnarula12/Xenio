@@ -21,6 +21,8 @@ export interface OrbProps {
   beats?: (handler: () => void) => () => void;
   /** the sphere's size within its drawing (1 fills it): smaller leaves room for its particles to stream out */
   scale?: number;
+  /** nothing has happened for a long while: the orb plays on its own now and then */
+  idle?: boolean;
 }
 
 function particlesFor(size: number, detail: "auto" | "low" | "high"): number {
@@ -30,7 +32,7 @@ function particlesFor(size: number, detail: "auto" | "low" | "high"): number {
 }
 
 /** The orb. Its meaning is always in words too (role="img" + label), so nothing depends on seeing it move. */
-export function Orb({ state, label, size, detail = "auto", reducedMotion, level = null, agents = 2, className, interactive = false, moves, vivid = false, beats, scale = 1 }: OrbProps) {
+export function Orb({ state, label, size, detail = "auto", reducedMotion, level = null, agents = 2, className, interactive = false, moves, vivid = false, beats, scale = 1, idle = false }: OrbProps) {
   const halo = useRef<HTMLCanvasElement>(null);
   const dots = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<OrbRenderer | null>(null);
@@ -58,6 +60,7 @@ export function Orb({ state, label, size, detail = "auto", reducedMotion, level 
   useEffect(() => { renderer.current?.setOptions({ particles: particlesFor(size, detail), reducedMotion, interactive, vivid, scale }); },
     [size, detail, reducedMotion, interactive, vivid, scale]);
   useEffect(() => { renderer.current?.setLevelSource(level); }, [level]);
+  useEffect(() => { renderer.current?.setIdle(idle); }, [idle]);
   useEffect(() => { renderer.current?.setAgents(agents); }, [agents]);
   useEffect(() => (moves ? moves((dx, dy) => renderer.current?.move(dx, dy)) : undefined), [moves]);
   useEffect(() => (beats ? beats(() => renderer.current?.pulse()) : undefined), [beats]);

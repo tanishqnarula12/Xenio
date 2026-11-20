@@ -122,6 +122,10 @@ function setupGL(canvas: HTMLCanvasElement): GL | null {
   return { gl, res: gl.getUniformLocation(prog, "res"), col: gl.getUniformLocation(prog, "col") };
 }
 
+type Flourish = "wander" | "figure" | "heartbeat" | "shimmer" | "yawn";
+const FLOURISHES: Flourish[] = ["wander", "figure", "heartbeat", "shimmer", "yawn"];
+const FLOURISH_SECONDS: Record<Flourish, number> = { wander: 1.8, figure: 2.4, heartbeat: 0.9, shimmer: 2.6, yawn: 2.8 };
+
 export interface OrbOptions {
   particles: number;
   reducedMotion: boolean;
@@ -168,6 +172,12 @@ export class OrbRenderer {
   // each particle on its own: carried, it hangs in space for a moment (by its own weight), then swirls home on its own spring
   private swarm = { ox: new Float32Array(0), oy: new Float32Array(0), vx: new Float32Array(0), vy: new Float32Array(0), active: false };
   private kick = 0; // a beat, fading fast
+  // idle play: left alone a long while, the orb does a little something now and then, then rests again
+  private idle = false;
+  private clock = 0;                        // real seconds, whatever the state's pace
+  private idleNext = 0;
+  private flourish: { kind: Flourish; at: number; beat: boolean } | null = null;
+  private lastFlourish: Flourish | null = null;
   private listening = false;
   private readonly onPointerMove = (e: PointerEvent) => { this.client = { x: e.clientX, y: e.clientY }; };
   private readonly onPointerOut = () => { this.client = null; };
@@ -218,6 +228,54 @@ export class OrbRenderer {
     const units = 720 / Math.max(1, this.dotsCanvas.clientWidth || 720);
     this.moved.x += dx * units;
     this.moved.y += dy * units;
+  }
+
+  /** Idle a long while: now and then a flourish (a wander, a figure of eight, a heartbeat, a shimmer, a yawn). */
+  setIdle(on: boolean): void {
+    if (on === this.idle) return;
+    this.idle = on;
+    this.idleNext = this.clock + 2.5 + Math.random() * 3;
+    if (!on) this.flourish = null;
+  }
+
+  /** How far into a flourish of this kind the orb is: 0 to 1 and back, 0 when it is doing something else. */
+  private flare(kind: Flourish): number {
+    const f = this.flourish;
+    if (!f || f.kind !== kind) return 0;
+    return Math.sin(Math.PI * Math.min(1, (this.clock - f.at) / FLOURISH_SECONDS[kind]));
+  }
+
+  private stepIdle(dt: number): void {
+    this.clock += dt;
+    if (!this.idle || this.options.reducedMotion) { this.flourish = null; return; }
+    if (!this.flourish) {
+      if (this.clock < this.idleNext) return;
+      const kinds = FLOURISHES.filter((k) => k !== this.lastFlourish);
+      const kind = kinds[Math.floor(Math.random() * kinds.length)]!;
+      this.flourish = { kind, at: this.clock, beat: false };
+      this.lastFlourish = kind;
+      if (kind === "heartbeat") this.pulse();
+    }
+    const f = this.flourish;
+    const age = this.clock - f.at, span = FLOURISH_SECONDS[f.kind];
+    if (age >= span) {
+      this.flourish = null;
+      this.idleNext = this.clock + 7 + Math.random() * 8;
+      return;
+    }
+    const u = age / span, ease = Math.sin(Math.PI * u);
+    if (f.kind === "wander") {  // a little loop: the particles stream after it as if it were carried
+      const a = u * TAU, v = 210 * ease * dt;
+      this.moved.x += -Math.sin(a) * v;
+      this.moved.y += Math.cos(a) * v * 0.7;
+    } else if (f.kind === "figure") {  // a lazy figure of eight
+      const a = u * TAU, v = 190 * ease * dt;
+      this.moved.x += Math.cos(a) * v;
+      this.moved.y += Math.cos(2 * a) * v * 0.9;
+    } else if (f.kind === "heartbeat" && !f.beat && age > 0.24) {
+      f.beat = true;
+      this.pulse();
+    }
   }
 
   /** A ring of light runs out through the orb (a beat in music mode). */
@@ -362,6 +420,7 @@ export class OrbRenderer {
     this.params.env += (raw - this.params.env) * (raw > this.params.env ? 0.55 : 0.18);
     this.params.level = this.params.env;
     this.kick *= Math.exp(-dt / 0.16);
+    if (dt > 0) this.stepIdle(dt);
     if (dt > 0) this.stepSwarm(dt);
     // a syllable is a fast rise in the playback envelope; each sends a lit ring up the sphere while speaking
     if (this.state === "SPEAKING" && this.params.env - prev > 0.06 && this.time - (this.onsets.at(-1) ?? -1) > 0.12) {
@@ -388,7 +447,7 @@ export class OrbRenderer {
     const mean = (base[0] + base[1] + base[2]) / 3;
     const rich = (vivid ? base.map((c) => Math.max(0, Math.min(255, Math.round(c + (c - mean) * 0.75)))) : base) as RGB; // richer colour over a bright wallpaper
     // floating, its colour drifts slowly round its own hue, and further with sound: alive, not a light bulb
-    const rgb = vivid && !this.options.reducedMotion ? turnHue(rich, 16 * Math.sin(this.time * 0.21) + 9 * Math.sin(this.time * 0.57) + 55 * P.env + 30 * this.kick) : rich;
+    const rgb = vivid && !this.options.reducedMotion ? turnHue(rich, 16 * Math.sin(this.time * 0.21) + 9 * Math.sin(this.time * 0.57) + 55 * P.env + 30 * this.kick + 120 * this.flare("shimmer")) : rich;
     const scale = this.options.scale ?? 1;
 
     const ptr = this.pointer;
@@ -438,7 +497,7 @@ export class OrbRenderer {
     const turned = Math.abs(ptr.yaw) + Math.abs(ptr.pitch) > 0.002 && live > 0;
     const waves = live ? this.ripples.map((r) => { const age = this.time - r; return { r: age * 430, g: (1 - age / RIPPLE_SECONDS) ** 2 }; }) : [];
     const swarm = live > 0 && this.swarm.active ? this.swarm : null;
-    const pump = vivid && live ? 1 + 0.22 * env + 0.12 * this.kick : 1; // sound swells it, a beat kicks it
+    const pump = (vivid && live ? 1 + 0.22 * env + 0.12 * this.kick : 1) * (1 + 0.1 * this.flare("yawn")); // sound swells it, a beat kicks it, idle it yawns
 
     for (let i = 0; i < count; i++) {
       const p = seed[i]!;

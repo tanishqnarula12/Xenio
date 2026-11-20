@@ -22,6 +22,20 @@ const CHOICE_WIDTH = 330;
 const COLLAPSED = 96;
 const CHAT_WIDTH = 420;
 const CHAT_HEIGHT = 580;
+// the whole chat can be resized from its corner grip, within these, and keeps the size you gave it
+const CHAT_MIN = { w: 360, h: 420 };
+const CHAT_MAX = { w: 960, h: 1100 };
+const CHAT_SIZE_KEY = "xenio.orb.chatSize";
+const GLASS_INSET = 10; // the glass sits inside the window's edge, so its rim and shadow round off instead of being cut square
+const CLOSE_MS = 230; // the whole chat shrinks back into the orb before the orb takes its place
+const clampChat = (w: number, h: number) => ({ w: Math.round(Math.min(CHAT_MAX.w, Math.max(CHAT_MIN.w, w))), h: Math.round(Math.min(CHAT_MAX.h, Math.max(CHAT_MIN.h, h))) });
+function savedChatSize() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CHAT_SIZE_KEY) || "null") as { w?: number; h?: number } | null;
+    if (saved && typeof saved.w === "number" && typeof saved.h === "number") return clampChat(saved.w, saved.h);
+  } catch { /* no storage here: the usual size */ }
+  return { w: CHAT_WIDTH, h: CHAT_HEIGHT };
+}
 const ROUTE = /^\/[a-z]+(\/[A-Za-z0-9_-]+)?$/;
 // the orb on its own, floating like a pet: the orb, and under it a Liquid Glass deck (chat, voice) that opens on hover
 const PET_W = 232;
@@ -32,6 +46,11 @@ const DECK_OPEN = { w: 220, h: 48, r: 24 };
 const DECK_SHUT = { w: 40, h: 6, r: 3 };
 const DECK_TOP = 166; // right under the sphere, as close as the owl's
 const COMPOSE_W = 340; // the glass chat pill under the orb
+const HOVER_GRACE_MS = 260; // the deck waits this long after the pointer leaves: passing over the orb does not flicker it
+const LEAVE_MS = 240; // the pill melts back into the handle before the window shrinks
+const IDLE_AFTER_MS = 45_000; // nothing happening this long: the orb starts to play on its own
+const THREAD_FRESH_MS = 5 * 60_000; // a thread this quiet starts afresh with the next request
+const THREAD_LINES = 4; // the thread under the orb shows the last few lines; the whole chat has the rest
 
 function OverlayApproval({ approval }: { approval: Approval }) {
   const { app } = useApp();
@@ -86,6 +105,10 @@ export function OrbOverlay() {
   }, []);
   const [choosingAt, setChoosingAt] = useState(0);  // summoned: Chat or Voice?
   const [chatting, setChatting] = useState(false);  // the quick chat is open (until the user closes it)
+  const [chatSize, setChatSize] = useState(savedChatSize);
+  const [chatClosing, setChatClosing] = useState(false);  // shrinking back into the orb
+  const closeTimer = useRef(0);
+  const fromPet = useRef(false);  // the whole chat was opened from the floating orb: closing it goes back to the orb
   const [, tick] = useState(0);
   const summon = useRef<number | null>(null);
   const press = useRef<{ x: number; y: number } | null>(null);
@@ -135,17 +158,76 @@ export function OrbOverlay() {
   // the orb on its own: summoned, or resting when it is always shown. While XENIO works it is the card with the caption
   // the orb on its own: summoned; or XENIO's window is minimized, closed or hidden (then it stays, in its current phase,
   // until hidden); or resting when it is always shown. A question waiting for a yes needs the card and its buttons
-  const pet = !chatting && approvals.length === 0 && (choosing || (away && !petHidden) || (visible && !active));
+  // and once the orb floats, it stays the orb while XENIO listens, works and answers: the words build up in one thread
+  // under it instead of a new card each time (and no second orb has to start up, which was a visible hitch)
+  const wasPet = useRef(false);
+  const pet = !chatting && approvals.length === 0 && (choosing || (away && !petHidden) || (visible && (!active || wasPet.current)));
+  wasPet.current = pet;
   const deckOpen = hovered;  // the deck is there only while the pointer is
   const [composing, setComposing] = useState(false);  // the glass chat pill under the orb
   const [draft, setDraft] = useState("");
-  const [askedFrom, setAskedFrom] = useState(-1);  // where the conversation stood when the pill sent its question
+  const [threadFrom, setThreadFrom] = useState(-1);  // where the orb's thread starts in the conversation (-1: no thread yet)
+  const threadAt = useRef(0);  // when the thread last changed
+  // the pill grows out of the deck (entering: its glass starts where the deck was) and melts back into the handle (leaving)
+  const [entering, setEntering] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const leaveTimer = useRef(0);
+  const hoverTimer = useRef(0);
+  const lastWidth = useRef(0);
+  const widthJumped = useRef(false);
+  // the deck opens the moment the pointer arrives and closes a moment after it leaves
+  const hover = useCallback((on: boolean) => {
+    window.clearTimeout(hoverTimer.current);
+    if (on) setHovered(true);
+    else hoverTimer.current = window.setTimeout(() => setHovered(false), HOVER_GRACE_MS);
+  }, []);
+  useEffect(() => () => { window.clearTimeout(hoverTimer.current); window.clearTimeout(leaveTimer.current); }, []);
+  useEffect(() => {
+    if (!entering) return;
+    const id = window.setTimeout(() => setEntering(false), 34);  // two frames at the deck's place, then the morph
+    return () => window.clearTimeout(id);
+  }, [entering]);
   const [nudged, setNudged] = useState(false);
   const pillRef = useRef<HTMLFormElement>(null);
   const previewRef = useRef<HTMLButtonElement>(null);
   const phaseRef = useRef<HTMLSpanElement>(null);
   const glassSent = useRef("");
+  const sizeSent = useRef("");
   const working = Boolean(assistant?.turn) || Boolean(assistant?.voice) || Boolean(streaming);
+  // the thread: begun by the first request while the orb floats, typed or said, and kept (Esc too) until it goes quiet
+  const startThread = useCallback((at: number) => {
+    if (threadFrom < 0 || Date.now() - threadAt.current > THREAD_FRESH_MS) setThreadFrom(at);
+    threadAt.current = Date.now();
+  }, [threadFrom]);
+  const seenLength = useRef(conversation.length);
+  useEffect(() => {  // a spoken request (or one from elsewhere) joins the thread too, the moment its words arrive
+    const before = seenLength.current;
+    seenLength.current = conversation.length;
+    const added = conversation.length - before;
+    // a request and its answer, not the history loading in
+    if (pet && added > 0 && added <= 3 && conversation.slice(before).some((m) => m.role === "user")) startThread(before);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversation.length]);
+  // the thread lingers a few seconds after its last line, then the orb tucks it away
+  const [threadSeen, setThreadSeen] = useState(0);
+  useEffect(() => {
+    if (threadFrom < 0) return;
+    threadAt.current = Date.now();
+    setThreadSeen(Date.now());
+    const id = window.setTimeout(() => tick((n) => n + 1), LINGER_MS + 50);
+    return () => window.clearTimeout(id);
+  }, [conversation.length, threadFrom]);
+  const thread = threadFrom < 0 ? [] : conversation.slice(threadFrom).filter((m) => m.role === "user" || m.role === "assistant");
+  // the orb answering without the pill open (a spoken request): the same thread shows under it, then tucks away
+  const talking = pet && !composing && (thread.length > 0 || Boolean(streaming?.text)) && (working || recent || Date.now() - threadSeen < LINGER_MS);
+  // idle for a long while: the orb plays on its own (never while working, in music mode, or with the deck or pill open)
+  const [idle, setIdle] = useState(false);
+  useEffect(() => {
+    setIdle(false);
+    if (!pet || working || music || composing || hovered) return;
+    const id = window.setTimeout(() => setIdle(true), IDLE_AFTER_MS);
+    return () => window.clearTimeout(id);
+  }, [pet, working, music, composing, hovered, lastActive, conversation.length]);
 
   // the panel follows the content: the chat, the choice, the expanded orb while active, the orb alone when idle
   // ("always"), hidden otherwise
@@ -153,12 +235,19 @@ export function OrbOverlay() {
     if (!visible) {
       post({ type: "hide" });
       shownAt.current = 0;
+      sizeSent.current = "";
       return;
     }
-    const width = chatting ? CHAT_WIDTH : pet && composing ? COMPOSE_W : pet ? PET_W : choosing ? CHOICE_WIDTH : active ? WIDTH : COLLAPSED;
-    const height = chatting ? CHAT_HEIGHT : pet && composing ? Math.ceil(box.current?.scrollHeight ?? PET_H) : pet ? PET_H
+    const width = chatting ? chatSize.w : pet && (composing || talking) ? COMPOSE_W : pet ? PET_W : choosing ? CHOICE_WIDTH : active ? WIDTH : COLLAPSED;
+    const height = chatting ? chatSize.h : pet && (composing || talking) ? Math.ceil(box.current?.scrollHeight ?? PET_H) : pet ? PET_H
       : active ? Math.max(COLLAPSED, Math.ceil(box.current?.scrollHeight ?? COLLAPSED)) : COLLAPSED;
-    post({ type: shownAt.current ? "size" : "show", width, height });
+    if (pet && lastWidth.current && width !== lastWidth.current) widthJumped.current = true;
+    lastWidth.current = width;
+    const sizeKey = `${width}x${height}:${pet}`;  // emptied on hide, so the next show is always sent
+    if (sizeKey !== sizeSent.current) {  // every streamed word renders the page; the window only moves when its size does
+      sizeSent.current = sizeKey;
+      post({ type: shownAt.current ? "size" : "show", width, height, ...(pet ? { anchor: "top-center" as const } : {}) });
+    }
     if (!shownAt.current) {
       shownAt.current = Date.now();
       const since = assistant?.voice === "listening" ? assistant.voice_since ?? 0 : 0;
@@ -178,19 +267,30 @@ export function OrbOverlay() {
   useLayoutEffect(() => {
     type Shape = { x: number; y: number; w: number; h: number; r: number; style?: "tinted" };
     if (glassChat) {
-      const key = `chat:${CHAT_WIDTH}x${CHAT_HEIGHT}`;
+      // closing: the glass draws in to a circle where the orb sits, then the orb takes its place
+      const orbSide = Math.round(PET_ORB * SPHERE * 0.62);
+      const shape = chatClosing
+        ? { x: Math.round(chatSize.w / 2 - orbSide / 2), y: Math.round(PET_ORB / 2 - orbSide / 2), w: orbSide, h: orbSide, r: orbSide / 2, style: "tinted" as const }
+        : { x: GLASS_INSET, y: GLASS_INSET, w: chatSize.w - 2 * GLASS_INSET, h: chatSize.h - 2 * GLASS_INSET, r: 22, style: "tinted" as const };
+      const key = `chat:${JSON.stringify(shape)}`;
       if (key !== glassSent.current) {
         glassSent.current = key;
-        post({ type: "glass", shapes: [{ x: 0, y: 0, w: CHAT_WIDTH, h: CHAT_HEIGHT, r: 24, style: "tinted" }] });
+        post({ type: "glass", shapes: [shape] });
       }
       return;
     }
     if (!pet) { glassSent.current = ""; return; }
     const shapes: Shape[] = [];
     const of = (el: HTMLElement | null, r: number) => { if (el) shapes.push({ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight, r }); };
-    if (composing) {
+    if (composing && entering) {  // the glass starts as the deck, where it was on screen
+      shapes.push({ x: (COMPOSE_W - DECK_OPEN.w) / 2, y: DECK_TOP, w: DECK_OPEN.w, h: DECK_OPEN.h, r: DECK_OPEN.r });
+    } else if (composing && leaving) {  // and ends as the handle
+      shapes.push({ x: (COMPOSE_W - DECK_SHUT.w) / 2, y: DECK_TOP + (DECK_OPEN.h - DECK_SHUT.h) / 2, w: DECK_SHUT.w, h: DECK_SHUT.h, r: DECK_SHUT.r });
+    } else if (composing) {
+      of(pillRef.current, 26);  // first: the deck's glass becomes the pill, the preview's fades in
       of(previewRef.current, 18);
-      of(pillRef.current, 26);
+    } else if (talking) {
+      of(previewRef.current, 18);
     } else if (deckOpen) {
       shapes.push({ x: (PET_W - DECK_OPEN.w) / 2, y: DECK_TOP, w: DECK_OPEN.w, h: DECK_OPEN.h, r: DECK_OPEN.r });
     } else if (working && phaseRef.current) {
@@ -200,9 +300,11 @@ export function OrbOverlay() {
       shapes.push({ x: (PET_W - DECK_SHUT.w) / 2, y: DECK_TOP + (DECK_OPEN.h - DECK_SHUT.h) / 2, w: DECK_SHUT.w, h: DECK_SHUT.h, r: DECK_SHUT.r });
     }
     const key = JSON.stringify(shapes);
+    const instant = widthJumped.current;  // the window just changed width: the glass moves with the page, not after it
+    widthJumped.current = false;
     if (key !== glassSent.current) {
       glassSent.current = key;
-      post({ type: "glass", shapes });
+      post({ type: "glass", shapes, ...(instant ? { instant: true } : {}) });
     }
   });
   // the chat takes the keyboard (the helper makes the panel key without activating itself) and gives it back on close
@@ -214,27 +316,52 @@ export function OrbOverlay() {
     if (assistant?.voice !== "listening" && engine) void app.toggleListening();
   }, [app, assistant?.voice, engine, bump]);
   const compose = useCallback(() => {  // the deck's Chat: a glass pill under the orb, not the whole chat
+    window.clearTimeout(leaveTimer.current);
+    window.clearTimeout(hoverTimer.current);
+    setLeaving(false);
+    setEntering(!reduced);
     setComposing(true);
     setHovered(false);
     post({ type: "chat", on: true });
     requestAnimationFrame(() => document.getElementById("pet-input")?.focus());
-  }, []);
+  }, [reduced]);
   const stopComposing = useCallback(() => {
-    setComposing(false);
-    setDraft("");
-    setAskedFrom(-1);
-  }, []);
+    const done = () => {
+      setLeaving(false);
+      setComposing(false);  // what you were typing, and the thread, are still there when you open it again
+    };
+    window.clearTimeout(leaveTimer.current);
+    if (reduced) { done(); return; }
+    setEntering(false);
+    setLeaving(true);
+    leaveTimer.current = window.setTimeout(done, LEAVE_MS);
+  }, [reduced]);
   const openChat = useCallback(() => {
+    window.clearTimeout(closeTimer.current);
+    setChatClosing(false);
+    if (!chatting) fromPet.current = wasPet.current;
     setComposing(false);
     setChatting(true);
     post({ type: "chat", on: true });  // already open: take the keyboard again
     document.getElementById("composer-input")?.focus();
-  }, []);
+  }, [chatting]);
   const closeChat = useCallback(() => {
-    setChatting(false);
-    setChoosingAt(0);
-    setDismissedSeq(seq);  // tucks away; anything new brings the orb back
-  }, [seq]);
+    const done = () => {
+      setChatClosing(false);
+      setChatting(false);
+      if (fromPet.current) {  // back to the floating orb it came from, not tucked away
+        setChoosingAt((at) => at || Date.now());
+        return;
+      }
+      setChoosingAt(0);
+      setDismissedSeq(seq);  // tucks away; anything new brings the orb back
+    };
+    window.clearTimeout(closeTimer.current);
+    if (reduced || !inHelper()) { done(); return; }
+    setChatClosing(true);
+    closeTimer.current = window.setTimeout(done, CLOSE_MS);
+  }, [seq, reduced]);
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
   const openApp = useCallback((route?: string) => {
     post(route && ROUTE.test(route) ? { type: "openApp", route } : { type: "openApp" });
   }, []);
@@ -266,8 +393,14 @@ export function OrbOverlay() {
         ? "XENIO Orb needs Screen & System Audio Recording (System Settings › Privacy & Security) to hear what the Mac plays." : message.error });
     } else if (message.type === "moved") {
       movers.current.forEach((handler) => handler(message.dx, message.dy));
+    } else if (message.type === "resized") {  // dragged by the corner grip; kept for next time
+      const next = clampChat(message.width, message.height);
+      setChatSize((was) => (was.w === next.w && was.h === next.h ? was : next));
+      if (message.done) {
+        try { localStorage.setItem(CHAT_SIZE_KEY, JSON.stringify(next)); } catch { /* no storage: this time only */ }
+      }
     } else if (message.type === "hover") {
-      setHovered(message.on);
+      hover(message.on);
     } else if (message.type === "closeChat") {
       if (composing) stopComposing();
       else closeChat();
@@ -278,7 +411,7 @@ export function OrbOverlay() {
       void app.api.saveLocation({ label: message.label, lat: message.lat, lon: message.lon, source: "device",
         accuracy_m: message.accuracy_m }).catch(() => {});
     }
-  }), [app, chatting, composing, openChat, closeChat, stopComposing, talk, summonMode]);
+  }), [app, chatting, composing, openChat, closeChat, stopComposing, talk, summonMode, hover]);
   useEffect(() => {
     if (summon.current && assistant?.voice === "listening") {
       void app.api.overlayMetric("summon_to_listening_ms", Date.now() - summon.current).catch(() => {});
@@ -315,7 +448,15 @@ export function OrbOverlay() {
   };
 
   if (chatting) {
-    return <QuickChat onClose={closeChat} onOpenApp={openApp} onDragStart={() => post({ type: "dragStart" })} />;
+    return (
+      <div className={`qc-frame ${glassChat ? "qc-frame--glass" : ""} ${chatClosing ? "qc-frame--closing" : ""}`}>
+        <QuickChat onClose={closeChat} onOpenApp={openApp} onDragStart={() => post({ type: "dragStart" })} />
+        {inHelper() && (
+          <span className="qc-grip" role="presentation" title="Drag to resize"
+            onPointerDown={(e) => { e.preventDefault(); post({ type: "resizeStart", minWidth: CHAT_MIN.w, minHeight: CHAT_MIN.h, maxWidth: CHAT_MAX.w, maxHeight: CHAT_MAX.h }); }} />
+        )}
+      </div>
+    );
   }
 
   const lastUser = [...conversation].reverse().find((m) => m.role === "user");
@@ -328,9 +469,9 @@ export function OrbOverlay() {
   const stoppable = Boolean(assistant?.turn) || assistant?.voice === "speaking";
 
   if (pet) {
-    const answers = conversation.slice(askedFrom < 0 ? conversation.length : askedFrom).filter((m) => m.role === "assistant");
-    const answer = streaming?.text || answers.at(-1)?.text || "";
-    const asked = askedFrom >= 0;
+    const lines = thread.slice(-THREAD_LINES);
+    const asked = lines.length > 0 || Boolean(streaming?.text);
+    const hint = listening ? "Listening…" : working ? orb.label : composing ? "Open the chat" : "Continue here";
     const send = () => {
       const text = draft.trim();
       if (!text) {
@@ -338,26 +479,31 @@ export function OrbOverlay() {
         window.setTimeout(() => setNudged(false), 320);
         return;
       }
-      setAskedFrom(conversation.length);
+      startThread(conversation.length);
       setDraft("");
       void app.send(text, "text", true);  // answered on screen: the pill does not speak
     };
+    const preview = (onClick: () => void, label: string) => (
+      <button type="button" className="pet__preview" ref={previewRef} onClick={onClick} aria-label={label}>
+        <span className={`pet__thread ${lines.length >= 3 || lines.reduce((n, m) => n + m.text.length, 0) > 220 ? "pet__thread--long" : ""}`}>
+          {lines.map((m) => <span key={m.id} className={`pet__line pet__line--${m.role}`}>{m.text}</span>)}
+          {streaming?.text ? <span className="pet__line pet__line--assistant">{streaming.text}</span>
+            : working && lines.at(-1)?.role !== "assistant" ? <span className="pet__line pet__line--assistant pet__line--wait">{workingLabel([], false)}…</span> : null}
+        </span>
+        <span className="pet__preview-hint">{hint}</span>
+      </button>
+    );
     return (
-      <div className={`pet ${composing ? "pet--compose" : ""} ${deckOpen ? "pet--open" : ""} ${inHelper() ? "pet--native" : ""}`} ref={box}
-        onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
+      <div className={`pet ${composing || talking ? "pet--compose" : ""} ${talking ? "pet--talking" : ""} ${entering ? "pet--entering" : ""} ${leaving ? "pet--leaving" : ""} ${deckOpen ? "pet--open" : ""} ${inHelper() ? "pet--native" : ""}`} ref={box}
+        onPointerEnter={() => hover(true)} onPointerLeave={() => hover(false)}>
         <div className="pet__orb" aria-hidden="false">
           <Orb state={orb.state} label={orb.label} size={PET_ORB} detail="low" reducedMotion={reduced} level={orb.level ?? (music ? musicSource : null)}
-            agents={orb.agents} moves={moves} beats={beats} vivid scale={SPHERE} />
+            agents={orb.agents} moves={moves} beats={beats} vivid scale={SPHERE} idle={idle} />
           <span className="pet__hit" onPointerDown={onDown} onPointerUp={onUp} title="Drag to move · click to talk" />
         </div>
         {composing ? (
           <>
-            {asked && (
-              <button type="button" className="pet__preview" ref={previewRef} onClick={openChat} aria-label="Open the whole chat">
-                <span className="pet__preview-text">{answer || `${workingLabel([], false)}…`}</span>
-                <span className="pet__preview-hint">{working ? orb.label : "Open the chat"}</span>
-              </button>
-            )}
+            {asked && preview(openChat, "Open the whole chat")}
             <form className={`pet__pill ${nudged ? "is-nudged" : ""}`} ref={pillRef} aria-label="Ask XENIO"
               onSubmit={(e) => { e.preventDefault(); send(); }}>
               <button type="button" className="pet__pill-btn" onClick={openChat} aria-label="Open the whole chat" title="The whole chat: files, history">
@@ -370,9 +516,9 @@ export function OrbOverlay() {
               </button>
             </form>
           </>
-        ) : (
+        ) : talking ? preview(compose, "Continue here") : (
           <div className="pet__deck" role="group" aria-label="Talk to XENIO" style={{ top: DECK_TOP }}
-            onFocus={() => setHovered(true)} onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setHovered(false); }}>
+            onFocus={() => hover(true)} onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) hover(false); }}>
             <span className="pet__handle" aria-hidden="true" />
             {working && !deckOpen && <span className="pet__phase" ref={phaseRef} aria-live="polite">{orb.label}</span>}
             <button type="button" className="pet__btn" onClick={compose} aria-label="Chat" title="Chat" tabIndex={deckOpen ? 0 : -1}>

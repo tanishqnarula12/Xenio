@@ -34,3 +34,33 @@ describe("carrying the orb", () => {
     expect(inside.swarm.active).toBe(false);
   });
 });
+
+describe("left alone a long while", () => {
+  type Idle = Internals & { flourish: { kind: string } | null; lastFlourish: string | null };
+  it("plays now and then on its own, a different little thing each time, and stops the moment something happens", () => {
+    const r = orb();
+    const inside = r as unknown as Idle;
+    for (let i = 0; i < 600; i++) inside.tick(0, 16);  // ten seconds, not idle: nothing
+    expect(inside.flourish).toBeNull();
+    r.setIdle(true);
+    const kinds: string[] = [];
+    for (let i = 0; i < 60 * 120; i++) {  // two idle minutes
+      inside.tick(0, 16);
+      const kind = inside.flourish?.kind;
+      if (kind && kinds.at(-1) !== kind) kinds.push(kind);
+    }
+    expect(kinds.length).toBeGreaterThanOrEqual(5);  // every 7-15 s
+    expect(kinds.every((k, i) => i === 0 || k !== kinds[i - 1])).toBe(true);  // never the same twice in a row
+    r.setIdle(false);
+    expect(inside.flourish).toBeNull();
+  });
+
+  it("does nothing on its own when you ask for less motion", () => {
+    const r = orb(true);
+    const inside = r as unknown as Idle;
+    r.setIdle(true);
+    for (let i = 0; i < 60 * 30; i++) inside.tick(0, 16);
+    expect(inside.flourish).toBeNull();
+    expect(inside.swarm.active).toBe(false);
+  });
+});
