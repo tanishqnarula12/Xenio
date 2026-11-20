@@ -18,8 +18,8 @@ for candidate in $(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX[0-9]*.s
 done
 [ -n "$sdk" ] || { echo "No macOS SDK matches swiftc $compiler; run: softwareupdate --install -a (or xcode-select --install)" >&2; exit 4; }
 swiftc -O -swift-version 5 -sdk "$sdk" -target "$(uname -m)-apple-macos13.0" \
-  "$here/main.swift" "$here/TripleSpace.swift" \
-  -framework Cocoa -framework WebKit -framework Carbon -framework CoreLocation \
+  "$here/main.swift" "$here/TripleSpace.swift" "$here/MusicTap.swift" \
+  -framework Cocoa -framework WebKit -framework Carbon -framework CoreLocation -framework ScreenCaptureKit -framework CoreMedia \
   -o "$out.tmp/Contents/MacOS/XenioOrb"
 # the app icon (Dock and Command-Tab while Mission Control is open), drawn from code: no image in the repository
 mkdir -p "$out.tmp/Contents/Resources"

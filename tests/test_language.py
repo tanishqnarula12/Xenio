@@ -128,6 +128,18 @@ async def test_a_misdetected_language_is_transcribed_again():
     assert seen[1]["language"] == "en"
 
 
+async def test_a_follow_up_drops_a_language_nobody_here_speaks():
+    # Measured: near-silence in an empty room was detected as Portuguese, forced into English and acted on.
+    transport, seen = mock_stt([("Os nomes dos arquivos", "pt"), ("File names are written like this.", "en")])
+    stt = OpenAICompatibleSTT(stt_settings(), transport=transport)
+    stt.strict_language = True
+    assert await stt.transcribe(b"RIFF") == "" and len(seen) == 1
+    transport, seen = mock_stt([("کروم کھولو", "urdu"), ("क्रोम खोलो", "hi")])  # a near neighbour is still kept
+    stt = OpenAICompatibleSTT(stt_settings(), transport=transport)
+    stt.strict_language = True
+    assert await stt.transcribe(b"RIFF") == "क्रोम खोलो"
+
+
 async def test_a_forced_language_is_still_honoured():
     transport, seen = mock_stt([("Open Chrome", "en")])
     await OpenAICompatibleSTT(stt_settings(language="en"), transport=transport).transcribe(b"RIFF")

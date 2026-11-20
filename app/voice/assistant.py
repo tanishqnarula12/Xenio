@@ -52,7 +52,9 @@ from app.voice.live import FillerBank, ReplyStream, SpeechQueue, narration_for
 from app.voice.local_stt import HybridSTT, create_local_stt, fix_names
 from app.voice.stt import STTError, STTProvider, create_stt
 from app.voice.tts import TTSError, TTSProvider, create_tts
-from app.voice.turns import EarlyTranscriber, classify_utterance, closing_reply
+from app.voice.turns import EarlyTranscriber, classify_utterance, closing_reply, implausible, too_many_words
+
+NOISY_ROOM = 900.0  # microphone level (RMS) above which the room counts as loud: no open microphone after a reply
 from app.voice.vad import create_vad
 from app.voice.wakeword import WakeWordDetector, WakeWordError, create_detectors
 
@@ -74,7 +76,15 @@ VOICE_CONTEXT = (
 def _echoes_prompt(text: str, prompt: str) -> bool:
     """Whisper sometimes returns (part of) its vocabulary prompt for audio without words."""
     words = re.findall(r"\w+", text.lower())
-    return len(words) >= 3 and " ".join(words) in " ".join(re.findall(r"\w+", prompt.lower()))
+    if len(words) < 3:
+        return False
+    hint = " ".join(re.findall(r"\w+", prompt.lower()))
+    if " ".join(words) in hint:
+        return True
+    # Part of it, ending in a word of its own (measured: "File names are written like this."): its first four words
+    # come straight from the prompt and nearly all the rest is in it too.
+    known = set(hint.split())
+    return len(words) >= 4 and " ".join(words[:4]) in hint and sum(w in known for w in words) >= 0.75 * len(words)
 
 
 class State(enum.Enum):
@@ -121,6 +131,8 @@ class VoiceAssistant:
         # Level tracking while idle: room noise floor, and the last ~1.6 s of frame levels so the
         # speech threshold can be calibrated from how loudly the wake phrase was just said.
         self._noise_floor = 30.0
+        self._last_noise = 0.0  # the room's level when the last recording started
+        self._last_speech_s = 0.0  # seconds of speech the voice detector heard in the last recording
         self._recent_levels: collections.deque[float] = collections.deque(maxlen=20)
         self._idle_frames: collections.deque[np.ndarray] = collections.deque(maxlen=6)
         self._vocabulary: collections.deque[str] = collections.deque(maxlen=12)  # recent file/folder names
@@ -334,6 +346,8 @@ class VoiceAssistant:
         self._done_turn = turn if audio is not None else None
         if turn is not None and audio is None:
             turn[1].cancel()
+        self._last_noise = float(recorder.stats().get("noise") or 0)
+        self._last_speech_s = float(recorder.stats().get("speech_s") or 0)
         event(log, "Recording finished", **recorder.stats(),
               **({"early_requests": turn[1].requests, "ended_early": turn[1].ended_early} if turn else {}))
         return audio
@@ -454,7 +468,29 @@ class VoiceAssistant:
             self.set_state(State.SPEAKING)
             await self.say(MSG_STT_FAILED)
             return True
+        seconds = len(audio) / SAMPLE_RATE
+        if follow_up and self._last_speech_s > 0 and too_many_words(heard, self._last_speech_s):
+            # Without the wake word a recording has to sound like the words: measured, 0.72 s of quiet sound
+            # came back as "I want you to get out of here." with nobody in the room.
+            event(log, "Ignored words that were not said", chars=len(heard), speech_s=self._last_speech_s, follow_up=True)
+            return True
+        if implausible(heard, seconds):  # made up from music or a TV, not said: it is never acted on
+            event(log, "Ignored words that could not have been said", chars=len(heard), seconds=round(seconds, 2), follow_up=follow_up)
+            if not follow_up:
+                self.set_state(State.SPEAKING)
+                await self._say_quick(MSG_STT_FAILED)
+            return True
         return await self.handle_heard(heard, follow_up=follow_up)
+
+    def _strict_language(self, on: bool) -> None:
+        """Follow-ups drop a transcript in a language nobody here speaks (see ``OpenAICompatibleSTT.strict_language``)."""
+        if hasattr(self.stt, "strict_language"):
+            self.stt.strict_language = on
+
+    def room_is_loud(self) -> bool:
+        """Music, a TV or talk in the room: the microphone then stays shut until the wake word, so XENIO does not answer
+        what is playing. Measured: a quiet room sits near 260, a room with music near 1,600 to 2,000."""
+        return max(self._noise_floor, self._last_noise) > NOISY_ROOM
 
     async def handle_heard(self, heard: str, *, follow_up: bool = False) -> bool:
         """One exchange from the words heard (also a request said while XENIO was asking a yes/no question)."""
@@ -545,7 +581,7 @@ class VoiceAssistant:
         async def acknowledge() -> None:
             await asyncio.sleep(v.ack_delay_seconds)
             if out.queued == 0 and self.fillers is not None:
-                filler(self.fillers.acknowledgment())
+                filler(self.fillers.acknowledgment(text))  # fitting what was asked
 
         ack = asyncio.ensure_future(acknowledge()) if v.acknowledge else None
         try:
@@ -678,6 +714,7 @@ class VoiceAssistant:
                     # Conversation mode: after a reply (or an interruption) keep listening, no wake word.
                     self.set_state(State.RECORDING)
                     self.out("(listening...)")
+                    self._strict_language(follow_up)
                     recorder = interrupt_recorder or self._begin_recording(start_timeout=follow_up_s)
                     audio = await self._finish_recording(recorder)
                     if audio is None:
@@ -687,6 +724,7 @@ class VoiceAssistant:
                 else:
                     self.set_state(State.IDLE)
                     await self.announce_notifications()  # what scheduled checks found while we were busy
+                    self._strict_language(False)
                     recorder = await self._wait_for_trigger()
                     if recorder is None:
                         break
@@ -702,7 +740,11 @@ class VoiceAssistant:
                     held, self.held_request = self.held_request, None
                     self.interrupted = False
                     keep_talking = await self.handle_heard(held, follow_up=True)
-                in_conversation = follow_up_s > 0 and keep_talking
+                loud = keep_talking and follow_up_s > 0 and self.room_is_loud()
+                if loud:
+                    event(log, "No follow-up listening: the room is loud", noise=int(max(self._noise_floor, self._last_noise)))
+                    self.out(f"(The room is loud: say \"{self.settings.voice.wake_phrase}\" when you need me.)")
+                in_conversation = follow_up_s > 0 and keep_talking and not loud
                 if not keep_talking and follow_up_s > 0:
                     self.out(f"(Say \"{self.settings.voice.wake_phrase}\" when you need me.)")
             return 0

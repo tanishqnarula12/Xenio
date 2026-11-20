@@ -78,6 +78,24 @@ def sounds_unfinished(text: str, name: str = "Xenio") -> bool:
     return last in _TRAILING_WORDS
 
 
+def implausible(text: str, seconds: float) -> bool:
+    """Words that cannot have been said in a recording this long, or one phrase over and over: what speech recognition
+    makes up from music or a TV. A real night it turned 0.88 s of sound into 442 characters, and XENIO acted on them.
+    People say up to about 20 letters a second; this allows 22, plus a margin for a short recording."""
+    letters = sum(ch.isalnum() for ch in text)
+    if letters > 28 + 22 * max(0.0, seconds):
+        return True
+    tokens = _words(text).split()
+    return len(tokens) >= 9 and len(set(tokens)) < 0.35 * len(tokens)
+
+
+def too_many_words(text: str, speech_s: float) -> bool:
+    """More words than the voice detector heard speech for. People say about 3 words a second, 5 when fast; this
+    allows 4.5 plus two. Used only for follow-ups (no wake word): measured, 0.72 s of quiet sound in an empty room came
+    back as "I want you to get out of here." (7 words) and XENIO answered it."""
+    return len(_words(text).split()) > 2 + 4.5 * max(0.0, speech_s)
+
+
 def classify_utterance(text: str, name: str = "Xenio", *, after_question: bool = False) -> str:
     """"noise" (ignore it), "closer" (end the conversation) or "request" (send it to Hermes).
     ``after_question``: XENIO's last reply asked something, so "okay", "sure" or "no" is an answer."""

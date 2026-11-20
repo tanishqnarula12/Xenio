@@ -79,6 +79,10 @@ class OpenAICompatibleSTT(STTProvider):
         self._settings = settings
         self.hedge_after = hedge_after  # seconds; 0 = never send a second request
         self.last_language = ""  # language of the last transcript (detected or forced)
+        # Set for a follow-up (heard without the wake word): a language with no near neighbour among the expected ones
+        # is then dropped, not forced into one. Measured: near-silence came back as Portuguese, and in English as
+        # words nobody said, which XENIO acted on.
+        self.strict_language = False
         self._client = new_client(settings.timeout, transport)
         self._warmer = ConnectionWarmer(self._client, settings.api_url)
 
@@ -158,7 +162,12 @@ class OpenAICompatibleSTT(STTProvider):
         event(log, "STT request finished", ms=int((time.monotonic() - started) * 1000), chars=len(text),
               **({"language": detected} if detected else {}))
         if detect and detected and detected not in s.languages:
-            retry = _NEAREST.get(detected) if _NEAREST.get(detected) in s.languages else s.languages[0]
+            near = _NEAREST.get(detected) in s.languages
+            if self.strict_language and not near:
+                event(log, "STT heard another language in a follow-up; ignored", detected=detected)
+                self.last_language = detected
+                return ""
+            retry = _NEAREST.get(detected) if near else s.languages[0]
             event(log, "STT language outside the expected ones; transcribing again", detected=detected, retry=retry)
             return await self._transcribe_once(audio_data, filename, content_type, prompt, language=retry)
         self.last_language = detected or forced or ""

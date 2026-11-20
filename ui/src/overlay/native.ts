@@ -7,7 +7,12 @@ export type NativeMessage =
   | { type: "summon"; via: string; at: number; mode?: "chat" | "voice" }  // mode: XENIO asked for one way to talk
   | { type: "closeChat" }
   | { type: "status"; shortcut: string; shortcut_status: string; accessibility: boolean; screens: number; location?: string }
-  | { type: "location"; lat: number; lon: number; accuracy_m: number; label: string };
+  | { type: "location"; lat: number; lon: number; accuracy_m: number; label: string }
+  | { type: "moved"; dx: number; dy: number }  // the panel is being dragged: how far since the last move (page pixels, y down)
+  | { type: "hover"; on: boolean }
+  | { type: "app"; away: boolean }
+  | { type: "music"; on: boolean; error?: string }  // music mode started or stopped (and why it could not)
+  | { type: "musicLevel"; level: number; bass: number; beat: boolean };  // what the Mac is playing: loudness, bass, a beat  // XENIO's window is minimized, closed or hidden (away), or back  // the pointer is over the panel (the page cannot always tell: the helper is never active)
 
 type Outgoing =
   | { type: "ready" }
@@ -17,7 +22,10 @@ type Outgoing =
   | { type: "openApp"; route?: string }  // Mission Control: XENIO's full page in a real window (at a page: "/orchestration/ID")
   | { type: "dragStart" }
   | { type: "config"; shortcut: string; interval_ms: number; location: boolean }
-  | { type: "open"; url: string };
+  | { type: "open"; url: string }
+  | { type: "surface"; glass: boolean }
+  | { type: "music"; on: boolean }  // music mode: the orb moves with what the Mac is playing  // glass: no card, the orb floats; otherwise the dark card the chat sits on
+  | { type: "glass"; shapes: { x: number; y: number; w: number; h: number; r: number; style?: "regular" | "clear" | "tinted" }[] };  // real Liquid Glass behind these
 
 interface WebkitBridge {
   messageHandlers?: { xenio?: { postMessage: (message: Outgoing) => void } };

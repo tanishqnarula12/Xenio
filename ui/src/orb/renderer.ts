@@ -126,6 +126,18 @@ export interface OrbOptions {
   particles: number;
   reducedMotion: boolean;
   interactive?: boolean;
+  /** floating over the desktop, where anything may be behind it: richer, brighter, with a soft shadow of its own */
+  vivid?: boolean;
+  /** the sphere's size within its drawing (1 fills it): smaller leaves room for particles to stream out when it is carried */
+  scale?: number;
+}
+
+/** A colour turned round the colour wheel by `degrees`, keeping its lightness. */
+function turnHue([r, g, b]: RGB, degrees: number): RGB {
+  const a = (degrees * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a), k = 1 / 3, sq = Math.sqrt(k);
+  const m = (x: number) => Math.max(0, Math.min(255, Math.round(x)));
+  const mix = (c: number, x: number, y: number) => c * (cos + (1 - cos) * k) + x * (k * (1 - cos) - sq * sin) + y * (k * (1 - cos) + sq * sin);
+  return [m(mix(r, g, b)), m(mix(g, b, r)), m(mix(b, r, g))] as RGB;
 }
 
 const POINTER_RADIUS = 150; // in the orb's 720-unit drawing space
@@ -150,6 +162,12 @@ export class OrbRenderer {
   private client: { x: number; y: number } | null = null;
   private pointer = { x: 360, y: 360, power: 0, yaw: 0, pitch: 0 };
   private ripples: number[] = [];
+  // dragging the orb across the screen: the particles trail the movement and spring back, like something with a body
+  private moved = { x: 0, y: 0 };          // movement since the last frame, in drawing units
+  private motion = { vx: 0, vy: 0 };       // how fast the orb is being carried, smoothed (drawing units a second)
+  // each particle on its own: carried, it hangs in space for a moment (by its own weight), then swirls home on its own spring
+  private swarm = { ox: new Float32Array(0), oy: new Float32Array(0), vx: new Float32Array(0), vy: new Float32Array(0), active: false };
+  private kick = 0; // a beat, fading fast
   private listening = false;
   private readonly onPointerMove = (e: PointerEvent) => { this.client = { x: e.clientX, y: e.clientY }; };
   private readonly onPointerOut = () => { this.client = null; };
@@ -192,6 +210,56 @@ export class OrbRenderer {
     window[method]("blur", this.onPointerOut);
     document.documentElement[method]("pointerleave", this.onPointerOut);
     if (!want) this.client = null;
+  }
+
+  /** The orb's window was carried this far (CSS pixels, y down): its particles lag behind and catch up. */
+  move(dx: number, dy: number): void {
+    if (this.options.reducedMotion) return;
+    const units = 720 / Math.max(1, this.dotsCanvas.clientWidth || 720);
+    this.moved.x += dx * units;
+    this.moved.y += dy * units;
+  }
+
+  /** A ring of light runs out through the orb (a beat in music mode). */
+  pulse(): void {
+    if (this.options.reducedMotion) return;
+    this.ripples.push(this.time);
+    this.kick = 1;
+  }
+
+  /** Carried across the screen: each particle is left behind by its own weight and swirls back on its own spring, so
+   *  the orb streams like stardust and gathers again, never stretching as one shape. */
+  private stepSwarm(dt: number): void {
+    const n = this.options.particles;
+    const sw = this.swarm;
+    if (sw.ox.length !== n) this.swarm = { ox: new Float32Array(n), oy: new Float32Array(n), vx: new Float32Array(n), vy: new Float32Array(n), active: false };
+    const k = Math.min(1, dt * 18);
+    this.motion.vx += (this.moved.x / dt - this.motion.vx) * k;
+    this.motion.vy += (this.moved.y / dt - this.motion.vy) * k;
+    const mx = this.moved.x, my = this.moved.y;
+    this.moved.x = this.moved.y = 0;
+    const s = this.swarm;
+    if (!s.active && mx === 0 && my === 0) return;
+    const seed = seeds(n);
+    let busy = false;
+    for (let i = 0; i < n; i++) {
+      const a = seed[i]!.a;
+      const heavy = ((a * 0.1591549) % 1 + 1) % 1;            // 0 light, 1 heavy
+      const curl = ((((a * 0.0791) % 1) + 1) % 1 - 0.5) * 5;   // which way, and how much, it swirls on the way home
+      s.ox[i]! -= mx * (0.45 + 0.55 * (1 - heavy));             // the light ones hang back the most
+      s.oy[i]! -= my * (0.45 + 0.55 * (1 - heavy));
+      const w = (2 * Math.PI) / (0.28 + 1.1 * (1 - heavy)), z = 0.58;
+      const vx = s.vx[i]!, vy = s.vy[i]!;
+      const ax = -w * w * s.ox[i]! - 2 * z * w * vx - curl * vy;
+      const ay = -w * w * s.oy[i]! - 2 * z * w * vy + curl * vx;
+      s.vx[i] = vx + ax * dt;
+      s.vy[i] = vy + ay * dt;
+      s.ox[i] = Math.max(-340, Math.min(340, s.ox[i]! + s.vx[i]! * dt));
+      s.oy[i] = Math.max(-340, Math.min(340, s.oy[i]! + s.vy[i]! * dt));
+      if (!busy && (Math.abs(s.ox[i]!) > 0.2 || Math.abs(s.oy[i]!) > 0.2 || Math.abs(s.vx[i]!) > 0.5)) busy = true;
+    }
+    if (!busy) { s.ox.fill(0); s.oy.fill(0); s.vx.fill(0); s.vy.fill(0); }
+    s.active = busy;
   }
 
   /** Real audio only: the microphone while listening, the TTS playback while speaking. */
@@ -293,6 +361,8 @@ export class OrbRenderer {
     const prev = this.params.env;
     this.params.env += (raw - this.params.env) * (raw > this.params.env ? 0.55 : 0.18);
     this.params.level = this.params.env;
+    this.kick *= Math.exp(-dt / 0.16);
+    if (dt > 0) this.stepSwarm(dt);
     // a syllable is a fast rise in the playback envelope; each sends a lit ring up the sphere while speaking
     if (this.state === "SPEAKING" && this.params.env - prev > 0.06 && this.time - (this.onsets.at(-1) ?? -1) > 0.12) {
       this.onsets.push(this.time);
@@ -313,7 +383,13 @@ export class OrbRenderer {
     const t = this.options.reducedMotion ? 0 : this.time;
     const env = this.options.reducedMotion ? 0 : P.env;
     const unit = size / 720;
-    const rgb = P.color.map((c) => Math.round(c)) as RGB;
+    const vivid = Boolean(this.options.vivid);
+    const base = P.color.map((c) => Math.round(c)) as RGB;
+    const mean = (base[0] + base[1] + base[2]) / 3;
+    const rich = (vivid ? base.map((c) => Math.max(0, Math.min(255, Math.round(c + (c - mean) * 0.75)))) : base) as RGB; // richer colour over a bright wallpaper
+    // floating, its colour drifts slowly round its own hue, and further with sound: alive, not a light bulb
+    const rgb = vivid && !this.options.reducedMotion ? turnHue(rich, 16 * Math.sin(this.time * 0.21) + 9 * Math.sin(this.time * 0.57) + 55 * P.env + 30 * this.kick) : rich;
+    const scale = this.options.scale ?? 1;
 
     const ptr = this.pointer;
     const live = this.options.reducedMotion ? 0 : 1;
@@ -321,10 +397,19 @@ export class OrbRenderer {
       const g = this.halo;
       g.setTransform(unit, 0, 0, unit, 0, 0);
       g.clearRect(0, 0, 720, 720);
+      if (vivid) { // a soft shadow under the light, not a card: it gives the orb contrast over anything behind it
+        const shade = g.createRadialGradient(360, 370, 40 * scale, 360, 370, 300 * scale);
+        shade.addColorStop(0, "rgba(8,10,18,0.42)");
+        shade.addColorStop(0.45, "rgba(8,10,18,0.24)");
+        shade.addColorStop(1, "rgba(8,10,18,0)");
+        g.fillStyle = shade;
+        g.fillRect(0, 0, 720, 720);
+      }
       // a living glow: brighter than the particles alone, breathing slowly, lifting with the voice and the pointer
-      const glow = P.glow * 1.3 * (1 + 0.5 * env + 0.15 * ptr.power * live) * (1 + 0.08 * Math.sin(t * 1.25) * live);
+      const glow = P.glow * (vivid ? 1.9 : 1.3) * (1 + (vivid ? 1.1 : 0.5) * env + (vivid ? 0.6 : 0) * this.kick + 0.15 * ptr.power * live) * (1 + 0.08 * Math.sin(t * 1.25) * live);
       const core = rgb.map((c) => Math.round(c + (255 - c) * 0.55)).join(",");
-      const halo = g.createRadialGradient(360, 360, 6, 360, 360, 330 + 30 * env);
+      const hx = 360, hy = 360;
+      const halo = g.createRadialGradient(hx, hy, 6, hx, hy, Math.min(352, (330 + 30 * env + 60 * this.kick * live) * scale)); // never to the canvas's square edge
       halo.addColorStop(0, `rgba(${core},${Math.min(1, glow * 1.6)})`);
       halo.addColorStop(0.16, `rgba(${rgb.join(",")},${Math.min(1, glow * 1.2)})`);
       halo.addColorStop(0.42, `rgba(${rgb.join(",")},${glow * 0.6})`);
@@ -352,6 +437,8 @@ export class OrbRenderer {
     const cy = Math.cos(ptr.yaw * live), sy = Math.sin(ptr.yaw * live), cp = Math.cos(ptr.pitch * live), sp = Math.sin(ptr.pitch * live);
     const turned = Math.abs(ptr.yaw) + Math.abs(ptr.pitch) > 0.002 && live > 0;
     const waves = live ? this.ripples.map((r) => { const age = this.time - r; return { r: age * 430, g: (1 - age / RIPPLE_SECONDS) ** 2 }; }) : [];
+    const swarm = live > 0 && this.swarm.active ? this.swarm : null;
+    const pump = vivid && live ? 1 + 0.22 * env + 0.12 * this.kick : 1; // sound swells it, a beat kicks it
 
     for (let i = 0; i < count; i++) {
       const p = seed[i]!;
@@ -416,7 +503,7 @@ export class OrbRenderer {
         vz = z1 * cp - vy * sp; vx = x1; vy = y1;
       }
       const depth = (vz + 240) / 480, persp = 850 / (850 - vz);
-      let sx = 360 + vx * persp, sy2 = 360 + vy * persp;
+      let sx = 360 + vx * persp * scale * pump, sy2 = 360 + vy * persp * scale * pump;
       if (touch > 0.01) { // particles part around the pointer and light up near it
         const dx = sx - ptr.x, dy = sy2 - ptr.y, d = Math.hypot(dx, dy) || 1;
         if (d < POINTER_RADIUS) {
@@ -427,10 +514,17 @@ export class OrbRenderer {
       for (const wave of waves) { // a click: a ring of light running out through the orb
         const dx = sx - 360, dy = sy2 - 360, d = Math.hypot(dx, dy) || 1, k = (d - wave.r) / 38;
         const g = Math.exp(-k * k) * wave.g;
-        sx += (dx / d) * g * 16; sy2 += (dy / d) * g * 16; lit += g * 0.9;
+        const push = vivid ? 30 : 16; // a beat ring is felt, not just seen
+        sx += (dx / d) * g * push; sy2 += (dy / d) * g * push; lit += g * (vivid ? 1.3 : 0.9);
       }
-      const alpha = (0.34 + 0.86 * depth) * P.alpha + 0.3 * env * (w3 + w0 * (this.state === "LISTENING" ? 1 : 0));
-      const r = (0.95 + depth * 1.45) * (0.75 + 0.25 * Math.sin(p.a + t * 1.6)) * fine * (1 + 0.5 * Math.min(1, lit));
+      if (swarm) { // carried: this particle where its own weight and spring have it, glowing as it streams
+        const ox = swarm.ox[i]!, oy = swarm.oy[i]!;
+        sx += ox; sy2 += oy;
+        lit += Math.min(1, Math.hypot(ox, oy) / 110) * 0.7;
+      }
+      if (vivid && live) lit += Math.max(0, Math.sin(p.a * 13.7 + t * 2.3)) ** 28 * 1.3; // a few particles catch the light now and then: it is alive
+      const alpha = (vivid ? 1.6 : 1) * (0.34 + 0.86 * depth) * P.alpha + 0.3 * env * (w3 + w0 * (this.state === "LISTENING" ? 1 : 0));
+      const r = (vivid ? 1.3 : 1) * (0.95 + depth * 1.45) * (0.75 + 0.25 * Math.sin(p.a + t * 1.6)) * fine * (1 + 0.5 * Math.min(1, lit));
       const o = i * 5;
       buf[o] = sx * unit;
       buf[o + 1] = sy2 * unit;

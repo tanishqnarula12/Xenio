@@ -30,6 +30,23 @@ private let postedMark: Int64 = 0x58454E49  // "XENI": events this helper re-pos
 private let openWindowNotice = Notification.Name("local.xenio.orb.open-window")  // carries nothing: all it can do is show the window
 private let usualPort = 8765  // XENIO's default: the Dock has no way to say otherwise
 
+/// The panel's content: top-down like the page (so glass shapes land where the page draws them), and it says when the
+/// pointer is over it, even though XENIO Orb is never the active app (the deck under the orb shows on hover).
+final class SurfaceView: NSView {
+    var onHover: ((Bool) -> Void)?
+    private var area: NSTrackingArea?
+    override var isFlipped: Bool { true }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let made = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(made)
+        area = made
+    }
+    override func mouseEntered(with event: NSEvent) { onHover?(true) }
+    override func mouseExited(with event: NSEvent) { onHover?(false) }
+}
+
 final class OrbPanel: NSPanel {
     /// Only while the quick chat is open: then it takes the keyboard like Spotlight does, without activating XENIO Orb
     /// (the user's app stays the active app). Otherwise the orb never takes the keyboard from the user's app.
@@ -84,6 +101,9 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
     var size = NSSize(width: 96, height: 96)
     var dragMonitor: Any?
     var dragStart: (mouse: NSPoint, origin: NSPoint)?
+    var dragLast: NSPoint?
+    var glassViews: [NSView] = []  // Liquid Glass behind the page's deck, where the page asks for it
+    var musicTap: AnyObject?  // music mode: the orb moves with what the Mac is playing
 
     // shortcut
     var shortcut = "triple_space"
@@ -148,7 +168,8 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         panel.delegate = self
         panel.onCloseKey = { [weak self] in self?.send(["type": "closeChat"]) }
 
-        let content = NSView(frame: NSRect(origin: .zero, size: size))
+        let content = SurfaceView(frame: NSRect(origin: .zero, size: size))
+        content.onHover = { [weak self] on in self?.send(["type": "hover", "on": on]) }
         content.wantsLayer = true
         content.layer?.cornerRadius = 24
         content.layer?.masksToBounds = true
@@ -175,6 +196,7 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         switch type {
         case "ready":
             sendStatus()
+            sendAway()
         case "show":
             wantPanel = true
             resize(to: dimension(body), show: !appFocused || panel.keyable)
@@ -189,6 +211,12 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
             openMissionControl(route: body["route"] as? String)
         case "dragStart":
             beginDrag()
+        case "surface":
+            setSurface(glass: (body["glass"] as? Bool) ?? false)
+        case "glass":
+            setGlass((body["shapes"] as? [[String: Any]]) ?? [])
+        case "music":
+            setMusic((body["on"] as? Bool) ?? false)
         case "config":
             if let s = body["shortcut"] as? String, s != shortcut { applyShortcut(s) }
             if let ms = body["interval_ms"] as? Double {
@@ -300,6 +328,101 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         }
     }
 
+    /// The orb alone, floating (glass): no card behind it, only the orb and the Liquid Glass the page asks for.
+    /// Otherwise the dark card the chat and the caption sit on.
+    func setSurface(glass: Bool) {
+        guard let content = panel.contentView else { return }
+        content.layer?.backgroundColor = glass ? NSColor.clear.cgColor : graphite.cgColor
+        content.layer?.cornerRadius = glass ? 0 : 24
+        web.setValue(!glass, forKey: "drawsBackground")
+        web.underPageBackgroundColor = glass ? .clear : graphite
+        panel.hasShadow = !glass  // the glass casts its own
+        if !glass { setGlass([]) }
+    }
+
+    /// Real Liquid Glass (macOS 26 and later; the frosted material before that) behind the page, at the shapes it gives:
+    /// [{x, y, w, h, r, style: "regular" | "clear"}] in the page's pixels. New shapes fade in where they are, moved ones
+    /// glide, and ones no longer asked for fade out.
+    func setGlass(_ shapes: [[String: Any]]) {
+        guard let content = panel.contentView else { return }
+        func number(_ value: Any?) -> CGFloat { CGFloat((value as? NSNumber)?.doubleValue ?? 0) }
+        while glassViews.count < shapes.count {
+            let view = makeGlass()
+            view.alphaValue = 0
+            content.addSubview(view, positioned: .below, relativeTo: web)
+            glassViews.append(view)
+        }
+        for (index, view) in glassViews.enumerated() {
+            guard index < shapes.count else {
+                NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.2; view.animator().alphaValue = 0 }
+                continue
+            }
+            let shape = shapes[index]
+            let rect = NSRect(x: number(shape["x"]), y: number(shape["y"]), width: number(shape["w"]), height: number(shape["h"]))
+            shapeGlass(view, radius: number(shape["r"]), style: (shape["style"] as? String) ?? "regular")
+            if view.alphaValue < 0.01 { view.frame = rect }  // appears where it is, rather than flying in
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.32
+                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)  // quick out, soft landing
+                ctx.allowsImplicitAnimation = true
+                view.animator().frame = rect
+                view.animator().alphaValue = 1
+            }
+        }
+    }
+
+    func setMusic(_ on: Bool) {
+        guard #available(macOS 13.0, *) else {
+            send(["type": "music", "on": false, "error": "music mode needs macOS 13 or later"])
+            return
+        }
+        (musicTap as? MusicTap)?.stop()
+        musicTap = nil
+        guard on else {
+            send(["type": "music", "on": false])
+            return
+        }
+        let tap = MusicTap()
+        tap.onLevel = { [weak self] level, bass, beat in self?.send(["type": "musicLevel", "level": level, "bass": bass, "beat": beat]) }
+        tap.onStop = { [weak self] why in
+            self?.musicTap = nil
+            self?.send(["type": "music", "on": false, "error": why])
+        }
+        musicTap = tap
+        tap.start { [weak self] error in
+            if let error {
+                self?.musicTap = nil
+                self?.send(["type": "music", "on": false, "error": error])
+            } else {
+                self?.send(["type": "music", "on": true])
+            }
+        }
+    }
+
+    func makeGlass() -> NSView {
+        if #available(macOS 26.0, *) {
+            return NSGlassEffectView(frame: .zero)
+        }
+        let frosted = NSVisualEffectView(frame: .zero)
+        frosted.material = .hudWindow
+        frosted.blendingMode = .behindWindow
+        frosted.state = .active
+        frosted.wantsLayer = true
+        return frosted
+    }
+
+    /// regular, clear, or tinted: a dark tint so text over the glass (the whole chat) reads on any wallpaper
+    func shapeGlass(_ view: NSView, radius: CGFloat, style: String) {
+        if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
+            glass.cornerRadius = radius
+            glass.style = style == "clear" ? .clear : .regular
+            glass.tintColor = style == "tinted" ? NSColor(calibratedRed: 0.03, green: 0.035, blue: 0.05, alpha: 0.62) : nil
+            return
+        }
+        view.layer?.cornerRadius = radius
+        view.layer?.masksToBounds = true
+    }
+
     func beginDrag() {
         dragStart = (NSEvent.mouseLocation, panel.frame.origin)
         if dragMonitor != nil { return }
@@ -308,12 +431,16 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
             let now = NSEvent.mouseLocation
             if event.type == .leftMouseDragged {
                 self.panel.setFrameOrigin(NSPoint(x: start.origin.x + now.x - start.mouse.x, y: start.origin.y + now.y - start.mouse.y))
+                let last = self.dragLast ?? start.mouse
+                self.dragLast = now
+                self.send(["type": "moved", "dx": now.x - last.x, "dy": last.y - now.y])  // the page's y runs down: the orb's particles trail the move
             } else {
                 self.panel.setFrame(self.clamp(self.panel.frame), display: true)
                 UserDefaults.standard.set([self.panel.frame.origin.x, self.panel.frame.origin.y], forKey: "orbOrigin")
                 if let m = self.dragMonitor { NSEvent.removeMonitor(m) }
                 self.dragMonitor = nil
                 self.dragStart = nil
+                self.dragLast = nil
             }
             return event
         }
@@ -423,12 +550,34 @@ final class OrbApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptM
         NSApp.activate(ignoringOtherApps: true)
         appWindow?.makeKeyAndOrderFront(nil)
         appWindow?.orderFrontRegardless()
+        DispatchQueue.main.async { [weak self] in self?.sendAway() }
     }
+
+    /// Whether XENIO's window is out of sight (closed, minimized, or XENIO hidden): then the orb stays on screen, in its
+    /// current phase, until the person hides it.
+    var appAway: Bool {
+        guard let window = appWindow else { return true }
+        return !window.isVisible || window.isMiniaturized || NSApp.isHidden
+    }
+
+    func sendAway() { send(["type": "app", "away": appAway]) }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        if (notification.object as? NSWindow) === appWindow { sendAway() }
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        if (notification.object as? NSWindow) === appWindow { sendAway() }
+    }
+
+    func applicationDidHide(_ notification: Notification) { sendAway() }
+    func applicationDidUnhide(_ notification: Notification) { sendAway() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === appWindow else { return false }  // the orb's panel is never closed, only hidden
         sender.orderOut(nil)  // kept, not destroyed: opening it again is instant
         NSApp.setActivationPolicy(.accessory)
+        DispatchQueue.main.async { [weak self] in self?.sendAway() }
         return false
     }
 

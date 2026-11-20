@@ -63,26 +63,45 @@ describe("the floating orb", () => {
     expect(api.overlayMetric).toHaveBeenCalledWith("summon_to_orb_ms", expect.any(Number));
   });
 
-  it("asks Chat or Voice when summoned: Chat opens the quick chat right there, and typed answers stay quiet", async () => {
+  it("summoned, Chat opens a glass pill under the orb; the answer previews there, and the preview opens the whole chat", async () => {
     const api = new FakeApi();
     api.snap = engineSnap();
     await renderOrb(api);
     act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
-    const chat = await screen.findByRole("button", { name: "Chat" });
-    await waitFor(() => expect(last("show")).toMatchObject({ width: 330 }));
+    await waitFor(() => expect(last("show")).toMatchObject({ width: 232, height: 222 }));  // the orb on its own
     expect(api.voiceListen).not.toHaveBeenCalled();
-    await userEvent.click(chat);
-    const box = await screen.findByRole("textbox", { name: "Message XENIO" });
-    await waitFor(() => expect(box).toHaveFocus());
+    await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
+    const pill = await screen.findByRole("textbox", { name: "Ask XENIO" });
+    await waitFor(() => expect(pill).toHaveFocus());
     expect(last("chat")).toEqual({ type: "chat", on: true });  // the panel takes the keyboard
-    expect(last("size")).toMatchObject({ width: 420, height: 580 });
+    expect(last("size")).toMatchObject({ width: 340 });
     expect(last("openApp")).toBeUndefined();  // no big window
-    await userEvent.type(box, "what is on my calendar{Enter}");
-    expect(api.chat).toHaveBeenCalledWith("what is on my calendar", "text", true);
+    await userEvent.type(pill, "what is on my calendar{Enter}");
+    expect(api.chat).toHaveBeenCalledWith("what is on my calendar", "text", true);  // typed answers stay quiet
+    act(() => {
+      api.emit("chat.user", { id: "t1-u", turn: "t1", role: "user", text: "what is on my calendar", at: "" });
+      api.emit("chat.done", { id: "t1-a", turn: "t1", role: "assistant", text: "Standup at 10.", ok: true, actions: [], sources: [], at: "" });
+    });
+    const preview = await screen.findByRole("button", { name: "Open the whole chat", description: undefined }).catch(() => screen.getAllByRole("button", { name: "Open the whole chat" })[0]!);
+    expect(await screen.findByText("Standup at 10.")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Standup at 10."));
+    const whole = await screen.findByRole("textbox", { name: "Message XENIO" });
+    expect(whole).toBeInTheDocument();
+    expect(preview).toBeTruthy();
+    await waitFor(() => expect(last("size")).toMatchObject({ width: 420, height: 580 }));
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(last("chat")).toEqual({ type: "chat", on: false }));
-    await waitFor(() => expect(last("hide")).toBeTruthy());
-    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("Esc closes the pill, and the orb stays", async () => {
+    const api = new FakeApi();
+    api.snap = engineSnap();
+    await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
+    await userEvent.click(await screen.findByRole("button", { name: "Chat" }));
+    await userEvent.type(await screen.findByRole("textbox", { name: "Ask XENIO" }), "{Escape}");
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Ask XENIO" })).toBeNull());
+    expect(screen.getByRole("button", { name: "Chat" })).toBeInTheDocument();  // back to the orb and its deck
   });
 
   it("asks Chat or Voice when summoned: Voice listens", async () => {
@@ -146,7 +165,71 @@ describe("the floating orb", () => {
     api.settings.mockResolvedValue({ motion: "system", speak_replies: false, orb_detail: "auto", notifications: true,
       transcript_lines: 50, orb_overlay_mode: "always" } as never);
     await renderOrb(api);
-    await waitFor(() => expect(last("show")).toMatchObject({ width: 96, height: 96 }));
+    await waitFor(() => expect(last("show")).toMatchObject({ width: 232, height: 222 }));
+    expect(last("surface")).toEqual({ type: "surface", glass: true });  // no card: the orb floats
+  });
+
+  it("floats as a pet: real glass behind a deck that shows only on hover, a handle otherwise, and it stays until hidden", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const api = new FakeApi();
+    api.snap = engineSnap();
+    await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
+    await screen.findByRole("button", { name: "Chat" });
+    await waitFor(() => expect(last("surface")).toEqual({ type: "surface", glass: true }));
+    const shape = () => (last("glass") as { shapes: { w: number; h: number }[] }).shapes[0];
+    expect(shape()).toMatchObject({ w: 40, h: 6 });  // a glass handle: the deck waits for the pointer
+    act(() => window.xenioNative!.receive({ type: "hover", on: true }));
+    await waitFor(() => expect(shape()!.w).toBe(220));
+    act(() => window.xenioNative!.receive({ type: "hover", on: false }));
+    await waitFor(() => expect(shape()).toMatchObject({ w: 40, h: 6 }));
+    const before = posted.length;
+    act(() => { vi.advanceTimersByTime(60_000); });  // a minute later it is still there: only you hide it
+    expect(posted.slice(before).some((m) => m.type === "hide")).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Hide the orb" }));
+    await waitFor(() => expect(last("hide")).toBeTruthy());
+    vi.useRealTimers();
+  });
+
+  it("stays on screen while XENIO's window is minimized or closed, and comes back after being hidden when it goes away again", async () => {
+    const api = new FakeApi();
+    await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "app", away: true }));
+    await waitFor(() => expect(last("show")).toMatchObject({ width: 232, height: 222 }));
+    await userEvent.click(screen.getByRole("button", { name: "Hide the orb" }));
+    await waitFor(() => expect(last("hide")).toBeTruthy());
+    act(() => window.xenioNative!.receive({ type: "app", away: false }));
+    act(() => window.xenioNative!.receive({ type: "app", away: true }));
+    await screen.findByRole("button", { name: "Chat" });
+  });
+
+  it("music mode: the orb listens to what the Mac plays only when asked, says plainly when it may not, and stops when hidden", async () => {
+    const api = new FakeApi();
+    api.snap = engineSnap();
+    const { store } = await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
+    const button = await screen.findByRole("button", { name: "Music mode" });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(button);
+    expect(last("music")).toEqual({ type: "music", on: true });
+    act(() => window.xenioNative!.receive({ type: "music", on: true }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Music mode" })).toHaveAttribute("aria-pressed", "true"));
+    expect(() => act(() => window.xenioNative!.receive({ type: "musicLevel", level: 0.7, bass: 0.9, beat: true }))).not.toThrow();
+    await userEvent.click(screen.getByRole("button", { name: "Hide the orb" }));
+    expect(last("music")).toEqual({ type: "music", on: false });  // hidden: nothing to listen for
+    act(() => window.xenioNative!.receive({ type: "music", on: false, error: "The user declined TCCs for application, window, display capture" }));
+    const notice = store.get().notices.at(-1);
+    expect(notice?.title).toBe("Music mode is off");
+    expect(notice?.message).toMatch(/Screen & System Audio Recording/);  // which setting, in plain words
+  });
+
+  it("passes the drag on to the orb, so its particles can trail it", async () => {
+    const api = new FakeApi();
+    api.snap = engineSnap();
+    await renderOrb(api);
+    act(() => window.xenioNative!.receive({ type: "summon", via: "triple_space", at: Date.now() }));
+    await screen.findByRole("button", { name: "Chat" });
+    expect(() => act(() => window.xenioNative!.receive({ type: "moved", dx: 30, dy: -12 }))).not.toThrow();
   });
 
   it("never plays audio itself", async () => {

@@ -223,6 +223,21 @@ class _UiNotifications:
         return self._inner.add(title, message, **kw) if self._inner is not None else None
 
 
+def _ask_for_mac_permissions() -> None:
+    """When Accessibility or Screen Recording is missing, macOS is asked once to show its own request. It names the app
+    XENIO runs in, adds it to the right list in System Settings, and has a button straight to it: a person could not find
+    the setting by hand, and an app rebuilt without a developer certificate loses the permission it had."""
+    try:
+        from app.desktop import macos
+
+        if not macos.trusted():
+            macos.trusted(prompt=True)
+        if not macos.screen_access():
+            macos.screen_access(request=True)
+    except Exception:  # noqa: BLE001 - asking is a courtesy: XENIO runs without these, and its System page says what is missing
+        pass
+
+
 def _xenio_answers(port: int) -> bool:
     """Is it XENIO that has this port? Its page says so, and that needs no session key."""
     import urllib.request
@@ -323,6 +338,8 @@ async def _run_ui(settings: Settings, args: argparse.Namespace) -> int:
                     webbrowser.open(server.launch_url())
 
             threading.Thread(target=start_orb, name="xenio-orb-start", daemon=True).start()
+            if sys.platform == "darwin" and not os.environ.get("XENIO_CI"):
+                threading.Thread(target=_ask_for_mac_permissions, name="xenio-permissions", daemon=True).start()
     print(f"XENIO interface: {server.url}")
     print(f"Open this address to sign in to it (it holds this session's key; do not share it):\n  {server.launch_url()}")
     if not args.no_browser and ctl.overlay is None:

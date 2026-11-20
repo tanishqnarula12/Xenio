@@ -13,6 +13,14 @@ export interface OrbProps {
   className?: string;
   /** the particles react to the mouse (the big orb on Home) */
   interactive?: boolean;
+  /** where the orb's window is being carried: subscribe(handler) returns an unsubscribe. The particles trail it. */
+  moves?: (handler: (dx: number, dy: number) => void) => () => void;
+  /** floating over the desktop: richer, brighter, with its own soft shadow */
+  vivid?: boolean;
+  /** a beat (music mode): subscribe(handler) returns an unsubscribe. Each one sends a ring of light through the orb. */
+  beats?: (handler: () => void) => () => void;
+  /** the sphere's size within its drawing (1 fills it): smaller leaves room for its particles to stream out */
+  scale?: number;
 }
 
 function particlesFor(size: number, detail: "auto" | "low" | "high"): number {
@@ -22,7 +30,7 @@ function particlesFor(size: number, detail: "auto" | "low" | "high"): number {
 }
 
 /** The orb. Its meaning is always in words too (role="img" + label), so nothing depends on seeing it move. */
-export function Orb({ state, label, size, detail = "auto", reducedMotion, level = null, agents = 2, className, interactive = false }: OrbProps) {
+export function Orb({ state, label, size, detail = "auto", reducedMotion, level = null, agents = 2, className, interactive = false, moves, vivid = false, beats, scale = 1 }: OrbProps) {
   const halo = useRef<HTMLCanvasElement>(null);
   const dots = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<OrbRenderer | null>(null);
@@ -30,7 +38,7 @@ export function Orb({ state, label, size, detail = "auto", reducedMotion, level 
 
   useEffect(() => {
     if (!halo.current || !dots.current) return;
-    const orb = new OrbRenderer(halo.current, dots.current, { particles: particlesFor(size, detail), reducedMotion, interactive });
+    const orb = new OrbRenderer(halo.current, dots.current, { particles: particlesFor(size, detail), reducedMotion, interactive, vivid, scale });
     renderer.current = orb;
     setDrawable(orb.drawable);
     orb.setState(state);
@@ -47,10 +55,12 @@ export function Orb({ state, label, size, detail = "auto", reducedMotion, level 
   }, []);
 
   useEffect(() => { renderer.current?.setState(state); }, [state]);
-  useEffect(() => { renderer.current?.setOptions({ particles: particlesFor(size, detail), reducedMotion, interactive }); },
-    [size, detail, reducedMotion, interactive]);
+  useEffect(() => { renderer.current?.setOptions({ particles: particlesFor(size, detail), reducedMotion, interactive, vivid, scale }); },
+    [size, detail, reducedMotion, interactive, vivid, scale]);
   useEffect(() => { renderer.current?.setLevelSource(level); }, [level]);
   useEffect(() => { renderer.current?.setAgents(agents); }, [agents]);
+  useEffect(() => (moves ? moves((dx, dy) => renderer.current?.move(dx, dy)) : undefined), [moves]);
+  useEffect(() => (beats ? beats(() => renderer.current?.pulse()) : undefined), [beats]);
 
   const [r, g, b] = lookFor(state).color;
   return (

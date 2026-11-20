@@ -141,7 +141,34 @@ class ReplyStream:
 
 # ---- narration while Hermes works -----------------------------------------------------------------
 
-ACKNOWLEDGMENTS = ("One moment.", "Sure, one second.", "Okay, let me check.", "On it.")
+# What XENIO says while it gets going, in the way a person would for that kind of request. The same "On it." every time
+# sounded like a machine. Each is synthesized once and cached, so it still plays at once.
+_ACK_FOR = (
+    ("question", ("Let me think.", "Hmm, give me a sec.", "Good question, one moment.", "Let me see.")),
+    ("lookup", ("Let me look that up.", "Checking now.", "Give me a second to find that.", "Searching for it.")),
+    ("make", ("Sure, putting that together.", "On it, give me a moment.", "Working on it.", "Let me write that up.")),
+    ("action", ("On it.", "Sure, doing that now.", "Coming right up.", "Alright.")),
+    ("other", ("One moment.", "Wait a sec.", "Just a moment.", "Sure, one second.", "Okay, let me check.")),
+)
+ACKNOWLEDGMENTS = tuple(dict.fromkeys(p for _, phrases in _ACK_FOR for p in phrases))
+_QUESTION = re.compile(r"^(what|whats|what's|why|how|who|when|where|which|is|are|was|were|can|could|should|would|do|does|did|will|explain|tell me)\b|\?\s*$", re.I)
+_LOOKUP = re.compile(r"\b(search|look ?up|find|google|news|weather|price|score|latest|check|research)\b", re.I)
+_MAKE = re.compile(r"\b(write|draft|make|create|build|generate|compose|summari[sz]e|plan|design)\b", re.I)
+_ACTION = re.compile(r"^(open|close|play|pause|stop|skip|next|set|turn|start|launch|quit|show|send|call|remind|add|delete|move|mute|unmute|volume)\b", re.I)
+
+
+def ack_kind(request: str) -> str:
+    """What kind of request this is, for what to say while working on it."""
+    text = " ".join(request.split())
+    if _ACTION.search(text):
+        return "action"
+    if _MAKE.search(text):
+        return "make"
+    if _LOOKUP.search(text):
+        return "lookup"
+    if _QUESTION.search(text):
+        return "question"
+    return "other"
 _NARRATION = (
     ("xenio_calendar", "Checking your calendar."),
     ("xenio_email", "Looking at your email."),
@@ -188,7 +215,7 @@ class FillerBank:
         self._phrases = phrases
         self._audio: dict[str, tuple[np.ndarray, int]] = {}
         self._rng = random.Random()
-        self._last_ack = ""
+        self._recent_acks: list[str] = []  # the last few said: none of them comes again soon
 
     def _path(self, text: str) -> Path:
         return self._dir / (hashlib.sha1(f"{self._voice}|{text}".encode()).hexdigest()[:16] + ".wav")
@@ -213,12 +240,18 @@ class FillerBank:
     def get(self, text: str) -> tuple[np.ndarray, int] | None:
         return self._audio.get(text)
 
-    def acknowledgment(self) -> str | None:
-        ready = [a for a in ACKNOWLEDGMENTS if a in self._audio and a != self._last_ack]
+    def acknowledgment(self, request: str = "") -> str | None:
+        """Something to say while XENIO gets going: fitting the request, never one of the last three said."""
+        kind = ack_kind(request) if request else "other"
+        pool = next(p for k, p in _ACK_FOR if k == kind)
+        ready = [a for a in pool if a in self._audio and a not in self._recent_acks]
+        if not ready:  # all of them said lately: any fitting one not said last
+            ready = [a for a in pool if a in self._audio and (not self._recent_acks or a != self._recent_acks[-1])]
         if not ready:
             return None
-        self._last_ack = self._rng.choice(ready)
-        return self._last_ack
+        choice = self._rng.choice(ready)
+        self._recent_acks = [*self._recent_acks, choice][-3:]
+        return choice
 
 
 # ---- ordered, gapless speech output ----------------------------------------------------------------

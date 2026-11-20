@@ -82,6 +82,8 @@ def test_whisper_echoing_its_prompt_is_not_speech():
     assert _echoes_prompt("File names are written like notes.txt.", prompt)
     assert not _echoes_prompt("Open notes.txt", prompt)
     assert not _echoes_prompt("Xenio.", prompt)  # too short to judge
+    assert _echoes_prompt("File names are written like this.", prompt)  # measured: part of it, with a word of its own
+    assert not _echoes_prompt("Rename the file notes.txt to report.pdf", prompt)
 
 
 # ---- early transcription -----------------------------------------------------------------------------------
@@ -343,3 +345,66 @@ async def test_warmer_without_a_loop_or_url_does_nothing():
     warmer = ConnectionWarmer(httpx.AsyncClient(), "")
     warmer.warm()
     assert warmer._task is None
+
+
+# ---- what music and a TV make up, and a loud room --------------------------------------------------------
+
+def test_words_that_could_not_have_been_said_are_spotted():
+    from app.voice.turns import implausible
+
+    made_up = "and I said to him that the thing about the weekend was that nobody really knew " * 5  # 400+ characters
+    assert implausible(made_up, 1.9)  # a real night: 0.88 s of sound came back as 442 characters
+    assert implausible("thank you thank you thank you thank you thank you", 6.0)  # one phrase over and over
+    assert not implausible("Open Spotify", 1.4)
+    assert not implausible("Remind me at six to call mom and tell her about the trip to Goa next week", 5.5)
+
+
+async def test_made_up_words_are_never_acted_on(make_settings):
+    made_up = "nobody knows what the weather will be like on the island when the tide comes in " * 6
+    a, lines, hermes = make_assistant(make_settings, [made_up])
+    assert await a.handle_utterance(SPEECH[: 16_000], follow_up=True) is True  # one second of sound
+    assert hermes.messages == [] and not any(line.startswith("XENIO:") for line in lines)  # silently, in a follow-up
+    a, lines, hermes = make_assistant(make_settings, [made_up])
+    await a.handle_utterance(SPEECH[: 16_000])  # after the wake word the user expects an answer
+    assert hermes.messages == [] and f"XENIO: {MSG_STT_FAILED}" in lines
+
+
+async def test_a_follow_up_needs_as_much_speech_as_words(make_settings):
+    from app.voice.turns import too_many_words
+
+    assert too_many_words("I want you to get out of here.", 0.72)  # measured, nobody in the room
+    assert not too_many_words("and send it to mom as well please", 1.8)
+    assert not too_many_words("yes", 0.3)
+    a, lines, hermes = make_assistant(make_settings, ["I want you to get out of here."])
+    a._last_speech_s = 0.72
+    assert await a.handle_utterance(SPEECH[: 16_000], follow_up=True) is True
+    assert hermes.messages == [] and not any(line.startswith("XENIO:") for line in lines)
+    a, lines, hermes = make_assistant(make_settings, ["I want you to get out of here."])
+    a._last_speech_s = 0.72
+    await a.handle_utterance(SPEECH[: 16_000])  # after the wake word it is still heard as said
+    assert hermes.messages
+
+
+def test_a_loud_room_keeps_the_microphone_shut_until_the_wake_word(make_settings):
+    a, _lines, _hermes = make_assistant(make_settings, [])
+    a._noise_floor, a._last_noise = 262.0, 260.0  # a quiet room, measured
+    assert a.room_is_loud() is False
+    a._last_noise = 1637.0  # the same room with music on, measured
+    assert a.room_is_loud() is True
+
+
+def test_while_working_xenio_says_something_fitting_and_never_the_same_thing_twice_in_a_row():
+    from app.voice.live import ACKNOWLEDGMENTS, FillerBank, ack_kind
+
+    assert ack_kind("what's the capital of Peru?") == "question"
+    assert ack_kind("open Spotify") == "action"
+    assert ack_kind("search for the latest iPhone news") == "lookup"
+    assert ack_kind("write an email to my landlord") == "make"
+    bank = FillerBank.__new__(FillerBank)
+    import random
+    bank._rng, bank._recent_acks = random.Random(7), []
+    bank._audio = {phrase: (None, 0) for phrase in ACKNOWLEDGMENTS}
+    said = [bank.acknowledgment("open the downloads folder") for _ in range(8)]
+    assert all(s in ("On it.", "Sure, doing that now.", "Coming right up.", "Alright.") for s in said)  # fits an action
+    assert all(said[i] not in said[max(0, i - 3):i] for i in range(len(said)))  # none of the last three again
+    assert len(set(bank.acknowledgment("why is the sky blue?") for _ in range(4))) == 4  # a question gets its own words
